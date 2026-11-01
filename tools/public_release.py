@@ -29,8 +29,8 @@ from urllib.request import HTTPRedirectHandler, Request, build_opener
 EXPECTED_REPOSITORY_ID = 1442123109
 EXPECTED_OWNER_ID = 315514197
 OWNER = "KiloGramowy"
-REVIEW_NAME = "WatchDogsGo-fork"
-PUBLIC_NAME = "WatchDogsGo-KG-Edition"
+REVIEW_NAME = "WatchDogsGo-KG-Edition"
+PUBLIC_NAME = "WDG-Wars-Go-2.0-KG-Edition"
 BRANCH = "main"
 EXPECTED_UPSTREAM_ID = 1208909098
 EXPECTED_UPSTREAM_OWNER_ID = 4149309

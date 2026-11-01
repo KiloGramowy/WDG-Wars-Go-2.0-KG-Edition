@@ -1,32 +1,26 @@
-# 🎮 WatchDogsGo — KG Edition
+# 🎮 WDG Wars Go 2.0 — KG Edition
 
 <p align="center">
-  <strong>📡 MeshCore + Meshtastic &nbsp; · &nbsp; 🛰️ Local AUTO GPS &nbsp; · &nbsp; 🔁 WiFi + BLE wardriving</strong><br>
-  <strong>💬 Off-grid chat &nbsp; · &nbsp; 🗺️ Mesh discoveries &nbsp; · &nbsp; 📤 WDGWars sync</strong>
+  <strong>💬 Reticulum &nbsp; · &nbsp; 📻 SubGHz &nbsp; · &nbsp; 📟 Proximity &nbsp; · &nbsp; 🧭 CRISIS</strong><br>
+  <strong>📡 MeshCore + Meshtastic &nbsp; · &nbsp; 🛰️ Local AUTO GPS &nbsp; · &nbsp; 🔁 WiFi + BLE wardriving</strong>
 </p>
 
 <p align="center">
   <img src="docs/media/demo-poster.png" width="960" alt="WatchDogsGo on uConsole — the original cyberdeck interface with the LoRa control selected">
 </p>
 
-<p align="center"><em>🕶️ Pocket cyberdeck. Big ears. The original WDG, with KiloGramowy's mesh and wardriving improvements.</em></p>
+<p align="center"><em>🕶️ Pocket cyberdeck. Bigger toolbox. WatchDogsGo by LOCOSP, expanded by KiloGramowy.</em></p>
 
-## ✨ What's new in KG Edition?
+## ✨ What is new in this edition?
 
-**Two mesh worlds. One familiar WDG interface.** This fork adds Meshtastic beside MeshCore, local GPS-based RF profile recall and alternating WiFi/BLE wardriving — while preserving the game's menus, artwork, keyboard controls and saved progress.
+**The newer LOCOSP foundation, followed by our KG additions — all in the familiar WDG interface.** Compared with the public WatchDogsGo 0.9.13 base, this fork includes LOCOSP's later 0.9.16 features and KiloGramowy's mesh, GPS, scanning, upload and update improvements.
 
-| | Our additions and improvements |
+| | Explore the additions below |
 | --- | --- |
-| 📡 **Choose your mesh** | Select **Meshtastic or MeshCore** when enabling LoRa; the HUD follows the protocol actually running. |
-| 💬 **Chat in the WDG style** | Separate **MeshCore Chat** and **Meshtastic Chat**, with saved local nickname and history. |
-| 🛰️ **Local AUTO GPS** | Recall an explicitly approved local RF profile, independently for each protocol. |
-| 🗺️ **Mesh discoveries** | Recognize Meshtastic NodeIDs and use the existing contacts, map, loot and XP systems. |
-| 📍 **Receiver GPS fallback** | Retain a measured observation position when a mesh contact has no valid coordinates of its own. |
-| 🔁 **WiFi + BLE wardriving** | Both ON: complete scan/save cycles take turns automatically. |
-| 🔧 **Startup and recovery fixes** | Better device selection, truthful errors, safe scan handover and GPS UART retry. |
-| 📤 **Upload fixes** | Persistent server receipts, meaningful pending counts and pruning of empty/invalid queue exports. |
-| 🔋 **Clean exit** | Stop WDG's operations, save the last records and switch off hardware acquired by the game — USB last. |
-| 🔔 **Quiet update notices** | Check this fork at startup; show one notice per approved release, with full notes in **SYSTEM → Update Game**. |
+| 🧰 **From LOCOSP** | WDGWars Chat and Reticulum/LoRa, Monster RF SubGHz, Emergency Radio, Proximity Radar, CRISIS, sound controls, visual polish and the original in-game updater. |
+| 🛠️ **From KiloGramowy** | Meshtastic integration beside MeshCore, local AUTO GPS, persistent mesh discoveries, alternating WiFi/BLE wardriving, upload/startup fixes, clean shutdown and the expanded release updater. |
+
+**2.0 is the edition name; the in-game software version remains 0.9.17.** Original authorship and the upstream fork relationship are retained.
 
 ## 🎬 Watch it on uConsole
 
@@ -46,7 +40,108 @@ The film shows the startup theme, WDG launch, protocol selection, both chats, co
 
 *Recorded WDG launch and loading sequence. The personal uConsole boot theme in the film is separate from the game installer.*
 
-## 📡 1. Choose MeshCore or Meshtastic
+## 🧰 Newer LOCOSP features — already on board
+
+**There is more inside this cyberdeck than the mesh selector.** The additions below come from LOCOSP's newer WatchDogsGo foundation. KiloGramowy's mesh, GPS, wardriving, upload and shutdown improvements follow in their own sections.
+
+### 💬 WDGWars Chat — another way to stay in touch
+
+Open **ADDONS → WDGWars Chat** for the community's **#general** channel through Reticulum and LXMF. Its message window offers timestamps, scrolling and send-status feedback; received messages are saved in the session log. It normally connects over TCP, using an internet connection and the `rns` / `lxmf` dependencies.
+
+![WDGWars Chat selected in ADDONS](docs/media/wdgwars-chat.png)
+
+<details>
+<summary>💬 Chat window and transport shortcuts</summary>
+
+![Native WDGWars chat header and initial empty message area](docs/media/wdgwars-chat-window.png)
+
+</details>
+
+📡 **An optional LoRa route is built in, too.** Enable LoRa hardware, then press **Ctrl+L inside WDGWars Chat** to use the SX1262's RNode-compatible transport. This releases the active MeshCore/Meshtastic receiver and detaches TCP; reaching the hub needs a compatible gateway and working radio route. Press **Ctrl+L** again to return to TCP and resume the previous mesh protocol. This transport has its own RF settings and is separate from the MeshCore/Meshtastic selector.
+
+### 📻 Monster RF SubGHz — a workbench for your own signals
+
+Connect a **Monster RF / CC1101 board running JanOS RF**, then open **ADDONS → Monster RF SubGHz**. The dedicated panel provides **Read / decode**, **Record RAW**, **Frequency analyzer**, **Saved signals** and **Status**. It is a separate hardware integration from the existing Flipper Zero toolkit.
+
+![Monster RF SubGHz menu with receive, RAW and analyzer modes](docs/media/monster-rf.png)
+
+Use **F** to choose the capture frequency; the selection survives a restart. The analyzer helps find an active frequency, while the RSSI meter shows current signal strength and a fading peak. **S** saves captured signals; **Esc** cancels the capture. Saved entries support replay, RAW transmission, renaming and deletion. Capture logs and exported `.sub` metadata retain the capture time and available GPS position. The saved-waveform tools operate through the compatible board and its firmware.
+
+*Small screen. Surprisingly large radio toolbox.* 🧰
+
+### 🚨 Emergency Radio — watch RF activity
+
+With an **RTL-SDR receiver and `rtl_power`**, open **ADDONS → Emergency Radio**. The scanner watches configured VHF and TETRA bands for changes above their rolling signal baseline, displays RSSI and trend information, and distinguishes transient activity from a persistent network carrier.
+
+![Emergency Radio entry in the WatchDogsGo interface](docs/media/emergency-radio.png)
+
+Activity can trigger the HUD lightbar, a coloured border and service notification sounds. Recent alerts remain visible briefly, and session files retain both alerts and per-sweep measurements; the loot view includes **SVC alerts**. The included frequency plan targets Polish service bands. Local frequencies need their own verification. This is **RF presence/activity detection**: it does not decode conversations, decrypt TETRA or establish which vehicle produced a signal. Emergency scanning takes the receiver over from its other SDR mode.
+
+### 📟 Proximity + Prox Radar — find a familiar cyberdeck
+
+Open **ADDONS**, then press **Y** to toggle **Proximity** or **Z** to open **Prox Radar**. Inside the radar, **O** toggles it and **Tab / Esc** returns. Compatible WDGWars peers and badges use rotating identifiers; configured known peers can be recognised without displaying a permanent radio identity.
+
+<p align="center"><img src="docs/media/proximity-radar.png" width="760" alt="Native Proximity Radar OFF screen and its O control"></p>
+
+The panel shows **signal strength, proximity state, signal trend and mutual contact**. The HUD pager follows the relationship and signal trend; a meeting requires sustained, close, mutual contact. These are signal-based estimates rather than measured distances. Proximity uses the uConsole's own Bluetooth controller, runs in a separate process, remembers ON/OFF and pauses for competing BT activity. Compatible peer configuration is required.
+
+### 🧭 CRISIS — your offline shelf, one menu away
+
+The **CRISIS** tab brings four shortcuts together:
+
+- 📚 **Wikipedia** opens the local Kiwix service.
+- 🗺️ **ctOS Map** opens the local offline-map service.
+- 🥾 **Navigation** launches Organic Maps.
+- 🟢 **Status** checks the local Wikipedia/map services and reports their availability in OUTPUT.
+
+![CRISIS menu with offline knowledge, maps, navigation and status](docs/media/crisis-menu.png)
+
+Install the corresponding services, offline knowledge/map files and Organic Maps separately; the game provides the convenient doorway. These external resources complement WDG's existing map.
+
+*Pack your offline library before the internet takes a day off.* 📚
+
+### 🔇 Mute Sounds — keep the discoveries, skip the beeps
+
+Open **ADDONS → Mute Sounds** to toggle mesh notifications, SubGHz beeps and emergency sounds. Receivers and visual indicators continue doing their jobs. System audio and the uConsole's speaker-power settings remain separate.
+
+![ADDONS menu with the Mute Sounds control](docs/media/sound-settings.png)
+
+### ✨ More life on screen, better hardware handling
+
+LOCOSP's newer UI adds drifting map particles, expanding sonar rings, a hologram sweep across the player, animated selection glints, moving radar trails and sliding notifications. XP, rank, badges, discovery counters, battery and GPS indicators gain clearer visual feedback. Loot/search rows are easier to read, and map labels fit better near the screen edge.
+
+<p align="center"><img src="docs/media/locosp-ui.png" width="760" alt="Native WatchDogsGo player marker, sonar and HUD with no live discoveries loaded"></p>
+
+Hardware improvements include better separation of the XIAO pentest board from a Monster RF board, plus a refined **SYSTEM → Flash ESP32** flow for XIAO ESP32-C5: USB power cycling, connecting during the ROM-loader window and flashing without the stub loader. The firmware tools still require a compatible board and firmware package.
+
+![SYSTEM hardware controls and Flash ESP32 entry](docs/media/hardware-menu.png)
+
+### 🔔 Update Game — LOCOSP's entry, our expanded release flow
+
+**SYSTEM → Update Game originated in LOCOSP's newer version.** That version introduced background version checks and an in-game Git update action, including operation under sudo. Our release keeps the familiar menu entry and expands it with the verified release source, full release notes, one notice per update, explicit installation confirmation and code-only recovery described below.
+
+![Current Update Game window with the verified release source](docs/media/update-game.png)
+
+*🖼️ The panels show the current installed UI on uConsole with isolated empty player data and automatic hardware connections disabled. Connected boards, compatible peers and local services provide the live results.*
+
+## 🛠️ KiloGramowy's additions and improvements
+
+**Two mesh worlds. One familiar WDG interface.** This fork adds Meshtastic beside MeshCore, local GPS-based RF profile recall and alternating WiFi/BLE wardriving — while preserving the game's menus, artwork, keyboard controls and saved progress.
+
+| | Our additions and improvements |
+| --- | --- |
+| 📡 **Choose your mesh** | Select **Meshtastic or MeshCore** when enabling LoRa; the HUD follows the protocol actually running. |
+| 💬 **Chat in the WDG style** | Separate **MeshCore Chat** and **Meshtastic Chat**, with saved local nickname and history. |
+| 🛰️ **Local AUTO GPS** | Recall an explicitly approved local RF profile, independently for each protocol. |
+| 🗺️ **Mesh discoveries** | Recognize Meshtastic NodeIDs and use the existing contacts, map, loot and XP systems. |
+| 📍 **Receiver GPS fallback** | Retain a measured observation position when a mesh contact has no valid coordinates of its own. |
+| 🔁 **WiFi + BLE wardriving** | Both ON: complete scan/save cycles take turns automatically. |
+| 🔧 **Startup and recovery fixes** | Better device selection, truthful errors, safe scan handover and GPS UART retry. |
+| 📤 **Upload fixes** | Persistent server receipts, meaningful pending counts and pruning of empty/invalid queue exports. |
+| 🔋 **Clean exit** | Stop WDG's operations, save the last records and switch off hardware acquired by the game — USB last. |
+| 🔔 **Quiet update notices** | Check this fork at startup; show one notice per approved release, with full notes in **SYSTEM → Update Game**. |
+
+### 📡 1. Choose MeshCore or Meshtastic
 
 Open **SYSTEM → LoRa → ON**. Choose **Meshtastic** on the left or **MeshCore** on the right with **← / →**, then press **Enter**. MeshCore is highlighted by default.
 
@@ -63,17 +158,17 @@ Open **SYSTEM → LoRa → ON**. Choose **Meshtastic** on the left or **MeshCore
 - 🟢 **Status follows the real radio state.** A highlighted menu row alone does not mean the radio started.
 - 🛑 **LoRa OFF stops the active receiver.**
 
-## 💬 2. Two chats, the same familiar interface
+### 💬 2. Two chats, the same familiar interface
 
 Open **ADDONS → MeshCore Chat** or **ADDONS → Meshtastic Chat**. Opening the other chat switches the shared radio. Your local nickname is saved between launches.
 
-### 📻 MeshCore Chat
+#### 📻 MeshCore Chat
 
 ![MeshCore public chat in the original WatchDogsGo interface](docs/media/meshcore-chat.png)
 
 The existing MeshCore messenger, channel selection, private channels and direct-message functionality are retained.
 
-### 📡 Meshtastic Chat
+#### 📡 Meshtastic Chat
 
 ![Meshtastic public chat using the same WatchDogsGo layout](docs/media/meshtastic-chat.png)
 
@@ -81,7 +176,7 @@ Meshtastic adds **public text RX/TX, NodeInfo and position reception**, persiste
 
 📨 **TX_DONE confirms local transmission completion; a saved or queued message alone does not. Neither proves delivery to another device.**
 
-## 🗺️ 3. Close the chat. Keep discovering.
+### 🗺️ 3. Close the chat. Keep discovering.
 
 Press **Esc** to return to the main WDG screen. The selected mesh receiver keeps listening in the background — the chat can stay closed.
 
@@ -89,7 +184,7 @@ Press **Esc** to return to the main WDG screen. The selected mesh receiver keeps
 
 ![Main WDG screen with the mesh receiver active after leaving chat](docs/media/background-rx.png)
 
-### 🧭 Real NodeIDs and persistent contacts
+#### 🧭 Real NodeIDs and persistent contacts
 
 ![Meshtastic contacts with public names, NodeIDs and signal information](docs/media/meshtastic-nodes.png)
 
@@ -100,7 +195,7 @@ Press **Esc** to return to the main WDG screen. The selected mesh receiver keeps
 
 Receiver GPS describes an observation or a later measured receiver-position assignment, not the remote node's true location. Without a credible fix, recoverable contacts wait for GPS. A packet's `from` NodeID identifies its declared author; a relay may have delivered the frame.
 
-## 🛰️ 4. MANUAL profiles + local AUTO GPS
+### 🛰️ 4. MANUAL profiles + local AUTO GPS
 
 **Choose your protocol. Let GPS recall the RF profile you approved for that area.**
 
@@ -108,15 +203,17 @@ GPS knows where you are. It still needs you to tell it what the local mesh is li
 
 Open **ADDONS → Meshtastic Profile** or **ADDONS → MeshCore Region**. Each protocol has its own RF catalog and saved assignments. Chat channels and keys remain separate from frequency/BW/SF/CR.
 
-### 📡 Meshtastic profiles
+🎛️ The Meshtastic catalog includes **SFNarrow, EU/UK LongFast, US LongFast and US LongTurbo**. MeshCore keeps its legacy choices and adds the separate **EU/UK Narrow CR8** and **USA Recommended** options. Offline geographic data covers 18 countries; it identifies areas, while local RF choices still require your approval. Hardware and antenna compatibility must match the selected band.
+
+#### 📡 Meshtastic profiles
 
 ![English Meshtastic RF menu with MANUAL mode, Active RF and AUTO GPS controls](docs/media/rf-meshtastic.png)
 
-### 📻 MeshCore profiles
+#### 📻 MeshCore profiles
 
 ![English MeshCore RF menu with its own profiles and AUTO GPS controls](docs/media/rf-meshcore.png)
 
-### 🧭 Set up a local AUTO profile
+#### 🧭 Set up a local AUTO profile
 
 1. 📡 **Choose MeshCore or Meshtastic manually.**
 2. 🎛️ **Choose a known local profile** with **↑ / ↓**, then **M / Enter** for MANUAL. With LoRa OFF this saves the selection; check **Active RF** when it is running.
@@ -142,13 +239,13 @@ Open **ADDONS → Meshtastic Profile** or **ADDONS → MeshCore Region**. Each p
 
 📚 **[Complete RF profiles, GPS checks and sources →](docs/RADIO_PROFILES.md)**
 
-## 🔁 5. WiFi + BLE: automatic scan intervals
+### 🔁 5. WiFi + BLE: automatic scan intervals
 
 In **SNIFF**, turn **WiFi Wardrive ON** and **BT Wardrive ON**. One selected mode runs alone; both selected modes take turns.
 
 ![Actual SNIFF menu with WiFi Wardrive and BT Wardrive both ON](docs/media/wifi-ble-menu.png)
 
-### 📶 WiFi → 💾 save → ⏸️ pause / confirmed STOP → 🔵 BLE → 💾 save → 🔁 repeat
+#### 📶 WiFi → 💾 save → ⏸️ pause / confirmed STOP → 🔵 BLE → 💾 save → 🔁 repeat
 
 | WiFi | BT | Result |
 | --- | --- | --- |
@@ -161,7 +258,7 @@ One ESP32 runs one phase at a time. Adding the second mode waits for the current
 
 📡 LoRa uses the separate SX1262 and can keep receiving alongside wardriving. Packet sniffer and HS capture remain separate operations.
 
-## 🔧 6. More dependable starts and clearer errors
+### 🔧 6. More dependable starts and clearer errors
 
 - 🔌 **Better ESP32 selection:** avoid choosing an unrelated USB ACM device just because it appears first.
 - 🟢 **Truthful start reporting:** failed commands produce errors, rather than a false running state.
@@ -169,7 +266,7 @@ One ESP32 runs one phase at a time. Adding the second mode waits for the current
 - 💾 **Save before switching:** failed completion, storage or STOP confirmation pauses the schedule.
 - 🛰️ **GPS UART recovery:** retry the configured UART when NMEA data starts after the initial probe.
 
-## 📤 7. Uploads that account for the real result
+### 📤 7. Uploads that account for the real result
 
 Collecting pending uploads should not be an extra side quest. 🧾
 
@@ -185,7 +282,7 @@ Collecting pending uploads should not be an extra side quest. 🧾
 
 ---
 
-## 🔋 8. Game over. Radios off.
+### 🔋 8. Game over. Radios off.
 
 **Before:** closing WDG could leave its LoRa/USB power on, and some exit paths skipped cleanup.
 
@@ -197,7 +294,7 @@ Power ownership is explicit: hardware switched on or acquired by WDG is released
 
 ✅ Tested on uConsole with a real Meshtastic receiver and ESP32 serial connection: normal quit, native quit and an intentional isolated callback error. All four managed AIO rails were OFF after each case; player data remained unchanged. This checks shutdown, rather than new RF reception or chat delivery.
 
-## 🔔 9. Updates, without the morning alarm
+### 🔔 9. Updates, without the morning alarm
 
 **SYSTEM → Update Game** keeps its original menu row. Inside, a small KiloGramowy avatar sits above the current version and scrollable release notes. The startup screen keeps **by LOCOSP**, with **Modified by KiloGramowy** underneath. Version numbers keep their original numeric format.
 
@@ -210,6 +307,7 @@ The game checks this fork in the background at each launch. A published release 
 Opening the notes never installs an update. Installation needs a separate confirmation, stops game-owned operations, saves final data and creates a code backup. Local edits and dependency changes are checked before applying code; settings, keys, contacts, logs and player progress are preserved. A failed network check is shown as a failed check.
 
 🔗 **Know your update source:** the window shows the verified repository; press **O** to open it on GitHub. The updater follows its permanent repository ID across repository renames. Installed release notes remain available offline. See [Updating](docs/UPDATING.md) for the release and recovery contract.
+
 
 ## 🎮 What is WatchDogsGo?
 
@@ -230,8 +328,8 @@ Explore with a uConsole and compatible hardware, see discoveries on the map, sav
 
 ### 🙏 Who made what?
 
-- 🎮 **Original Watch Dogs Go, game/UI and upstream features:** [LOCOSP](https://github.com/LOCOSP).
-- 🛠️ **KG Edition integration, local AUTO GPS, scan/upload fixes and field demo:** [KiloGramowy](https://github.com/KiloGramowy).
+- 🎮 **Original Watch Dogs Go, game/UI, maps, progression and the newer foundation features above:** [LOCOSP](https://github.com/LOCOSP).
+- 🛠️ **Meshtastic integration, local AUTO GPS, scan/upload fixes, clean exit, expanded release updater and field demo:** [KiloGramowy](https://github.com/KiloGramowy).
 - 🧩 **MeshCore, Meshtastic, LoRaRF, Pyxel and dependencies:** their respective authors and communities.
 - 📜 **Source license:** [MIT](LICENSE), with the original LOCOSP notice retained. Assets and music keep their [own terms](THIRD_PARTY_NOTICES.md).
 
@@ -274,7 +372,7 @@ The release includes the tested shutdown fix and updater. Screenshots show UI st
 ```bash
 mkdir -p ~/python
 git clone --branch main --single-branch \
-  https://github.com/KiloGramowy/WatchDogsGo-KG-Edition.git \
+  https://github.com/KiloGramowy/WDG-Wars-Go-2.0-KG-Edition.git \
   ~/python/WatchDogsGo-KiloGramowy
 cd ~/python/WatchDogsGo-KiloGramowy
 bash setup.sh

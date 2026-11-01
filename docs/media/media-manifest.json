@@ -88,6 +88,11 @@
   },
   "files": [
     {
+      "path": "README.md",
+      "bytes": 7815,
+      "sha256": "4101c4d17bc0d2c60d5eaa734c168095f0ec494bb30b17ec0e49416534137475"
+    },
+    {
       "path": "auto-save-preview.png",
       "bytes": 4039,
       "sha256": "90e72df3c281fd6a445ff5a78ab44f68aa45c2e3c9007c1ce0c7086898ab62dc",
@@ -108,6 +113,16 @@
       "source_movie_seconds": 80
     },
     {
+      "path": "crisis-menu.png",
+      "bytes": 18236,
+      "sha256": "82d04cc722e46af0a4a4a67659b0f3471984baa653486985166e3225ee1777ed",
+      "dimensions": [
+        1280,
+        388
+      ],
+      "source_kind": "installed native WDG UI on uConsole with isolated empty player state and disabled automatic connections"
+    },
+    {
       "path": "demo-poster.png",
       "bytes": 319677,
       "sha256": "b389994dca993789edcc6bb0156eb4435746ad9d03921e776953e31002163bba",
@@ -121,6 +136,36 @@
       "path": "demo.mp4",
       "bytes": 24986997,
       "sha256": "bd6dc5f7558a32e054ad671a70d3ef7ab2d2aa83472b6ad37b3fd308764ccd37"
+    },
+    {
+      "path": "emergency-radio.png",
+      "bytes": 20744,
+      "sha256": "bb3428b5d4e761c54bc2a11172795cd1ea352fc810f1201379d69329153193e1",
+      "dimensions": [
+        1280,
+        388
+      ],
+      "source_kind": "installed native WDG UI on uConsole with isolated empty player state and disabled automatic connections"
+    },
+    {
+      "path": "hardware-menu.png",
+      "bytes": 20176,
+      "sha256": "b465f3d5c0b51ef8ae5931f17170046ba2b4927c6582020c19c6f95f2a8790f2",
+      "dimensions": [
+        1280,
+        388
+      ],
+      "source_kind": "installed native WDG UI on uConsole with isolated empty player state and disabled automatic connections"
+    },
+    {
+      "path": "locosp-ui.png",
+      "bytes": 5256,
+      "sha256": "f7489da130fc63c4f8d4a5ae90b6fdb17f83ec6c491184e49ccc4da58cea00eb",
+      "dimensions": [
+        1280,
+        468
+      ],
+      "source_kind": "installed native WDG UI on uConsole with isolated empty player state and disabled automatic connections"
     },
     {
       "path": "meshcore-chat.png",
@@ -151,6 +196,16 @@
         720
       ],
       "source_movie_seconds": 74
+    },
+    {
+      "path": "monster-rf.png",
+      "bytes": 3277,
+      "sha256": "e4eb572d11391c4ca049980c35304882b375d9d51ea55d1fcff52be8373ce451",
+      "dimensions": [
+        1280,
+        270
+      ],
+      "source_kind": "installed native WDG UI on uConsole with isolated empty player state and disabled automatic connections"
     },
     {
       "path": "protocol-preview.gif",
@@ -189,9 +244,14 @@
       "source_movie_seconds": 35.5
     },
     {
-      "path": "README.md",
-      "bytes": 6434,
-      "sha256": "77e3a71539b3c40fe281e6a209189b016bfbad4d3b029447dc89c76f6de4d36d"
+      "path": "proximity-radar.png",
+      "bytes": 2490,
+      "sha256": "16980ef35c2a3968b7e706ad88e04ea96d121280265e5775cefa8fb2b300e165",
+      "dimensions": [
+        1280,
+        400
+      ],
+      "source_kind": "installed native WDG UI on uConsole with isolated empty player state and disabled automatic connections"
     },
     {
       "path": "rf-meshcore.png",
@@ -214,9 +274,19 @@
       "source_kind": "native current WDG UI renderer on uConsole"
     },
     {
+      "path": "sound-settings.png",
+      "bytes": 20756,
+      "sha256": "40cd0fcd008b2640cb6bf3761812218f76b318131bff2e4e1df5fbfd77d6be6d",
+      "dimensions": [
+        1280,
+        388
+      ],
+      "source_kind": "installed native WDG UI on uConsole with isolated empty player state and disabled automatic connections"
+    },
+    {
       "path": "supplementary-menu-manifest.json",
-      "bytes": 3833,
-      "sha256": "ffdd398a22a563aa719ec06fa757aba34e4e5d63705b7a75dfbb88b03059872d"
+      "bytes": 12233,
+      "sha256": "fe8c091fb81d16bfa66ca2547e88b6be552eb4933e184d74ebd490489f5ccc19"
     },
     {
       "path": "system-lora.png",
@@ -230,13 +300,13 @@
     },
     {
       "path": "update-game.png",
-      "bytes": 8564,
-      "sha256": "01ab8b5d5005a88667fc48a2f55eed2a6fdb1ad1faea14f4e2151721a1a99275",
+      "bytes": 8597,
+      "sha256": "a6df48e5c52c334f6e2e35a146421c11396854aa6ed20b324dfbefaf14a4b512",
       "dimensions": [
         884,
         416
       ],
-      "source_kind": "deployed Update Game window on uConsole with isolated player state"
+      "source_kind": "installed native WDG UI on uConsole with isolated empty player state and disabled automatic connections"
     },
     {
       "path": "upload-confirmation.png",
@@ -269,6 +339,26 @@
       "source_kind": "normal deployed WDG startup on uConsole"
     },
     {
+      "path": "wdgwars-chat-window.png",
+      "bytes": 2011,
+      "sha256": "2c19201288e3b5d4a4db81a0f39f3302df845555237253ff803681d4569e5060",
+      "dimensions": [
+        1280,
+        180
+      ],
+      "source_kind": "installed native WDG UI on uConsole with isolated empty player state and disabled automatic connections"
+    },
+    {
+      "path": "wdgwars-chat.png",
+      "bytes": 20666,
+      "sha256": "7340b74f71e7ccf2a6716d8d19b5bc06984b849c6e7ca24bfc4e1be21f96c087",
+      "dimensions": [
+        1280,
+        388
+      ],
+      "source_kind": "installed native WDG UI on uConsole with isolated empty player state and disabled automatic connections"
+    },
+    {
       "path": "wifi-ble-menu.png",
       "bytes": 4426,
       "sha256": "0c4cc746d523e1091b4cd3dad2daeb0f8947e90137a007f89dd2a400293211cb",
@@ -285,7 +375,11 @@
     "current_ui_sources": "supplementary-menu-manifest.json",
     "new_update_window": "update-game.png",
     "startup_credit": "by LOCOSP / Modified by KiloGramowy",
-    "version_format": "unchanged numeric format"
+    "version_format": "unchanged numeric format",
+    "edition_name": "WDG Wars Go 2.0 — KG Edition",
+    "in_game_version": "0.9.17",
+    "locosp_features_presented_first": true,
+    "kg_features_presented_afterwards": true
   },
   "native_readme_video": {
     "file": "wdg-uconsole-demo-github.mp4",
@@ -321,7 +415,7 @@
     "anonymous_rendered_video_verified": true,
     "public_access_note": "The public README supplies an expiring signed video URL. A direct attachment-route 404 does not mean the rendered video is private.",
     "attachment_repository_id": 1442123109,
-    "verification_status": "Anonymous access verified for the formal public fork. Final recheck after removal of the standalone repository is pending GitHub account confirmation.",
+    "verification_status": "Verified anonymously in this formal fork before the edition rename; recheck for the new canonical name is required after this documentation push.",
     "anonymous_http_status": 200,
     "anonymous_bytes_verified": 9190468,
     "anonymous_sha256_verified": "a049ccb0aba8ce863a134e4c47a70c73f28059ab14c8f7918683c7939c593d1a"

@@ -199,8 +199,10 @@ class PublicationTests(unittest.TestCase):
         files[".gitignore"]=b"__pycache__/\n*.pyc\n"
         files["README.md"]=("# Approved game description\n\n![Current UI](docs/media/example.png)\n\n"+FILM+"\n").encode()
         files["watchdogs/__init__.py"]=b'__version__ = "0.9.17"\n'
+        # Renaming must preserve the already approved runtime's bootstrap name.
+        # The immutable ID remains the authority for resolving the live source.
         files["watchdogs/game_updates.py"]=(f'REPOSITORY_ID = {publication.EXPECTED_REPOSITORY_ID}\n'
-            f'REPOSITORY = "{publication.OWNER}/{publication.PUBLIC_NAME}"\nBRANCH = "main"\nCHANNEL = "stable"\nFEED_PATH = "updates/stable.json"\n').encode()
+            f'REPOSITORY = "{publication.OWNER}/{publication.REVIEW_NAME}"\nBRANCH = "main"\nCHANNEL = "stable"\nFEED_PATH = "updates/stable.json"\n').encode()
         image=b"\x89PNG\r\n\x1a\n"+b"\x00\x00\x00\rIHDR"+struct.pack(">II",32,24)
         files["docs/media/example.png"]=image
         files["docs/media/media-manifest.json"]=json.dumps(dict(files=[dict(path="example.png",
@@ -222,7 +224,7 @@ class PublicationTests(unittest.TestCase):
         git(cls.seed,"checkout","main");git(cls.seed,"reset","--hard",cls.root)
         target=cls.seed/"updates/stable.json";target.parent.mkdir()
         target.write_text(json.dumps(dict(schema=2,repository_id=publication.EXPECTED_REPOSITORY_ID,
-            repository=publication.OWNER+"/"+publication.PUBLIC_NAME,channel="stable",release_id="v0.9.17",
+            repository=publication.OWNER+"/"+publication.REVIEW_NAME,channel="stable",release_id="v0.9.17",
             version="0.9.17",source_commit=cls.root,title="Approved baseline",notes="Full approved notes.")),encoding="utf-8")
         git(cls.seed,"add",".");git(cls.seed,"commit","-qm","Approved baseline feed")
 
@@ -261,6 +263,8 @@ class PublicationTests(unittest.TestCase):
         self.assertFalse(result["private"])
         self.assertTrue(result["formal_fork"])
         self.assertEqual(result["upstream"],publication.UPSTREAM_REPOSITORY)
+        self.assertEqual(result["repository"],"KiloGramowy/WatchDogsGo-KG-Edition")
+        self.assertEqual(result["target_repository"],"KiloGramowy/WDG-Wars-Go-2.0-KG-Edition")
         self.assertFalse(result["remote_changes_made"])
         self.assertEqual(len(result["planned_mutations"]),1)
         self.assertEqual(result["anonymous_checks"],"available through --activate verification")
@@ -412,6 +416,11 @@ class PublicationTests(unittest.TestCase):
             path = self.repo / name
             path.parent.mkdir(parents=True, exist_ok=True)
             path.write_text("# Reviewed packaging-only correction.\n")
+        # The feed label can follow the rename without republishing runtime.
+        feed_path = self.repo / "updates/stable.json"
+        feed = json.loads(feed_path.read_text())
+        feed["repository"] = publication.OWNER + "/" + publication.PUBLIC_NAME
+        feed_path.write_text(json.dumps(feed))
         self.commit()
         result, _ = self.operation.check()
         self.assertTrue(result["ok"])

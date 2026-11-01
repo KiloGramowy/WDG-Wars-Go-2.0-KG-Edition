@@ -17,11 +17,15 @@ Failed or offline checks are explicit. They are never presented as evidence that
 
 ## Prepared stable release
 
-The release remains **0.9.17**. Its public source is the formal fork [KiloGramowy/WatchDogsGo-KG-Edition](https://github.com/KiloGramowy/WatchDogsGo-KG-Edition), based on [LOCOSP/WatchDogsGo](https://github.com/LOCOSP/WatchDogsGo). Its approved `updates/stable.json` feed identifies the release's code; committing that feed does not create a GitHub Release.
+The release remains **0.9.17**. Its public source is the formal fork [KiloGramowy/WDG-Wars-Go-2.0-KG-Edition](https://github.com/KiloGramowy/WDG-Wars-Go-2.0-KG-Edition), based on [LOCOSP/WatchDogsGo](https://github.com/LOCOSP/WatchDogsGo). Its approved `updates/stable.json` feed identifies the release's code; committing that feed does not create a GitHub Release.
 
 The code commit comes first. A second, feed-only commit records that first commit as `source_commit`. A fresh clone can therefore have a newer feed/documentation HEAD while running the same approved version. The updater reports it as current only when the approved commit and installed commit have identical runtime Git entries. In-game offline notes, including `docs/UPDATE_PREVIEW.txt`, are part of that runtime set. Unadvertised code changes cannot use this exception.
 
 Release metadata uses schema 2 and includes the immutable repository ID, repository name, channel, stable release ID, numeric version, full source commit, title and full notes. Ordinary development commits do not advertise an update. Future upgrades require a newer approved numeric version and a feed pointing to that release's code.
+
+## Edition name and repository rename
+
+**WDG Wars Go 2.0 — KG Edition** is the presentation name; the installed software version remains **0.9.17**. The repository was renamed without changing its immutable ID `1442123109`, public LOCOSP parent or approved runtime source. Existing 0.9.17 builds retain their bootstrap name `KiloGramowy/WatchDogsGo-KG-Edition` and resolve the new canonical name through that ID. The feed label can follow the rename without creating a new release or another notice. No reinstall or player-data migration is required for this rename.
 
 ## Release source
 
@@ -30,7 +34,7 @@ The approved source is explicitly configured in `watchdogs/game_updates.py`; it 
 | Build | Repository ID | Repository name | Branch | Channel |
 | --- | --- | --- | --- | --- |
 | Private development | `1437688988` | `KiloGramowy/esp32-watch-dogs` | `codex/wdg-go-wars-release` | `stable` |
-| Formal public release fork | `1442123109` | `KiloGramowy/WatchDogsGo-KG-Edition` | `main` | `stable` |
+| Formal public release fork | `1442123109` | `KiloGramowy/WDG-Wars-Go-2.0-KG-Edition` | `main` | `stable` |
 
 The updater resolves `https://api.github.com/repositories/1442123109` for the release build, checks the pinned repository and owner IDs, then fetches the verified canonical name. GitHub identifies its parent and source as the public `LOCOSP/WatchDogsGo`, repository ID `1208909098`. The fork's current name retains its own identity and fork relationship; it does not inherit the previous standalone repository's ID.
 
@@ -44,7 +48,7 @@ The selected route uses a **formal fork of the public LOCOSP repository**, with 
 
 No rename, repository deletion or visibility change is performed by an update check, game launch or ordinary push. The public fork's source, images, native movie and update feed must pass anonymous checks before cutover and again after the former standalone publication is removed. An authenticated browser preview alone is not proof of public access.
 
-Earlier standalone builds from `KiloGramowy/WatchDogsGo` pinned repository ID `1441947361`. Those installations require a manual source migration to `KiloGramowy/WatchDogsGo-KG-Edition`, even though the displayed game version remains 0.9.17. There is no retained handoff repository or promise that the deleted ID will continue serving updates. Do not treat an error from that old source as proof that the game is current.
+Earlier standalone builds from `KiloGramowy/WatchDogsGo` pinned repository ID `1441947361`. Those installations require a manual source migration to `KiloGramowy/WDG-Wars-Go-2.0-KG-Edition`, even though the displayed game version remains 0.9.17. There is no retained handoff repository or promise that the deleted ID will continue serving updates. Do not treat an error from that old source as proof that the game is current.
 
 The maintained uConsole completed a controlled, one-time **0.9.17 → 0.9.17** code deployment with verified backups, a complete runtime manifest and repository ID `1442123109`. Other standalone installations need the same controlled migration, preserving current player data, settings, identities, keys, contacts, pairing and pending logs. Do not disable ancestry or local-edit checks, and do not import private commits to bypass them. Future releases on the approved formal-fork ancestry can use the normal in-game update flow.
 

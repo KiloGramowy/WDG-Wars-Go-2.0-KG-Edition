@@ -1,4 +1,4 @@
-# Watch Dogs Go â€” historical uConsole demo
+# Watch Dogs Go — historical uConsole demo
 
 [Watch the 100-second demo](demo.mp4). The montage uses the real uConsole UI recorded on **29 October 2026**, with the user's original startup theme and a historical upload screenshot. It predates the later AUTO GPS windows and alternating WiFi/BLE wardrive changes.
 
@@ -21,11 +21,11 @@ The film keeps its original short glitch transitions and Polish editorial captio
 
 ## Credits and separate media terms
 
-Original **Watch Dogs Go** game and upstream UI: **LOCOSP**, copyright 2025â€“2026, MIT; preserve the repository's [LICENSE](../../LICENSE). Fork/integration work and demo montage: **KiloGramowy**. Existing upstream game artwork is shown as recorded; this media package does not claim new authorship or a separate blanket license for third-party artwork or trademarks.
+Original **Watch Dogs Go** game and upstream UI: **LOCOSP**, copyright 2025–2026, MIT; preserve the repository's [LICENSE](../../LICENSE). Fork/integration work and demo montage: **KiloGramowy**. Existing upstream game artwork is shown as recorded; this media package does not claim new authorship or a separate blanket license for third-party artwork or trademarks.
 
 Music from #InAudio: https://inaudio.org/
 
-**Infraction â€” Venom (Rave), Instrumental**
+**Infraction — Venom (Rave), Instrumental**
 
 https://inaudio.org/track/venom-rave/
 
@@ -42,16 +42,24 @@ These supplementary screenshots are actual uConsole captures, separate from the 
 
 The [supplementary source manifest](supplementary-menu-manifest.json) records capture hashes and crop dimensions. No UI text, counters or radio state were invented for these images.
 
-## README presentation update â€” 1 November 2026
+## README presentation update — 1 November 2026
 
 The main README keeps the approved WDG SYSTEM/LoRa hero and feature descriptions. Startup and update-window images now show the deployed interface, including the KiloGramowy credit and avatar.
 
 - `wdg-startup.png` and `wdg-loading.png`: the deployed WDG startup screen, with the credit close-up and full loading view. Original UI pixels are retained.
-- `protocol-selector-detail.png`: an unscaled 884Ã—184 crop of the recorded selector (35.5 s), bounding box [198, 238, 1082, 422], for readable Meshtastic/MeshCore labels.
+- `protocol-selector-detail.png`: an unscaled 884×184 crop of the recorded selector (35.5 s), bounding box [198, 238, 1082, 422], for readable Meshtastic/MeshCore labels.
 - `auto-save-preview.png`: the current WDG RF dialog renderer with isolated zero-coordinate display data. The source fixture has no GPS/radio use and creates no user approval. The README explicitly labels this illustration; it is not a successful live AUTO claim.
 
 The GitHub-native player uses a smaller H.264/AAC copy of the complete reviewed film. The original full-quality `demo.mp4` remains available in this folder. The attachment inherits the same GPS masks, public-chat/node visibility choice and soundtrack terms.
 
 [Open the native GitHub video player](https://github.com/user-attachments/assets/498dfb34-79a6-4067-8d6a-e5e206c29b02). The attachment was uploaded in this formal public fork context. It is the same full 100-second edit, encoded as a 9,190,468-byte H.264/AAC copy for GitHub. The README player uses this permanent attachment address, not an expiring signed media URL.
 
-The current RF-menu images retain the existing typography and layout. `update-game.png` shows the deployed 0.9.17 Update Game window on uConsole with isolated player state and a real release-source check, cropped above OUTPUT. Source hashes and crop bounds are recorded in the supplementary manifest.
+The current RF-menu images retain the existing typography and layout. `update-game.png` shows the installed 0.9.17 Update Game window on uConsole with isolated player state, offline notes and the renamed repository identity validated from real GitHub metadata, cropped above OUTPUT. It does not depict an update-availability check. Source hashes and crop bounds are recorded in the supplementary manifest.
+
+## Newer LOCOSP feature panels
+
+The WDG Wars Go 2.0 README presents the newer LOCOSP features before KiloGramowy's additions. New panels were captured from the installed 0.9.17 drawing code on uConsole, using isolated empty player state and disabled automatic hardware connections. They show the actual controls, with no injected peers, messages, GPS fixes, radio activity or alerts. The installed source, current player data and initial AIO power state were verified unchanged afterwards.
+
+WDGWars Chat and Monster RF retain their native initial CONNECTING labels while disconnected. Proximity is shown OFF. Emergency Radio and Mute Sounds are selected menu rows, not new live receiver or audio tests. The Update Game image shows installed offline notes and a source identity validated against fresh GitHub metadata; its Press R prompt correctly indicates that no update check was run for that capture.
+
+Crops preserve the original pixels and layout. The compact chat detail and Monster panel trim unused blank space; they do not combine or rearrange UI regions. GPS/footer regions are excluded and no credentials appear in these views. Full raw captures, capture tooling and preservation records remain private; per-image source hashes and crop bounds are recorded in the supplementary manifest.

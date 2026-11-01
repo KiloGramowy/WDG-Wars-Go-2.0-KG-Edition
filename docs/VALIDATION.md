@@ -2,9 +2,19 @@
 
 This page separates recorded software checks from real hardware evidence. Preparing documentation or a release branch does not itself repeat any radio, GPS, chat-delivery or server test.
 
+## Edition 2.0 documentation and rename
+
+The edition name is **WDG Wars Go 2.0 — KG Edition**; software version **0.9.17** and approved runtime `774f636e22a29d344f7e90d590f0f831eb4b7031` remain unchanged. This documentation update presents the newer LOCOSP features first and KiloGramowy's additions afterwards, with 9 additional UI images and a refreshed Update Game image. The existing film and accepted KG feature descriptions are retained.
+
+Seventeen native UI views were captured on uConsole with isolated empty player state, disabled automatic hardware/network connections and no injected traffic, peers, GPS fixes or alerts. The initial updater view validates the renamed repository identity from fresh real GitHub API metadata; it does not claim an update-availability check. All 88 protected source/manifest/generated-sprite records, current player/configuration data and initial AIO power states were unchanged after capture. No radio or game process remained.
+
+The 39 existing publication-guard tests passed with the new canonical name, including old bootstrap/feed aliases and a renamed feed label with identical runtime. These checks and the pictures do not add new RF, Proximity meeting, Emergency reception, SubGHz, chat-delivery or local-service qualification.
+
+**Known existing menu limit:** ADDONS draws 13 of its 16 entries without scrolling. The final PipBoy/Proximity rows can be clipped; Y and Z remain the Proximity/Radar shortcuts while ADDONS is open. This documentation change does not alter the game renderer or hide that limitation.
+
 ## Formal public fork source transition
 
-The formal release fork is `KiloGramowy/WatchDogsGo-KG-Edition`, repository ID `1442123109`. Its public parent and source are `LOCOSP/WatchDogsGo`, ID `1208909098`. The canonical name is already set; no further rename is planned. The private development repository and its five branches remain separate.
+The formal release fork is `KiloGramowy/WDG-Wars-Go-2.0-KG-Edition`, repository ID `1442123109`. Its public parent and source are `LOCOSP/WatchDogsGo`, ID `1208909098`. The canonical name is already set; no further rename is planned. The private development repository and its five branches remain separate.
 
 Preparation merge `be199c2ced736192399949bbf2b68098a4b5ae57` joins public LOCOSP commit `6412603d6fa7c8f2e6fe76873531d83c61adc63d` with the reviewed published snapshot `29412dccbfe9aff4c798252a7510d4b0314d7168`. That merge retains the reviewed snapshot while establishing public ancestry; it does not import the private development branches. The final runtime source is `774f636e22a29d344f7e90d590f0f831eb4b7031`; its source-binding change updates only the repository name and numeric ID in the updater.
 

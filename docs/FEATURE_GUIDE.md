@@ -73,7 +73,7 @@ Open **SYSTEM → Update Game** for the numeric installed version, full scrollab
 
 Startup checks happen in the background. A new approved release gets one main-screen notice, remembered across restarts. **OK** opens its notes; **No / Esc** dismisses it. A dismissed release remains accessible through the white **Update Game** menu entry. Installation needs a separate confirmation and saves player state before replacing code.
 
-The current private preview does not publish a release or invent an available update. See [Updating](UPDATING.md) for controls, privacy and recovery details.
+Approved public releases are advertised through this fork's stable release feed; ordinary development commits do not trigger a release notice. See [Updating](UPDATING.md) for controls, privacy and recovery details.
 
 ## 💡 PWN and handshake counters
 
