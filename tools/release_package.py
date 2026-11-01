@@ -243,7 +243,7 @@ def validate(files):
         if name.startswith("docs/media/") and PurePosixPath(name).suffix.lower() in MEDIA_EXTENSIONS and name not in coverage:
             errors.append("Media output lacks a verified manifest entry: " + name)
     if any("github.com/user-attachments/assets/" in link for link in external_links):
-        warnings.append("GitHub attachment access must be checked separately in the rendered public README; snapshot validation does not test remote video access.")
+        warnings.append("GitHub attachment access must be checked separately; the current private upload is not a public release attachment.")
     warnings.append("Snapshot checks do not audit older Git history or certify image pixels, RF behavior or anonymous external links.")
     return dict(ok=not errors, source_files=len(files), source_bytes=sum(map(len, files.values())),
         checked_local_links=checked_links, media_outputs_verified=len([n for n in coverage if n in files]),
