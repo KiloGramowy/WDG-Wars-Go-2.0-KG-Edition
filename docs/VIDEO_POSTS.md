@@ -31,7 +31,7 @@ https://inaudio.org/track/venom-rave/
 ## YouTube title
 
 ```text
-WDG Wars Go 2.0 — KG Edition | uConsole Cyberdeck Feature Tour
+🎮 WDG Wars Go 2.0 — KG Edition | 📡 uConsole Cyberdeck Feature Tour ⚡
 ```
 
 ## YouTube description

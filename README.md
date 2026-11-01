@@ -9,8 +9,6 @@
 
 ## 🎬 The full 2.0 feature tour
 
-**🔊 Press Play and unmute. Same Venom. Bigger toolbox. More glitches.** A **2 min 23 sec** cyberdeck tour: LOCOSP's newer features first, then our KG additions.
-
 https://github.com/user-attachments/assets/dc91c3e3-4e69-44af-8339-48a6277803b2
 
 📡 Reticulum, SubGHz, Proximity and CRISIS meet MeshCore, Meshtastic, local AUTO GPS, WiFi/BLE wardriving, sync and clean shutdown. Your battery did not volunteer for overtime. 🔋
