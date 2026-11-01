@@ -133,6 +133,8 @@ class AppState:
     lora_packets: int = 0
     mc_nodes: int = 0
     mc_messages: int = 0
+    mt_nodes: int = 0
+    mt_messages: int = 0
 
     # Add-ons
     flashing: bool = False

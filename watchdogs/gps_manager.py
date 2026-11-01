@@ -2,7 +2,10 @@
 
 import glob
 import logging
+import math
 import os
+import re
+import time
 from dataclasses import dataclass
 from typing import List, Optional
 
@@ -11,6 +14,13 @@ import serial
 from .config import GPS_DEVICE, GPS_BAUD_RATE
 
 log = logging.getLogger(__name__)
+
+# AUTO radio selection needs fresh, measured positions, independent of the
+# player's map position and the older display-oriented ``fix.valid`` flag.
+RADIO_FIX_MAX_AGE = 10.0
+RADIO_FIX_RMC_MAX_AGE = 2.0
+RADIO_FIX_RMC_TIME_TOLERANCE = 2.0
+RADIO_FIX_RMC_DISTANCE_METRES = 100.0
 
 
 @dataclass
@@ -66,10 +76,35 @@ class GpsManager:
         self.fix = GpsFix()
         self._available = False
         self._gsv_visible: dict = {}  # constellation prefix → satellite count
+        self._radio_position = None
+        self._recent_rmc = None
+        self._last_gga = None
 
     @property
     def available(self) -> bool:
         return self._available
+
+    def radio_fix(self, now=None) -> Optional[dict]:
+        """Return a fresh credible GGA position, or None, without refreshing it.
+
+        Complete checksum-valid GGA is sufficient; RMC is optional. When a
+        fresh RMC is present it must agree in UTC time and position. GSV, UI
+        polling and RMC alone cannot create/refresh this radio-selection fix.
+        ``observed_at`` is the monotonic receive time, never NMEA/wall time.
+        """
+        now = time.monotonic() if now is None else now
+        position = self._radio_position
+        if not self.available or position is None or not math.isfinite(now):
+            return None
+        age = now - position["observed_at"]
+        if not 0 <= age <= RADIO_FIX_MAX_AGE:
+            return None
+        return {key: position[key] for key in
+                ("lat", "lon", "observed_at", "quality", "sats", "hdop")}
+
+    def _invalidate_position(self):
+        self.fix.valid = False
+        self._radio_position = None
 
     # ------------------------------------------------------------------
     # Connection
@@ -129,6 +164,9 @@ class GpsManager:
                 timeout=0,
             )
             self._conn.reset_input_buffer()
+            self._invalidate_position()
+            self._recent_rmc = None
+            self._last_gga = None
             self._available = True
             log.info("GPS opened: %s @ %d baud", device, self._baud)
             return True
@@ -170,6 +208,9 @@ class GpsManager:
                 pass
             self._conn = None
         self._available = False
+        self._invalidate_position()
+        self._recent_rmc = None
+        self._last_gga = None
 
     @property
     def fd(self) -> int:
@@ -194,6 +235,7 @@ class GpsManager:
             return self._buf.feed(raw)
         except Exception as exc:
             log.debug("GPS read error: %s", exc)
+            self.close()
             return []
 
     def process_sentences(self, sentences: List[str]) -> None:
@@ -205,51 +247,151 @@ class GpsManager:
                 log.debug("GPS parse error: %s — %s", s.strip(), exc)
 
     def _parse(self, sentence: str) -> None:
-        # Strip checksum
-        if "*" in sentence:
-            sentence = sentence.split("*")[0]
-        parts = sentence.split(",")
-        if len(parts) < 3:
+        sentence = sentence.strip()
+        body, marker, checksum = sentence.partition("*")
+        kind = body.split(",", 1)[0]
+        is_position = kind in ("$GPGGA", "$GNGGA", "$GPRMC", "$GNRMC")
+        checksum_ok = False
+        if marker and re.fullmatch(r"[0-9a-fA-F]{2}", checksum):
+            expected = 0
+            for character in body[1:]:
+                expected ^= ord(character)
+            checksum_ok = expected == int(checksum, 16)
+        if not checksum_ok:
+            if is_position:
+                self._invalidate_position()
             return
-        kind = parts[0]
-        if kind in ("$GPGGA", "$GNGGA"):
-            self._parse_gga(parts)
-        elif kind in ("$GPRMC", "$GNRMC"):
-            self._parse_rmc(parts)
-        elif kind in ("$GPGSV", "$GLGSV", "$GNGSV", "$GBGSV", "$GAGSV"):
-            self._parse_gsv(parts)
+        parts = body.split(",")
+        if len(parts) < 3:
+            if is_position:
+                self._invalidate_position()
+            return
+        try:
+            if kind in ("$GPGGA", "$GNGGA"):
+                self._parse_gga(parts)
+            elif kind in ("$GPRMC", "$GNRMC"):
+                self._parse_rmc(parts)
+            elif kind in ("$GPGSV", "$GLGSV", "$GNGSV", "$GBGSV", "$GAGSV"):
+                self._parse_gsv(parts)
+        except (ValueError, IndexError, OverflowError):
+            if is_position:
+                self._invalidate_position()
+            raise
+
+    @staticmethod
+    def _utc_seconds(value: str) -> float:
+        if not re.fullmatch(r"\d{6}(?:\.\d+)?", value):
+            raise ValueError("invalid NMEA UTC time")
+        hour, minute, second = int(value[:2]), int(value[2:4]), float(value[4:])
+        if hour > 23 or minute > 59 or not 0 <= second < 60:
+            raise ValueError("NMEA UTC time out of bounds")
+        return hour * 3600 + minute * 60 + second
+
+    @staticmethod
+    def _position(parts, lat_index, lon_index):
+        lat = GpsManager._coordinate(parts[lat_index], parts[lat_index + 1], True)
+        lon = GpsManager._coordinate(parts[lon_index], parts[lon_index + 1], False)
+        return lat, lon
+
+    @staticmethod
+    def _coordinate(value: str, direction: str, latitude: bool) -> float:
+        width = 4 if latitude else 5
+        if not re.fullmatch(r"\d{" + str(width) + r"}(?:\.\d+)?", value):
+            raise ValueError("incomplete NMEA coordinate")
+        if direction not in (("N", "S") if latitude else ("E", "W")):
+            raise ValueError("invalid NMEA direction")
+        degrees, minutes = int(value[:width - 2]), float(value[width - 2:])
+        limit = 90 if latitude else 180
+        if minutes >= 60 or degrees > limit or (degrees == limit and minutes != 0):
+            raise ValueError("NMEA coordinate out of bounds")
+        coordinate = degrees + minutes / 60
+        return -coordinate if direction in ("S", "W") else coordinate
+
+    @staticmethod
+    def _consistent_positions(first, second):
+        utc_delta = abs(first["utc_seconds"] - second["utc_seconds"])
+        utc_delta = min(utc_delta, 86400 - utc_delta)  # midnight rollover
+        if utc_delta > RADIO_FIX_RMC_TIME_TOLERANCE:
+            return False
+        lat1, lat2 = math.radians(first["lat"]), math.radians(second["lat"])
+        dlat = lat2 - lat1
+        dlon = math.radians(second["lon"] - first["lon"])
+        hav = math.sin(dlat / 2) ** 2 + math.cos(lat1) * math.cos(lat2) * math.sin(dlon / 2) ** 2
+        distance = 6371000 * 2 * math.asin(math.sqrt(min(1.0, max(0.0, hav))))
+        return distance <= RADIO_FIX_RMC_DISTANCE_METRES
 
     def _parse_gga(self, p: List[str]) -> None:
         """$GPGGA: time, lat, N/S, lon, E/W, quality, sats, hdop, alt, ..."""
         if len(p) < 10:
+            raise ValueError("incomplete GGA")
+        quality = int(p[6]) if p[6] else 0
+        sats = int(p[7]) if p[7] else 0
+        hdop = float(p[8]) if p[8] else 99.9
+        utc_seconds = self._utc_seconds(p[1])
+        if quality not in range(9) or not 0 <= sats <= 99 or not math.isfinite(hdop) or hdop < 0:
+            raise ValueError("invalid GGA quality metrics")
+        self.fix.fix_quality, self.fix.satellites, self.fix.hdop = quality, sats, hdop
+        self.fix.timestamp = p[1]
+        if quality == 0:
+            self._invalidate_position()
             return
-        self.fix.fix_quality = int(p[6]) if p[6] else 0
-        self.fix.valid = self.fix.fix_quality > 0
-        if p[1]:
-            self.fix.timestamp = p[1]
-        self.fix.satellites = int(p[7]) if p[7] else 0
-        self.fix.hdop = float(p[8]) if p[8] else 99.9
-        if p[2] and p[3]:
-            self.fix.latitude = self._to_decimal(p[2], p[3])
-        if p[4] and p[5]:
-            self.fix.longitude = self._to_decimal(p[4], p[5])
-        if p[9]:
-            self.fix.altitude = float(p[9])
+        lat, lon = self._position(p, 2, 4)
+        altitude = float(p[9]) if p[9] else self.fix.altitude
+        if not math.isfinite(altitude):
+            raise ValueError("invalid GGA altitude")
+        now = time.monotonic()
+        position = dict(lat=lat, lon=lon, observed_at=now, quality=quality,
+                        sats=sats, hdop=hdop, utc_seconds=utc_seconds)
+        credible = quality in (1, 2, 4, 5) and sats >= 4 and hdop <= 3
+        rmc = self._recent_rmc
+        if (rmc is not None and 0 <= now - rmc["observed_at"] <= RADIO_FIX_RMC_MAX_AGE
+                and not self._consistent_positions(position, rmc)):
+            self._invalidate_position()
+            return
+        previous = self._last_gga
+        self._last_gga = position
+        repeated_epoch = previous is not None and previous["utc_seconds"] == utc_seconds
+        if repeated_epoch and (previous["lat"] != lat or previous["lon"] != lon):
+            self._invalidate_position()
+            return
+        self.fix.latitude, self.fix.longitude, self.fix.altitude = lat, lon, altitude
+        self.fix.valid = True
+        if repeated_epoch:
+            # Repeated receiver output from the same epoch cannot make an old
+            # observation fresh or count as several stable AUTO samples.
+            if not credible:
+                self._radio_position = None
+            return
+        self._radio_position = position if credible else None
 
     def _parse_rmc(self, p: List[str]) -> None:
         """$GPRMC: time, status, lat, N/S, lon, E/W, speed, ..."""
         if len(p) < 8:
-            return
-        self.fix.valid = (p[2] == "A")
-        if p[1]:
+            raise ValueError("incomplete RMC")
+        utc_seconds = self._utc_seconds(p[1])
+        if p[2] == "V":
             self.fix.timestamp = p[1]
-        if p[2] == "A":
-            if p[3] and p[4]:
-                self.fix.latitude = self._to_decimal(p[3], p[4])
-            if p[5] and p[6]:
-                self.fix.longitude = self._to_decimal(p[5], p[6])
-            if p[7]:
-                self.fix.speed_knots = float(p[7])
+            self._recent_rmc = None
+            self._invalidate_position()
+            return
+        if p[2] != "A":
+            raise ValueError("invalid RMC status")
+        lat, lon = self._position(p, 3, 5)
+        speed = float(p[7]) if p[7] else 0.0
+        if not math.isfinite(speed) or speed < 0:
+            raise ValueError("invalid RMC speed")
+        now = time.monotonic()
+        rmc = dict(lat=lat, lon=lon, utc_seconds=utc_seconds, observed_at=now)
+        self._recent_rmc = rmc
+        position = self._radio_position
+        if (position is not None
+                and 0 <= now - position["observed_at"] <= RADIO_FIX_MAX_AGE
+                and not self._consistent_positions(position, rmc)):
+            self._invalidate_position()
+            return
+        self.fix.valid = True
+        self.fix.timestamp = p[1]
+        self.fix.latitude, self.fix.longitude, self.fix.speed_knots = lat, lon, speed
 
     def _parse_gsv(self, p: List[str]) -> None:
         """$xxGSV: total_msgs, msg_num, sats_in_view, ..."""
@@ -263,10 +405,4 @@ class GpsManager:
     @staticmethod
     def _to_decimal(value: str, direction: str) -> float:
         """Convert NMEA ddmm.mmmm to decimal degrees."""
-        dot = value.index(".")
-        degrees = int(value[:dot - 2])
-        minutes = float(value[dot - 2:])
-        result = degrees + minutes / 60.0
-        if direction in ("S", "W"):
-            result = -result
-        return result
+        return GpsManager._coordinate(value, direction, direction in ("N", "S"))

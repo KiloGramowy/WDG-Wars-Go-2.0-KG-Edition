@@ -1,6 +1,6 @@
 """Watch Dogs Go Wars Sync — upload wardriving loot to community server.
 
-Uploads WiFi/BLE networks, ADS-B aircraft, and MeshCore nodes from
+Uploads WiFi/BLE networks, ADS-B aircraft, and MeshCore/Meshtastic nodes from
 loot sessions to a wardrive server via HTTPS API with HMAC-SHA256
 signed payloads. Supports auth push (game as 2FA authenticator).
 
@@ -13,12 +13,18 @@ Setup:
 """
 
 import base64
+from contextlib import nullcontext
 import hashlib
 import hmac
 import json
 import logging
+import math
+import os
+import re
 import secrets
 import threading
+import tempfile
+import time
 from pathlib import Path
 from urllib.request import Request, urlopen
 from urllib.error import URLError, HTTPError
@@ -103,6 +109,87 @@ def _map_auth(wigle_auth: str) -> str:
 
 DEFAULT_API_URL = "https://wdgwars.pl/api/upload/"
 
+# Verified in the authenticated official help, 2026-10-29:
+# https://www.wdgwars.pl/help#mesh-upload
+# Both protocols use meshcore_nodes; network is the authoritative namespace.
+
+
+def _upload_receipt(result: dict, submitted: dict) -> tuple[bool, str, int]:
+    """Check application acknowledgement, separately from HTTP success.
+
+    Missing counters are unknown, not zero. A short acknowledgement or any
+    rejected record keeps the session pending. Existing response field names
+    are retained; no inferred per-protocol server credit is manufactured.
+    """
+    if not isinstance(result, dict) or result.get("ok") is not True:
+        return False, "server did not acknowledge upload", 0
+    groups = (
+        ("networks", "nets", ("imported",), ("updated", "duplicates"), "rejected"),
+        ("aircraft", "ac", ("aircraft_imported",), ("aircraft_already_seen",), "aircraft_rejected"),
+        ("meshcore_nodes", "mesh", ("meshcore_imported",), ("meshcore_already_seen", "meshcore_merged"), "meshcore_rejected"),
+    )
+    complete = True
+    info = []
+    imported = 0
+    for key, label, accepted_keys, known_keys, rejected_key in groups:
+        count = len(submitted.get(key, []))
+        if not count:
+            continue
+        fields = accepted_keys + known_keys + (rejected_key,)
+        if key == "networks":
+            fields += ("cooldown",)
+        for field in fields:
+            if field in result and (type(result[field]) is not int or result[field] < 0):
+                return False, f"invalid {field} counter", 0
+        accepted = sum(result.get(k, 0) for k in accepted_keys)
+        known = sum(result.get(k, 0) for k in known_keys)
+        # The server handles these observations without awarding new credit.
+        # They are separate from imported/updated/duplicate network records.
+        cooldown = result.get("cooldown", 0) if key == "networks" else 0
+        rejected = result.get(rejected_key)
+        reasons = {}
+        if key == "meshcore_nodes":
+            for field in ("meshcore_yours_known", "meshcore_owned_by_others"):
+                if field in result and (type(result[field]) is not int or result[field] < 0):
+                    return False, f"invalid {field} counter", 0
+            split_known = sum(result.get(field, 0) for field in
+                              ("meshcore_yours_known", "meshcore_owned_by_others"))
+            if "meshcore_already_seen" not in result:
+                if result.get("meshcore_merged", 0) and split_known:
+                    return False, "missing mesh aggregate counter", 0
+                known += split_known
+            # Ownership describes already-seen AND merged records. A merged
+            # node may still belong to us or another player; it is not a
+            # second counted record. Verified against the real 103-node reply.
+            elif split_known > known:
+                return False, "inconsistent mesh ownership counters", 0
+            if "meshcore_reject_reasons" in result:
+                reasons = result["meshcore_reject_reasons"]
+                if not isinstance(reasons, dict) or any(type(v) is not int or v < 0 for v in reasons.values()):
+                    return False, "invalid meshcore_reject_reasons counters", 0
+                reason_total = sum(reasons.values())
+                if rejected is None:
+                    rejected = reason_total
+                elif reason_total > rejected:
+                    return False, "inconsistent mesh rejection counters", 0
+        accounted = accepted + known + cooldown + (rejected or 0)
+        unknown = max(0, count - accounted)
+        # When all submitted records are handled, rejection is
+        # necessarily zero. Otherwise an omitted rejection counter stays ?.
+        rejected_text = str(rejected) if rejected is not None else ("0" if unknown == 0 else "?")
+        cooldown_text = f", cooldown {cooldown}" if key == "networks" else ""
+        info.append(f"{label}: +{accepted}, known {known}{cooldown_text}, rejected {rejected_text}, unknown {unknown}")
+        if key == "meshcore_nodes":
+            if "meshcore_yours_known" in result or "meshcore_owned_by_others" in result:
+                info.append(f"mesh known: yours {result.get('meshcore_yours_known', '?')}, "
+                            f"other players {result.get('meshcore_owned_by_others', '?')}")
+            if any(reasons.values()):
+                info.append("mesh rejection reasons: " + ", ".join(f"{k}={v}" for k, v in reasons.items() if v))
+        complete &= accounted == count and not rejected and not unknown
+        if key == "networks":
+            imported = accepted
+    return bool(complete), "; ".join(info), imported
+
 
 def _default_endpoint() -> str:
     """Resolve default server endpoint. Override in secrets.conf with
@@ -141,6 +228,15 @@ class WardriveUpload(PluginBase):
         self._overlay_active = False
         self._menu_sel = 0
         self._uploaded_sessions: set[str] = set()
+        self._uploaded_meshtastic_sessions: set[str] = set()
+        self._upload_receipts: dict[str, dict] = {}
+        self._receipt_generation = 0
+        self._upload_log_checks: dict[str, tuple] = {}
+        self._pending_log_checks: dict[str, tuple] = {}
+        self._next_cleanup = 0.0
+        self._cleanup_removed = 0
+        self._mesh_gps_wait = 0
+        self._mesh_parse_stats: dict[str, dict] = {}
         self._api_key = ""
         self._api_url = ""
         self._key_input = ""
@@ -204,11 +300,17 @@ class WardriveUpload(PluginBase):
             self._log_add("Connected to server", 11)
         n = len(self._pending_sessions())
         if n:
-            self._log_add(f"{n} session(s) with new data", 11)
+            self._log_add(f"{n} session(s) ready to upload", 11)
         else:
-            self._log_add("No new wardriving data", 13)
+            self._log_add("No pending uploads", 13)
+        self._show_cleanup_count()
+        if getattr(self, "_mesh_gps_wait", 0):
+            self._log_add(f"{self._mesh_gps_wait} mesh log(s) waiting for receiver GPS", 10)
 
     def on_update(self) -> None:
+        if self.app and time.monotonic() >= self._next_cleanup:
+            self._next_cleanup = time.monotonic() + 2.0
+            self._pending_sessions()
         if not self._overlay_active:
             return
         import pyxel
@@ -381,12 +483,21 @@ class WardriveUpload(PluginBase):
         elif action == "test_api":
             self._test_api()
         elif action == "show_pending":
-            for s in self._pending_sessions():
+            pending = self._pending_sessions()
+            for s in pending:
                 self._log_add(f"  {s.name}", 13)
+            if not pending: self._log_add("No pending uploads", 13)
+            self._show_cleanup_count()
         elif action == "reset":
+            previous = (self._uploaded_sessions.copy(), self._uploaded_meshtastic_sessions.copy(), self._upload_receipts.copy())
             self._uploaded_sessions.clear()
-            self._save_state()
-            self._log_add("Upload history cleared", 10)
+            self._uploaded_meshtastic_sessions.clear()
+            self._upload_receipts.clear()
+            if self._save_state() is False:
+                self._uploaded_sessions, self._uploaded_meshtastic_sessions, self._upload_receipts = previous
+                self._log_add("Cannot save history reset; history kept", 8)
+            else:
+                self._log_add("Upload history cleared", 10)
 
     # ------------------------------------------------------------------
     # Upload via API
@@ -396,15 +507,123 @@ class WardriveUpload(PluginBase):
             return []
         base = Path(self.app.loot._base)
         pending = []
+        self._mesh_gps_wait = 0
         for d in sorted(base.iterdir()):
-            if not d.is_dir():
+            if not d.is_dir() or d.is_symlink():
                 continue
+            self._prune_upload_logs(d)
             # Session has data if any of these exist
             has_data = any((d / f).is_file() for f in
                           ["wardriving.csv", "adsb_aircraft.csv", "meshcore_nodes.csv"])
-            if has_data and d.name not in self._uploaded_sessions:
-                pending.append(d)
+            has_mt = self._has_meshtastic(d)
+            if ((has_data and d.name not in self._uploaded_sessions)
+                    or (has_mt and d.name not in self._uploaded_meshtastic_sessions)):
+                if self._session_has_pending_records(d): pending.append(d)
         return pending
+
+    def _session_upload_data(self, session_dir: Path) -> dict:
+        legacy_done = session_dir.name in self._uploaded_sessions
+        mt_done = session_dir.name in self._uploaded_meshtastic_sessions
+        if legacy_done: self._mesh_parse_stats["meshcore"] = {}
+        if mt_done: self._mesh_parse_stats["meshtastic"] = {}
+        return {
+            "networks": [] if legacy_done else self._parse_csv(session_dir / "wardriving.csv"),
+            "aircraft": [] if legacy_done else self._parse_adsb(session_dir / "adsb_aircraft.csv"),
+            "meshcore_nodes": self._merge_mesh_nodes(
+                [] if legacy_done else self._parse_meshcore(session_dir / "meshcore_nodes.csv"),
+                [] if mt_done else self._parse_meshtastic(session_dir / "meshtastic_nodes.csv")),
+        }
+
+    def _session_has_pending_records(self, session_dir: Path) -> bool:
+        versions = []
+        for name in ("wardriving.csv", "adsb_aircraft.csv", "meshcore_nodes.csv", "meshtastic_nodes.csv"):
+            try:
+                st = (session_dir/name).stat()
+                versions.append((name, st.st_ino, st.st_mtime_ns, st.st_size))
+            except FileNotFoundError: pass
+        signature = (tuple(versions), session_dir.name in self._uploaded_sessions,
+                     session_dir.name in self._uploaded_meshtastic_sessions, len(self._upload_receipts),
+                     self._receipt_generation, self._api_url, self._api_key)
+        cached = self._pending_log_checks.get(str(session_dir))
+        if cached is not None and cached[0] == signature: return cached[1]
+        data = self._session_upload_data(session_dir)
+        ready = (any(data.values()) and self._cached_receipt(data) is None
+                 and not self._cached_mesh_verification(data))
+        self._pending_log_checks[str(session_dir)] = (signature, bool(ready))
+        return bool(ready)
+
+    def _show_cleanup_count(self):
+        if self._cleanup_removed:
+            self._log_add(f"Removed {self._cleanup_removed} empty/invalid upload log(s)", 13)
+            self._cleanup_removed = 0
+
+    def _prune_upload_logs(self, session_dir: Path) -> int:
+        """Delete unuploadable queue exports, as explicitly requested by user.
+
+        Only four exact CSV names are eligible, only in the loot directory and
+        only for unconfirmed groups. Never delete a session directory, contacts,
+        XP, messages or other loot. The mesh writer uses the same DB lock;
+        revalidate after acquiring it so a newly received position is retained.
+        Valid exports are checked once per file version, not once per frame.
+        """
+        if not self.app or not self.app.loot: return 0
+        session_dir = Path(session_dir)
+        base = Path(self.app.loot._base).resolve()
+        if session_dir.is_symlink() or not session_dir.resolve().is_relative_to(base): return 0
+        removed = 0
+        parsers = (("wardriving.csv", self._parse_csv, False),
+                   ("adsb_aircraft.csv", self._parse_adsb, False),
+                   ("meshcore_nodes.csv", self._parse_meshcore, False),
+                   ("meshtastic_nodes.csv", self._parse_meshtastic, True))
+        lock = getattr(self.app.loot, "_db_lock", None)
+        with lock if lock is not None else nullcontext():
+            for filename, parse, is_mt in parsers:
+                done = self._uploaded_meshtastic_sessions if is_mt else self._uploaded_sessions
+                if session_dir.name in done: continue
+                # WiFi/BLE writes run on the main event queue without the mesh
+                # DB lock. Their active export is only pruned on that same
+                # thread; a background upload worker leaves it for the next
+                # main-loop cleanup tick.
+                if (filename in ("wardriving.csv", "adsb_aircraft.csv")
+                        and session_dir.name == self._active_session_name()
+                        and threading.current_thread() is not threading.main_thread()):
+                    continue
+                path = session_dir / filename
+                if path.is_symlink() or not path.is_file(): continue
+                try:
+                    before = path.stat()
+                    stamp = (before.st_ino, before.st_mtime_ns, before.st_size)
+                    if self._upload_log_checks.get(str(path)) == stamp: continue
+                    # Readability failures are not evidence of invalid data.
+                    with path.open('rb') as stream: stream.read(1)
+                    valid = parse(path)
+                    after = path.stat()
+                    if stamp != (after.st_ino, after.st_mtime_ns, after.st_size): continue
+                    if valid:
+                        self._upload_log_checks[str(path)] = stamp
+                    elif filename in ("meshcore_nodes.csv", "meshtastic_nodes.csv") and self._mesh_parse_stats.get("meshtastic" if is_mt else "meshcore", {}).get("no_gps", 0):
+                        # A real node awaiting the receiver's fix is recoverable,
+                        # not a corrupt log. The GPS assignment path regenerates
+                        # its export when a fresh measured fix becomes available.
+                        self._mesh_gps_wait = getattr(self, "_mesh_gps_wait", 0) + 1
+                    else:
+                        path.unlink()
+                        self._upload_log_checks.pop(str(path), None)
+                        removed += 1
+                        log.info("Sync: removed empty/invalid upload log %s/%s", session_dir.name, filename)
+                except OSError:
+                    log.warning("Sync: upload log cleanup failed for %s/%s", session_dir.name, filename)
+        self._cleanup_removed += removed
+        return removed
+
+    @staticmethod
+    def _has_meshtastic(session_dir: Path) -> bool:
+        path = session_dir / "meshtastic_nodes.csv"
+        if not path.is_file():
+            return False
+        with path.open(encoding="utf-8") as fh:
+            next(fh, None)
+            return any(line.strip() for line in fh)
 
     def _active_session_name(self) -> str:
         """Directory name of the currently-recording loot session, or ''
@@ -416,20 +635,147 @@ class WardriveUpload(PluginBase):
         new aircraft ICAOs were captured but never offered for upload
         because the session got flagged 'uploaded' earlier in the day."""
         try:
-            return Path(self.app.loot.session_path).name
+            loot = self.app.loot
+            for attribute in ("session_dir", "session_path", "_session"):
+                path = getattr(loot, attribute, None)
+                if path:
+                    return Path(path).name
         except Exception:
-            return ""
+            pass
+        return ""
 
-    def _mark_uploaded(self, session_dir: Path) -> bool:
+    def _mark_uploaded(self, session_dir: Path, *, meshtastic: bool = False) -> bool:
         """Mark a session as fully uploaded so it stops appearing in the
         pending queue. Returns True if marked, False if skipped because
         the session is still active (will be re-queued on next upload).
         Always persists state when something changed."""
         if session_dir.name == self._active_session_name():
             return False
+        before = self._uploaded_sessions.copy(), self._uploaded_meshtastic_sessions.copy()
         self._uploaded_sessions.add(session_dir.name)
-        self._save_state()
+        if meshtastic:
+            self._uploaded_meshtastic_sessions.add(session_dir.name)
+        if self._save_state() is False:
+            self._uploaded_sessions, self._uploaded_meshtastic_sessions = before
+            self._log_add("  Cannot save upload state; left pending", 8)
+            return False
         return True
+
+    def _receipt_key(self, data: dict) -> str:
+        """Bind exact supported content to the configured account and endpoint.
+
+        No credentials or node data are stored in the ledger. A changed row,
+        account or URL requires its own acknowledgement. Never infer a receipt
+        from a filename, account-wide counter or server duplicate-cache notice.
+        """
+        canonical = json.dumps(data, sort_keys=True, separators=(",", ":"), allow_nan=False)
+        message = "wdg-upload-receipt-v1\0" + self._api_url + "\0" + canonical
+        return hmac.new(self._api_key.encode(), message.encode(), hashlib.sha256).hexdigest()
+
+    def _cached_receipt(self, data: dict) -> dict | None:
+        result = self._upload_receipts.get(self._receipt_key(data))
+        if result is not None and _upload_receipt(result, data)[0]:
+            return json.loads(json.dumps(result))
+        return None
+
+    def _remember_receipt(self, data: dict, result: dict) -> bool:
+        if not _upload_receipt(result, data)[0]:
+            return False
+        return self._store_receipt(data, result)
+
+    def _store_receipt(self, data: dict, result: dict) -> bool:
+        key = self._receipt_key(data)
+        previous = self._upload_receipts.copy()
+        self._upload_receipts[key] = json.loads(json.dumps(result))
+        if self._save_state() is False:
+            self._upload_receipts = previous
+            return False
+        self._receipt_generation += 1
+        self._pending_log_checks.clear()
+        return True
+
+    def _mesh_registry_url(self) -> str:
+        return self._api_url.rsplit("/api/", 1)[0] + "/api/meshcore"
+
+    def _cached_mesh_verification(self, data: dict) -> bool:
+        proof = self._upload_receipts.get(self._receipt_key(data), {})
+        return (not data.get("networks") and not data.get("aircraft")
+                and bool(data.get("meshcore_nodes"))
+                and proof.get("verification") == "mesh_registry"
+                and proof.get("source") == self._mesh_registry_url()
+                and type(proof.get("matched")) is int
+                and proof["matched"] == len(data["meshcore_nodes"]))
+
+    def _verify_duplicate_mesh(self, data: dict, result: dict) -> bool:
+        """Recover presence, not ownership/credit, after the server's cache reply.
+
+        The documented authenticated registry exposes both protocols. Require
+        every submitted mesh node to match ID, protocol, name, role, position
+        and RSSI exactly. This is a separate kind of evidence, never a made-up
+        import/known counter. A mixed batch or incomplete/mismatched registry
+        remains pending. The registry does not prove timestamp or ownership.
+        """
+        if not isinstance(result, dict): return False
+        reasons = result.get("meshcore_reject_reasons", {})
+        if (not isinstance(reasons, dict) or any(type(v) is not int or v != 0 for v in reasons.values())
+                or type(result.get("meshcore_imported")) is not int
+                or ("meshcore_rejected" in result and type(result["meshcore_rejected"]) is not int)
+                or result.get("ok") is not True
+                or result.get("info") != "This payload was already uploaded recently — no new processing."
+                or result.get("meshcore_imported") != 0
+                or result.get("meshcore_rejected", 0) != 0
+                or data.get("networks") or data.get("aircraft")
+                or not data.get("meshcore_nodes")):
+            return False
+        try:
+            req = Request(self._mesh_registry_url())
+            req.add_header("X-API-Key", self._api_key)
+            with _open(req, timeout=30) as response:
+                raw = response.read(16 * 1024 * 1024 + 1)
+            if len(raw) > 16 * 1024 * 1024:
+                return False
+            rows = json.loads(raw)
+            if not isinstance(rows, list): return False
+            by_id = {}
+            for row in rows:
+                if not isinstance(row, dict): return False
+                node_id = row.get("node_id")
+                if not isinstance(node_id, str): continue
+                node_id = node_id.lower().removeprefix("!")
+                if not re.fullmatch(r"[a-f0-9]{8,16}", node_id): continue
+                key = row.get("network"), node_id
+                by_id.setdefault(key, []).append(row)
+            for node in data["meshcore_nodes"]:
+                matches = by_id.get((node["network"], node["node_id"]), [])
+                if len(matches) != 1: return False
+                match = matches[0]
+                for server_key, sent_key in (("latitude", "lat"), ("longitude", "lon"), ("rssi", "rssi")):
+                    value = match.get(server_key)
+                    if type(value) not in (int, float) or not math.isfinite(value) or value != node[sent_key]:
+                        return False
+                if any(match.get(key) != node[key] for key in ("node_type", "name")):
+                    return False
+            return self._store_receipt(data, dict(verification="mesh_registry",
+                source=self._mesh_registry_url(), matched=len(data["meshcore_nodes"])))
+        except (URLError, TimeoutError, OSError, ValueError, TypeError, KeyError):
+            return False
+
+    def _sync_log(self, text: str, color: int = 13):
+        """Persist upload diagnostics only; auth PINs never pass this helper."""
+        self._log_add(text, color)
+        log.info("Sync: %s", text)
+
+    def _error_detail(self, body: bytes) -> str:
+        """Read a short API explanation, never dump HTML or credentials."""
+        try:
+            result = json.loads(body)
+            if not isinstance(result, dict): return ""
+            text = next((result[k] for k in ("error", "message", "info")
+                         if isinstance(result.get(k), str)), "")
+            if self._api_key: text = text.replace(self._api_key, "[redacted]")
+            return " ".join(text.split())[:160]
+        except (ValueError, UnicodeError):
+            return ""
 
     def _parse_csv(self, csv_path: Path) -> list[dict]:
         """Parse WiGLE CSV to list of network dicts."""
@@ -453,11 +799,12 @@ class WardriveUpload(PluginBase):
                     try:
                         lat = float(parts[6]) if parts[6] else 0.0
                         lon = float(parts[7]) if parts[7] else 0.0
+                        alt = float(parts[8]) if parts[8] else 0.0
                     except ValueError:
                         continue
                     if lat == 0.0 and lon == 0.0:
                         continue
-                    if lat < -90 or lat > 90 or lon < -180 or lon > 180:
+                    if not (math.isfinite(lat) and math.isfinite(lon) and math.isfinite(alt)) or lat < -90 or lat > 90 or lon < -180 or lon > 180:
                         continue
                     networks.append({
                         "bssid": parts[0],
@@ -468,7 +815,7 @@ class WardriveUpload(PluginBase):
                         "rssi": int(parts[5]) if parts[5].lstrip("-").isdigit() else -100,
                         "lat": lat,
                         "lon": lon,
-                        "alt": float(parts[8]) if parts[8] else 0.0,
+                        "alt": alt,
                         "type": parts[10] if len(parts) > 10 else "WIFI",
                     })
         except Exception as e:
@@ -497,7 +844,7 @@ class WardriveUpload(PluginBase):
                         continue
                     if lat == 0.0 and lon == 0.0:
                         continue
-                    if lat < -90 or lat > 90 or lon < -180 or lon > 180:
+                    if not (math.isfinite(lat) and math.isfinite(lon)) or lat < -90 or lat > 90 or lon < -180 or lon > 180:
                         continue
                     icao = parts[1]
                     if not icao or icao in aircraft:
@@ -524,48 +871,80 @@ class WardriveUpload(PluginBase):
         return list(aircraft.values())
 
     def _parse_meshcore(self, csv_path: Path) -> list[dict]:
-        """Parse meshcore_nodes.csv to list of node dicts."""
+        return self._parse_mesh(csv_path, "meshcore")
+
+    def _parse_meshtastic(self, csv_path: Path) -> list[dict]:
+        return self._parse_mesh(csv_path, "meshtastic")
+
+    def _parse_mesh(self, csv_path: Path, network: str) -> list[dict]:
+        """Read the real mesh CSV schema; never fabricate position or identity."""
+        import csv as _csv
+        stats = dict(rows=0, eligible=0, no_gps=0, invalid=0, duplicates=0, receiver_gps=0)
+        self._mesh_parse_stats[network] = stats
         if not csv_path.is_file():
             return []
         nodes = {}
         try:
-            import csv as _csv
             with open(csv_path, "r", encoding="utf-8", newline="") as f:
-                reader = _csv.reader(f)
-                header = next(reader, None)
-                if not header:
-                    return []
-                for parts in reader:
-                    if len(parts) < 6:
+                reader = _csv.DictReader(f)
+                for row in reader:
+                    stats["rows"] += 1
+                    node_id = str(row.get("node_id") or row.get("id") or "").strip().lower()
+                    if node_id.startswith("!"):
+                        node_id = node_id[1:]
+                    if not re.fullmatch(r"[a-f0-9]{8,16}", node_id):
+                        stats["invalid"] += 1
                         continue
                     try:
-                        lat = float(parts[4]) if parts[4] else 0.0
-                        lon = float(parts[5]) if parts[5] else 0.0
-                    except ValueError:
+                        lat, lon = float(row.get("lat") or 0), float(row.get("lon") or 0)
+                    except (ValueError, TypeError):
+                        stats["invalid"] += 1
                         continue
                     if lat == 0.0 and lon == 0.0:
+                        stats["no_gps"] += 1
                         continue
-                    if lat < -90 or lat > 90 or lon < -180 or lon > 180:
-                        continue
-                    node_id = parts[1]
-                    if not node_id or node_id in nodes:
+                    if not (math.isfinite(lat) and math.isfinite(lon)) or lat < -90 or lat > 90 or lon < -180 or lon > 180:
+                        stats["invalid"] += 1
                         continue
                     try:
-                        rssi = float(parts[6]) if len(parts) > 6 and parts[6] else 0
-                    except ValueError:
+                        rssi = float(row.get("rssi") or 0)
+                    except (ValueError, TypeError):
                         rssi = 0
-                    nodes[node_id] = {
+                    if not math.isfinite(rssi):
+                        rssi = 0
+                    key = (network, node_id)
+                    if key in nodes:
+                        stats["duplicates"] += 1
+                        continue
+                    record = {
                         "node_id": node_id,
-                        "node_type": parts[2],
-                        "name": parts[3],
+                        "network": network,
+                        "node_type": row.get("type") or "Client",
+                        "name": row.get("name") or "",
                         "lat": lat,
                         "lon": lon,
                         "rssi": rssi,
-                        "first_seen": parts[0],
-                        "type": "MESHCORE",
+                        "first_seen": row.get("timestamp") or row.get("time") or "",
                     }
+                    if network == "meshcore":
+                        record["type"] = "MESHCORE"  # preserve existing MC envelope marker
+                        public_key = row.get("public_key") or ""
+                        if re.fullmatch(r"[a-fA-F0-9]{64}", public_key):
+                            record["public_key"] = public_key.lower()
+                    nodes[key] = record
+                    if row.get("position_source") in ("receiver_gps", "receiver_assignment"):
+                        stats["receiver_gps"] += 1
         except Exception as e:
-            self._log_add(f"MeshCore parse error: {e}", 8)
+            self._log_add(f"{network} parse error: {e}", 8)
+        stats["eligible"] = len(nodes)
+        return list(nodes.values())
+
+    @staticmethod
+    def _merge_mesh_nodes(*groups: list[dict]) -> list[dict]:
+        nodes = {}
+        for group in groups:
+            for node in group:
+                nodes.setdefault((node["network"], node["node_id"]), node)
         return list(nodes.values())
 
     def _start_upload(self, all_sessions: bool = True):
@@ -579,6 +958,7 @@ class WardriveUpload(PluginBase):
             self._log_add("Upload in progress...", 10)
             return
         sessions = self._pending_sessions()
+        self._show_cleanup_count()
         if not all_sessions and sessions:
             sessions = sessions[-1:]
         if not sessions:
@@ -591,178 +971,125 @@ class WardriveUpload(PluginBase):
 
     def _upload_worker(self, sessions: list[Path]):
         import time as _time
+        uploaded = total_nets = ready = local_only = reused = verified = waiting_for_gps = 0
         total = len(sessions)
-        uploaded = 0
-        total_nets = 0
-        for i, session_dir in enumerate(sessions):
-            networks = self._parse_csv(session_dir / "wardriving.csv")
-            aircraft = self._parse_adsb(session_dir / "adsb_aircraft.csv")
-            mc_nodes = self._parse_meshcore(session_dir / "meshcore_nodes.csv")
-
-            if not networks and not aircraft and not mc_nodes:
-                if self._mark_uploaded(session_dir):
-                    self._log_add(
-                        f"[{i+1}/{total}] {session_dir.name}: no GPS data", 13)
-                else:
-                    self._log_add(
-                        f"[{i+1}/{total}] {session_dir.name}: "
-                        "active, will re-check next upload", 13)
-                continue
-
-            parts = []
-            if networks:
-                parts.append(f"{len(networks)} nets")
-            if aircraft:
-                parts.append(f"{len(aircraft)} aircraft")
-            if mc_nodes:
-                parts.append(f"{len(mc_nodes)} mesh")
-            self._log_add(
-                f"[{i+1}/{total}] {session_dir.name}: {', '.join(parts)}", 3)
-
-            try:
-                payload = self._sign_payload({
-                    "networks": networks,
-                    "aircraft": aircraft,
-                    "meshcore_nodes": mc_nodes,
-                })
-                req = Request(self._api_url, data=payload, method="POST")
-                req.add_header("Content-Type", "application/json")
-                req.add_header("X-API-Key", self._api_key)
-                with _open(req, timeout=90) as resp:
-                    result = json.loads(resp.read().decode())
-                    imp = result.get("imported", 0)
-                    dup = result.get("duplicates", 0)
-                    ac_i = result.get("aircraft_imported", 0)
-                    # Server adds aircraft_already_seen alongside
-                    # aircraft_imported so we can show the user what
-                    # actually went through after the per-user dedup.
-                    ac_dup = result.get("aircraft_already_seen", 0)
-                    mc_i = result.get("meshcore_imported", 0)
-                    info = f"+{imp} nets"
-                    if ac_i or ac_dup:
-                        ac_part = f", +{ac_i} ac"
-                        if ac_dup:
-                            ac_part += f" ({ac_dup} seen)"
-                        info += ac_part
-                    if mc_i:
-                        info += f", +{mc_i} mesh"
-                    if dup:
-                        info += f", {dup} dup"
-                    self._log_add(f"  OK: {info}", 11)
-                    self._handle_upload_badges(result)
-                    total_nets += imp
+        report = self._sync_log
+        try:
+            for i, session_dir in enumerate(sessions):
+                has_mt = self._has_meshtastic(session_dir)
+                legacy_done = session_dir.name in self._uploaded_sessions
+                mt_done = session_dir.name in self._uploaded_meshtastic_sessions
+                if legacy_done and (not has_mt or mt_done):
+                    continue
+                mt_nodes = self._parse_meshtastic(session_dir / "meshtastic_nodes.csv") if not mt_done else []
+                if has_mt:
+                    stats = self._mesh_parse_stats.get("meshtastic", {})
+                    report(f"[{i+1}/{total}] {session_dir.name}: MT eligible {len(mt_nodes)}, "
+                                  f"local no GPS {stats.get('no_gps', 0)}, invalid {stats.get('invalid', 0)}", 13)
+                data = self._session_upload_data(session_dir)
+                receiver_count = sum(self._mesh_parse_stats.get(protocol, {}).get("receiver_gps", 0)
+                                     for protocol in ("meshcore", "meshtastic"))
+                if receiver_count:
+                    report(f"  Receiver GPS used for {receiver_count} mesh node(s)", 13)
+                if not any(data.values()):
+                    removed = self._prune_upload_logs(session_dir)
+                    if any(self._mesh_parse_stats.get(protocol, {}).get("no_gps", 0)
+                           for protocol in ("meshcore", "meshtastic")):
+                        waiting_for_gps += 1
+                        report(f"[{i+1}/{total}] {session_dir.name}: waiting for receiver GPS; mesh data retained", 10)
+                    else:
+                        local_only += 1
+                        report(f"[{i+1}/{total}] {session_dir.name}: removed {removed} empty/invalid upload log(s)", 13)
+                    continue
+                ready += 1
+                cached = self._cached_receipt(data)
+                if cached is not None:
                     uploaded += 1
-                    if not self._mark_uploaded(session_dir):
-                        # Active session — keep it in the pending queue so
-                        # data appended after this upload still gets sent.
-                        self._log_add(
-                            "  (active session — kept open for re-upload)",
-                            13)
-            except HTTPError as e:
-                body = e.read().decode("utf-8", errors="replace")[:60]
-                if e.code == 429:
-                    self._log_add("  Rate limit — retrying in 5s...", 10)
-                    _time.sleep(5)
+                    reused += 1
+                    report(f"[{i+1}/{total}] {session_dir.name}: previously confirmed; no resend or new credit", 11)
+                    self._mark_uploaded(session_dir, meshtastic=bool(mt_nodes))
+                    continue
+                if self._cached_mesh_verification(data):
+                    verified += 1
+                    report(f"[{i+1}/{total}] {session_dir.name}: previously verified on server; no resend or new credit", 11)
+                    self._mark_uploaded(session_dir, meshtastic=bool(mt_nodes))
+                    continue
+                report(f"[{i+1}/{total}] {session_dir.name}: sending supported records", 3)
+                rate_retried = False
+                while True:
                     try:
-                        payload = self._sign_payload({
-                            "networks": networks,
-                            "aircraft": aircraft,
-                            "meshcore_nodes": mc_nodes,
-                        })
-                        req = Request(self._api_url, data=payload, method="POST")
+                        req = Request(self._api_url, data=self._sign_payload(data), method="POST")
                         req.add_header("Content-Type", "application/json")
                         req.add_header("X-API-Key", self._api_key)
                         with _open(req, timeout=90) as resp:
                             result = json.loads(resp.read().decode())
-                            imp = result.get("imported", 0)
-                            self._log_add(f"  Retry OK: +{imp}", 11)
+                        confirmed, info, imported = _upload_receipt(result, data)
+                        report("  " + info, 11 if confirmed else 10)
+                        if confirmed:
+                            # Store the complete receipt before closing a session.
+                            # Active sessions remain open, but unchanged content
+                            # can now be recognised safely after a restart too.
+                            if not self._remember_receipt(data, result):
+                                report("  Server confirmed; cannot save receipt; left pending", 8)
+                                break
                             self._handle_upload_badges(result)
-                            total_nets += imp
+                            total_nets += imported
                             uploaded += 1
-                            if not self._mark_uploaded(session_dir):
-                                self._log_add(
-                                    "  (active session — kept open "
-                                    "for re-upload)", 13)
-                    except Exception as e2:
-                        self._log_add(f"  Retry failed: {e2}", 8)
-                elif e.code == 413:
-                    # Per wdgwars admin diagnosis (2026-06): the 413 is a
-                    # transient WAF event from the shared-host LiteSpeed /
-                    # Imunify360 layer firing on burst — not a real body-size
-                    # limit. Tested clean up to 32 MB. Exponential backoff
-                    # 1s, 5s, 30s clears it.
-                    backoffs = [1, 5, 30]
-                    for attempt, delay in enumerate(backoffs, start=1):
-                        self._log_add(
-                            f"  HTTP 413 (transient WAF) — "
-                            f"retry {attempt}/{len(backoffs)} in {delay}s...",
-                            10)
-                        _time.sleep(delay)
-                        try:
-                            payload = self._sign_payload({
-                                "networks": networks,
-                                "aircraft": aircraft,
-                                "meshcore_nodes": mc_nodes,
-                            })
-                            req = Request(self._api_url, data=payload,
-                                          method="POST")
-                            req.add_header("Content-Type", "application/json")
-                            req.add_header("X-API-Key", self._api_key)
-                            with _open(req, timeout=90) as resp:
-                                result = json.loads(resp.read().decode())
-                                imp = result.get("imported", 0)
-                                self._log_add(
-                                    f"  Retry {attempt} OK: +{imp}", 11)
-                                self._handle_upload_badges(result)
-                                total_nets += imp
-                                uploaded += 1
-                                if not self._mark_uploaded(session_dir):
-                                    self._log_add(
-                                        "  (active session — kept open "
-                                        "for re-upload)", 13)
-                                break
-                        except HTTPError as e_retry:
-                            if e_retry.code != 413:
-                                self._log_add(
-                                    f"  Retry got HTTP {e_retry.code}, "
-                                    "bailing", 8)
-                                break
-                            # Still 413 — fall through to next backoff
-                        except Exception as e_retry:
-                            self._log_add(
-                                f"  Retry {attempt} failed: {e_retry}", 8)
-                            break
-                    else:
-                        # All retries exhausted without success — session
-                        # stays in pending queue for the next upload run.
-                        self._log_add(
-                            f"  HTTP 413 persisted through "
-                            f"{len(backoffs)} retries — session "
-                            "left pending", 8)
-                else:
-                    self._log_add(f"  HTTP {e.code}: {body}", 8)
-            except URLError as e:
-                self._log_add(f"  Connection error: {e.reason}", 8)
-            except (TimeoutError, OSError) as e:
-                # Upload likely succeeded but response timed out — mark as
-                # uploaded to prevent re-sending duplicate data on retry.
-                self._log_add(
-                    f"  Timeout — server may have received data. "
-                    f"Marking uploaded to avoid duplicates.", 10)
-                self._mark_uploaded(session_dir)
-                uploaded += 1
-            except Exception as e:
-                self._log_add(f"  Error: {e}", 8)
-
-            if i < total - 1:
-                _time.sleep(1)
-
-        self._log_add(
-            f"Done: {uploaded}/{total} sessions, +{total_nets} networks",
-            11 if uploaded == total else 10)
-        self._uploading = False
-        # Auto-sync badges after upload
-        if uploaded > 0:
+                            if not self._mark_uploaded(session_dir, meshtastic=bool(mt_nodes)):
+                                if session_dir.name == self._active_session_name():
+                                    report("  Active session stays open for new records", 13)
+                        else:
+                            detail = self._error_detail(json.dumps(result).encode())
+                            recovered = self._verify_duplicate_mesh(data, result)
+                            if recovered:
+                                verified += 1
+                                report("  Verified present in server mesh registry", 11)
+                                report("  Import/ownership credit unknown; no new credit claimed", 13)
+                                self._mark_uploaded(session_dir, meshtastic=bool(mt_nodes))
+                            if not recovered and detail:
+                                report("  Server: " + detail, 10)
+                            if not recovered and isinstance(result, dict) and result.get("ok") is True and "already uploaded" in str(result.get("info", "")).lower():
+                                report("  Server duplicate cache has no full receipt; awaiting confirmation", 10)
+                            elif not recovered and isinstance(result, dict) and result.get("job_id") is not None:
+                                report("  Server queued a job; no final receipt; left pending", 10)
+                            elif not recovered:
+                                report("  Incomplete acknowledgement; left pending", 10)
+                        break
+                    except HTTPError as exc:
+                        detail = self._error_detail(exc.read(65536))
+                        if detail:
+                            report("  Server: " + detail, 10)
+                        if exc.code == 429 and not rate_retried:
+                            retry_after = exc.headers.get("Retry-After", "5") if exc.headers else "5"
+                            if retry_after.isdigit() and int(retry_after) <= 60:
+                                rate_retried = True
+                                delay = int(retry_after)
+                                report(f"  Rate limit; retry in {delay}s", 10)
+                                _time.sleep(delay)
+                                continue
+                            report("  Rate limit; retry later as requested by server", 10)
+                        # Resending an unchanged oversized payload cannot fix 413.
+                        report(f"  HTTP {exc.code}; left pending", 8)
+                        break
+                    except (URLError, TimeoutError, OSError):
+                        report("  No confirmed response; left pending", 10)
+                        break
+                    except (ValueError, TypeError):
+                        report("  Invalid server response; left pending", 8)
+                        break
+                if i < total - 1:
+                    _time.sleep(1)
+        except Exception as exc:
+            report(f"  Upload error: {type(exc).__name__}; left pending", 8)
+        finally:
+            self._uploading = False
+        self._last_upload_summary = dict(ready=ready, confirmed=uploaded, reused=reused,
+                                         verified=verified, local_only=local_only, pending=ready-uploaded-verified,
+                                         waiting_for_gps=waiting_for_gps, new_networks=total_nets)
+        report(f"Done: {uploaded} receipts, {verified} server-verified, {local_only} empty/invalid", 11 if uploaded+verified == ready else 10)
+        report(f"  {ready-uploaded-verified} pending; {ready} uploadable session(s)", 13)
+        report(f"  Reused receipts {reused}; +{total_nets} new WiFi/BLE networks", 13)
+        if uploaded > reused:
             self._badge_sync_worker()
 
     def _sign_payload(self, data: dict) -> bytes:
@@ -1019,6 +1346,11 @@ class WardriveUpload(PluginBase):
             try:
                 data = json.loads(p.read_text())
                 self._uploaded_sessions = set(data.get("uploaded", []))
+                self._uploaded_meshtastic_sessions = set(data.get("uploaded_meshtastic", []))
+                receipts = data.get("receipts", {})
+                if isinstance(receipts, dict):
+                    self._upload_receipts = {k:v for k,v in receipts.items()
+                        if isinstance(k, str) and re.fullmatch(r"[a-f0-9]{64}", k) and isinstance(v, dict)}
             except Exception:
                 pass
         # Load config from secrets.conf
@@ -1027,12 +1359,29 @@ class WardriveUpload(PluginBase):
         self._api_url = conf.get("WARDRIVE_API_URL", "") or _default_endpoint()
 
     def _save_state(self):
+        temporary = None
         try:
-            self._state_file().write_text(json.dumps({
+            path = self._state_file()
+            previous = path.stat() if path.exists() else None
+            descriptor, temporary = tempfile.mkstemp(prefix=".wardrive-state-", dir=path.parent)
+            with os.fdopen(descriptor, "w", encoding="utf-8") as stream:
+                json.dump({
                 "uploaded": sorted(self._uploaded_sessions),
-            }))
+                "uploaded_meshtastic": sorted(self._uploaded_meshtastic_sessions),
+                "receipts": self._upload_receipts,
+                }, stream, allow_nan=False)
+                stream.flush()
+                os.fsync(stream.fileno())
+            if previous is not None and hasattr(os, "chown"):
+                os.chown(temporary, previous.st_uid, previous.st_gid)
+            os.replace(temporary, path)
+            return True
         except Exception:
-            pass
+            log.warning("Sync: upload state could not be saved")
+            return False
+        finally:
+            if temporary is not None:
+                Path(temporary).unlink(missing_ok=True)
 
     def _save_secret(self, key: str, value: str):
         """Save a key=value to secrets.conf."""

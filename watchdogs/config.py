@@ -109,8 +109,9 @@ CMD_SET_HTML_END = "set_html_end"
 CMD_SCAN_BT = "scan_bt"
 CMD_SCAN_AIRTAG = "scan_airtag"
 
-# Auto-update check (Watch Dogs Go)
-APP_UPDATE_URL = "https://raw.githubusercontent.com/LOCOSP/esp32-watch-dogs/master/watchdogs/__init__.py"
+# Game updates: SYSTEM > Update Game reads this fork's explicit approved-release
+# feed in watchdogs/game_updates.py. It does not pull the checkout's legacy
+# origin or treat ordinary development commits as published updates.
 
 # Firmware flash settings (ESP32-C5)
 FIRMWARE_RELEASE_URL = "https://api.github.com/repos/LOCOSP/projectZero/releases/latest"
@@ -164,6 +165,14 @@ WIGLE_API_TOKEN = _secret("WDG_WIGLE_TOKEN", "JANOS_WIGLE_TOKEN")
 WPASEC_URL = "https://wpa-sec.stanev.org/?submit"
 WPASEC_DL_URL = "https://wpa-sec.stanev.org/?api&dl=1"
 WPASEC_KEY = _secret("WDG_WPASEC_KEY", "JANOS_WPASEC_KEY")
+
+# Survival / crisis offline services (local, running on the uConsole itself).
+# Kiwix serves offline Wikipedia + survival ZIMs on :8080; the ctOS PMTiles map
+# server runs on :8082; Organic Maps is an offline-navigation flatpak app.
+SURVIVAL_BROWSER = "chromium"
+SURVIVAL_WIKI_URL = "http://localhost:8080"
+SURVIVAL_CTOS_MAP_URL = "http://localhost:8082/index.html"
+SURVIVAL_NAV_CMD = ["flatpak", "run", "app.organicmaps.desktop"]
 
 # Firmware update check
 FIRMWARE_RELEASE_URL = "https://api.github.com/repos/LOCOSP/projectZero/releases/latest"

@@ -94,6 +94,30 @@ def _check_deps() -> list[tuple[str, str, bool, bool]]:
     except ImportError:
         checks.append(("LoRaRF", "NOT INSTALLED", False, False))
 
+    # rns — Reticulum stack (WDGWars chat)
+    try:
+        import RNS
+        ver = getattr(RNS, "__version__", "OK")
+        checks.append(("rns", ver, True, False))
+    except ImportError:
+        checks.append(("rns", "NOT INSTALLED", False, False))
+
+    # lxmf — LXMF message layer (WDGWars chat)
+    try:
+        import LXMF
+        ver = getattr(LXMF, "__version__", "OK")
+        checks.append(("lxmf", ver, True, False))
+    except ImportError:
+        checks.append(("lxmf", "NOT INSTALLED", False, False))
+
+    # esptool — flash ESP32-C5 firmware from the game (Flash ESP32 menu)
+    try:
+        import esptool
+        ver = getattr(esptool, "__version__", "OK")
+        checks.append(("esptool", ver, True, False))
+    except ImportError:
+        checks.append(("esptool", "NOT INSTALLED", False, False))
+
     # dump1090 — ADS-B aircraft tracking (SDR)
     import shutil
     if shutil.which("dump1090"):
@@ -188,8 +212,8 @@ def preflight():
         missing_opt = [n for n, _, ok, req in checks if not req and not ok]
         if missing_opt:
             print(f"  Optional packages missing: {', '.join(missing_opt)}")
-            print("  Some attacks (MITM, Dragon Drain, BlueDucky, RACE, LoRa)")
-            print("  won't work without them.")
+            print("  Some features (MITM, Dragon Drain, BlueDucky, RACE,")
+            print("  LoRa, WDGWars Chat) won't work without them.")
             print()
             print("  Install now? Running setup.sh...")
             _run_setup()
@@ -427,11 +451,69 @@ def _print_bugreport():
         print()
 
 
+def _recover_game_update():
+    """Recover interrupted code updates before importing application modules.
+
+    The journal's frozen, hash-checked standard-library-only helper is used
+    instead of importing a potentially mixed installed game_updates module.
+    Recovery never restores loot, settings, contacts or other player data.
+    """
+    import hashlib
+    import json
+    import runpy
+
+    home, _ = _resolve_user_home()
+    root = Path(__file__).resolve().parent.parent
+    backups = Path(home) / ".watchdogs_update_backups"
+    if not backups.exists():
+        return
+    try:
+        if backups.is_symlink() or not backups.is_dir():
+            raise ValueError
+        recovered = False
+        for path in sorted(backups.glob("update-*/receipt.json")):
+            if path.parent.is_symlink() or path.is_symlink() or path.stat().st_size > 4 * 1024 * 1024:
+                raise ValueError
+            receipt = json.loads(path.read_text(encoding="utf-8"))
+            declared_root = receipt.get("root")
+            if (receipt.get("schema") != 1 or not isinstance(declared_root, str) or
+                    not Path(declared_root).is_absolute() or
+                    any(part in (".", "..") for part in Path(declared_root).parts) or
+                    receipt.get("status") not in ("prepared", "installing", "recovery_required",
+                                                   "committed", "rolled_back")):
+                raise ValueError
+            # Separate checkouts can share a HOME. Never execute a recovery
+            # helper or restore code belonging to another installation.
+            if declared_root != str(root):
+                continue
+            if receipt.get("status") not in ("installing", "recovery_required"):
+                continue
+            helper = path.parent / "recovery.py"
+            if helper.is_symlink() or not helper.is_file() or helper.stat().st_size > 1024 * 1024:
+                raise ValueError
+            if hashlib.sha256(helper.read_bytes()).hexdigest() != receipt.get("recovery_sha256"):
+                raise ValueError
+            namespace = runpy.run_path(str(helper))
+            namespace["GameUpdates"](root=root, home=home).rollback(path.parent, quiescent=True)
+            recovered = True
+        if recovered:
+            print("[UPD] Interrupted update recovered. Restarting with previous code.")
+            # __init__/__main__ may themselves have been restored; reload the
+            # entire process rather than continuing with either cached version.
+            os.execv(sys.executable, [sys.executable, "-B", "-m", "watchdogs", *sys.argv[1:]])
+    except Exception:
+        print("[UPD] Update recovery needs attention. Game startup stopped to protect your data.",
+              file=sys.stderr)
+        raise SystemExit(1) from None
+
+
 def main():
     # Bug report mode — print the latest log session and exit
     if "--bugreport" in sys.argv or "--bug-report" in sys.argv:
         _print_bugreport()
         return
+
+    _recover_game_update()
 
     # Set up file logging FIRST so even crashes during preflight are captured
     _setup_logging()
@@ -465,7 +547,7 @@ def main():
         logging.exception("Game crashed")
         raise
     finally:
-        logging.info("Game exited cleanly")
+        logging.info("Game process finished")
 
 
 if __name__ == "__main__":

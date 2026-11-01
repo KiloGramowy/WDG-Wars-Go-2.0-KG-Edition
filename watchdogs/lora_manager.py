@@ -10,17 +10,20 @@ Hardware: SX1262 on /dev/spidev1.0
 
 import hashlib
 import hmac
+import importlib
 import logging
 import os
 import re
 import struct
+import subprocess
 import threading
 import time
 from dataclasses import dataclass
-from queue import Queue
+from queue import Empty, Queue
 from typing import Optional
 
 log = logging.getLogger(__name__)
+SHARED_RADIO_LOCK = "/run/lock/wdg-meshtastic-spi1.0.lock"
 
 # EU868 frequencies (Hz)
 EU868_FREQUENCIES = [
@@ -64,23 +67,25 @@ PRESET_MESHTASTIC = (869_525_000, 11, 8, 250_000, "Meshtastic 869.525 SF11 BW250
 # ---------------------------------------------------------------------------
 # MeshCore regional presets.
 #
-# The public MeshCore mesh is split by region — the radio settings below are
-# the ones community maps/docs publish as canonical per ISM band. The Narrow
-# variants are the newer defaults pushed by MeshCore upstream (lower BW + SF7
-# for less airtime / more nodes per channel); the Default variants are the
-# legacy "wide" settings that older nodes still use. Picking the wrong one
-# means you physically cannot hear anyone nearby — hence the runtime picker.
+# Keep the WDG legacy keys stable: selecting a verified newer preset must be
+# explicit. The official config.meshcore.io catalogue (2026-10-29) has CR8 for
+# EU/UK Narrow and a separate Southern California frequency. A country alone
+# does not establish which local mesh uses a preset.
 #
 # Format: (freq_hz, sf, cr, bw_hz, label)
 MESHCORE_PRESETS: dict[str, tuple[int, int, int, int, str]] = {
     "eu_uk_narrow":   (869_618_000, 8,  5, 62_500,
-                       "EU/UK Narrow (869.618 SF8 BW62.5)"),
+                       "WDG legacy EU/UK (869.618 SF8 BW62.5 CR5)"),
+    "eu_uk_narrow_v2": (869_618_000, 8, 8, 62_500,
+                        "EU/UK Narrow (869.618 SF8 BW62.5 CR8)"),
     "eu_uk_default":  (869_525_000, 11, 5, 250_000,
-                       "EU/UK Default (869.525 SF11 BW250)"),
+                       "EU/UK Deprecated (869.525 SF11 BW250 CR5)"),
     "us_ca_narrow":   (910_525_000, 7,  5, 62_500,
-                       "US/Canada Narrow (910.525 SF7 BW62.5)"),
+                       "WDG legacy US/CA (910.525 SF7 BW62.5 CR5)"),
+    "us_recommended": (910_525_000, 7,  5, 62_500,
+                       "USA Recommended (910.525 SF7 BW62.5 CR5)"),
     "us_ca_default":  (910_525_000, 11, 5, 250_000,
-                       "US/Canada Default (910.525 SF11 BW250)"),
+                       "WDG legacy US/CA (910.525 SF11 BW250 CR5)"),
     "anz_narrow":     (915_525_000, 7,  5, 62_500,
                        "AU/NZ Narrow (915.525 SF7 BW62.5)"),
     "in_narrow":      (865_525_000, 7,  5, 62_500,
@@ -253,6 +258,10 @@ class LoRaManager:
         self._thread: Optional[threading.Thread] = None
         self._stop_event = threading.Event()
         self.running = False
+        self.ready = False
+        self.last_error = ""
+        self._ready_event = threading.Event()
+        self._radio_lock_fd = None
         self.mode = ""  # "sniffer", "scanner", "tracker"
         self.packets_received = 0
         self._seen_packets: dict[bytes, float] = {}  # hash→timestamp
@@ -261,6 +270,7 @@ class LoRaManager:
         self._on_dm = None       # callback(from_id, message, rssi, hops)
         self._on_dm_ack = None   # callback(ack_hash) — DM delivery confirmed
         self._on_tx_confirm = None  # callback(dedup_key) — own msg retransmitted
+        self._on_rnode_rx = None    # callback(frame_bytes) — RNode/Reticulum RX
         self._pending_dm_acks: dict[bytes, bool] = {}  # expected ack_hash → waiting
         self._tx_queue: Queue = Queue()  # MeshCore TX packets
         self._tx_dedup_keys: set[bytes] = set()  # keys of our own sent packets
@@ -269,6 +279,10 @@ class LoRaManager:
         self._mc_channels: list[MeshCoreChannel] = [PUBLIC_CHANNEL]
         self._mc_active_ch: int = 0  # index for TX
         self._known_pubkeys: dict[str, bytes] = {}  # node_id → pubkey
+        self.profile_id = DEFAULT_MESHCORE_REGION
+        self._tx_guard = threading.RLock()
+        self._tx_active = False
+        self._quiescing = False
 
     def set_mc_channels(self, channels: list) -> None:
         """Set channel list (thread-safe snapshot)."""
@@ -289,25 +303,26 @@ class LoRaManager:
         try:
             from LoRaRF import SX126x
         except ImportError:
+            self.last_error = "LoRaRF not installed"
             self._emit(
                 "LoRaRF not installed! Run: pip install LoRaRF", "error",
             )
             return None
 
-        # Release leftover GPIO allocations from crashed/killed previous run
+        lora = None
         try:
-            import lgpio
-            h = lgpio.gpiochip_open(4)  # RP1 on Pi 5 / CM5
-            for pin in (PIN_RESET, PIN_BUSY, PIN_IRQ):
-                try:
-                    lgpio.gpio_free(h, pin)
-                except Exception:
-                    pass
-            lgpio.gpiochip_close(h)
-        except Exception:
-            pass
-
-        try:
+            import fcntl
+            flags = os.O_CREAT | os.O_RDWR | getattr(os, "O_NOFOLLOW", 0)
+            self._radio_lock_fd = os.open(SHARED_RADIO_LOCK, flags, 0o600)
+            fcntl.flock(self._radio_lock_fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            owner = subprocess.run(["fuser", "/dev/spidev1.0"], capture_output=True, timeout=5)
+            if owner.returncode == 0 or owner.stdout.strip():
+                raise RuntimeError("SX1262 SPI is already owned; stop its current process first")
+            if owner.returncode != 1:
+                raise RuntimeError("Cannot verify SX1262 SPI ownership")
+            # Another protocol's targeted cleanup can clear RPi.GPIO's mode.
+            module = importlib.import_module("LoRaRF.SX126x")
+            module.gpio.setmode(module.gpio.BCM)
             lora = SX126x()
 
             # begin() calls setSpi() + setPins() + reset internally
@@ -318,8 +333,7 @@ class LoRaManager:
                 busy=PIN_BUSY,
                 irq=PIN_IRQ,
             ):
-                self._emit("SX1262 not detected on SPI bus", "error")
-                return None
+                raise RuntimeError("SX1262 not detected on SPI bus")
 
             # SX1262-specific: DIO2 as RF switch, DIO3 as TCXO voltage
             lora.setDio2RfSwitch(True)
@@ -336,8 +350,10 @@ class LoRaManager:
             self._emit("SX1262 radio initialized", "dim")
             return lora
         except Exception as exc:
+            self.last_error = str(exc)
             self._emit(f"Radio init failed: {exc}", "error")
             log.warning("SX1262 init failed: %s", exc)
+            self._cleanup_radio(lora)
             return None
 
     # ------------------------------------------------------------------
@@ -353,38 +369,159 @@ class LoRaManager:
         label: str = "",
         sync_word: int = 0,
         preamble: int = 0,
-    ) -> None:
+        *, _mode: str = "sniffer", _preserve_rx_state: bool = False,
+    ) -> bool:
         """Start LoRa sniffer on given frequency and spreading factor."""
-        if self.running:
-            return
+        if self.running or (self._thread and self._thread.is_alive()):
+            return self.ready and self.mode == _mode
         self._stop_event.clear()
+        self._ready_event.clear()
+        self.last_error = ""
+        self.ready = False
         self.running = True
-        self.mode = "sniffer"
-        self.packets_received = 0
-        self._seen_packets.clear()
+        self.mode = _mode
+        if not _preserve_rx_state:
+            self.packets_received = 0
+            self._seen_packets.clear()
         self._thread = threading.Thread(
             target=self._run_sniffer,
             args=(freq, sf, cr, bw, label, sync_word, preamble),
             daemon=True,
         )
         self._thread.start()
+        if not self._ready_event.wait(10):
+            self.last_error = "Radio initialization timed out"
+            self.stop()
+        return self.running and self.ready
 
-    def start_meshcore(self, region: str | None = None) -> None:
+    def start_meshcore(self, region: str | None = None, *,
+                       _preserve_rx_state: bool = False) -> bool:
         """Start sniffer on a MeshCore regional preset. If `region` is None,
         falls back to DEFAULT_MESHCORE_REGION (EU/UK Narrow)."""
+        selected = region if region in MESHCORE_PRESETS else DEFAULT_MESHCORE_REGION
+        if self.running and self.mode == "meshcore" and self.profile_id != selected:
+            self.last_error = "use retune_profile to change a running MeshCore radio"
+            return False
         freq, sf, cr, bw, label = get_meshcore_preset(region)
-        self.start_sniffer(
+        started = self.start_sniffer(
             freq, sf, cr, bw, label,
             sync_word=MESHCORE_SYNC_WORD,
-            preamble=MESHCORE_PREAMBLE,
+            # Current MeshCore firmware uses 32 symbols for SF <= 8. Keep
+            # old WDG preset keys at their previous 16-symbol configuration.
+            preamble=32 if region in ("eu_uk_narrow_v2", "us_recommended") else MESHCORE_PREAMBLE,
+            _mode="meshcore",
+            _preserve_rx_state=_preserve_rx_state,
         )
-        self.mode = "meshcore"
+        if started:
+            self.profile_id = selected
+        return started
 
-    def start_meshtastic(self) -> None:
+    def retune_profile(self, profile_id: str) -> bool:
+        """Change MeshCore RF only, between TX packets, without any advert.
+
+        Admission, dequeue and the in-flight marker share one guard. Release
+        it before joining the RX worker, whose TX cleanup also needs it.
+        Busy is a deferral: the caller may retry without interrupting TX.
+        """
+        with self._tx_guard:
+            if profile_id not in MESHCORE_PRESETS:
+                self.last_error = "unknown MeshCore profile"
+                return False
+            if self._quiescing or self._tx_active or not self._tx_queue.empty():
+                self.last_error = "MeshCore TX pending or active; profile change deferred"
+                return False
+            if self.running and (self.mode != "meshcore" or not self.ready):
+                self.last_error = "MeshCore radio is not ready for profile change"
+                return False
+            if self.profile_id == profile_id:
+                self.last_error = ""
+                return True
+            self._quiescing = True
+            was_running, previous = self.running, self.profile_id
+        try:
+            if was_running and not self.stop():
+                return False
+            if not was_running:
+                self.profile_id = profile_id
+                self.last_error = ""
+                return True
+            if self.start_meshcore(profile_id, _preserve_rx_state=True):
+                return True
+            error = self.last_error or "MeshCore profile restart failed"
+            # Only attempt rollback after the failed worker has released SPI.
+            if self.stop():
+                self.start_meshcore(previous, _preserve_rx_state=True)
+            self.last_error = error
+            return False
+        finally:
+            with self._tx_guard:
+                self._quiescing = False
+
+    def start_meshtastic(self) -> bool:
         """Start sniffer on Meshtastic Medium Fast (869.525 MHz)."""
         freq, sf, cr, bw, label = PRESET_MESHTASTIC
-        self.start_sniffer(freq, sf, cr, bw, label)
-        self.mode = "meshtastic"
+        return self.start_sniffer(freq, sf, cr, bw, label, _mode="meshtastic")
+
+    def start_rnode(self) -> bool:
+        """Start RNode-compatible LoRa mode for Reticulum (WDGWars gateway).
+
+        Same radio path as the sniffer, but with the exact RNode PHY (sync
+        0x1424, preamble 18, 867.2/BW125/SF8/CR5) and the standard-IQ + EU868
+        TX-power overrides applied via _apply_rnode_overrides (mode-gated, so
+        MeshCore is untouched). Caller must stop any active mode first.
+        """
+        from .rns_lora_interface import (
+            FREQUENCY, SPREADING, CODING_RATE, BANDWIDTH, SYNC_WORD, PREAMBLE)
+        return self.start_sniffer(
+            FREQUENCY, SPREADING, CODING_RATE, BANDWIDTH, "RNode/WDGWars",
+            sync_word=SYNC_WORD, preamble=PREAMBLE, _mode="rnode")
+
+    def send_rnode_frame(self, frame: bytes) -> None:
+        """Queue one physical RNode LoRa frame for TX (drained by the RX loop)."""
+        with self._tx_guard:
+            if self._quiescing or self._stop_event.is_set():
+                self.last_error = "radio profile is changing; TX deferred"
+                return
+            self._tx_queue.put(bytes(frame))
+
+    # IQ 0x0736 bit2 for rnode. VERIFIED (WDGWars vademecum, T-Deck bring-up +
+    # gateway bridge): RNode uses STANDARD IQ = 0x0736 bit2 = 1 on bare SX126x,
+    # re-applied after every SetPacketParams (the TX path clears it). LoRaRF's
+    # convention clears bit2 for "standard", which is opposite — so we must force
+    # it back to 1 or we are deaf to the gateway.
+    _rnode_force_iq_bit2 = True
+
+    def _apply_rnode_overrides(self, lora) -> None:
+        """rnode mode only: clamp TX power to EU868 14 dBm (LoRaRF init leaves it
+        at 22) and optionally tweak the IQ errata bit. Runs after every
+        SetPacketParams (init + post-TX nuclear resume)."""
+        if self.mode != "rnode":
+            return
+        try:
+            lora.setTxPower(14, lora.TX_POWER_SX1262)
+            reg_iq = 0x0736  # REG_IQ_POLARITY_SETUP
+            if self._rnode_force_iq_bit2:
+                cur = lora.readRegister(reg_iq, 1)[0]
+                lora.writeRegister(reg_iq, (cur | 0x04,), 1)
+            log.info(
+                "rnode radio configured: sync 0x0740=%#04x 0x0741=%#04x "
+                "(want 0x14 0x24) IQ0736=%#04x force_bit2=%s TX=14dBm",
+                lora.readRegister(0x0740, 1)[0],
+                lora.readRegister(0x0741, 1)[0],
+                lora.readRegister(reg_iq, 1)[0],
+                self._rnode_force_iq_bit2)
+        except Exception as exc:
+            log.warning("rnode radio override failed: %s", exc)
+
+    def _handle_rnode(self, lora, tag: str) -> None:
+        """Read one physical LoRa frame and hand it to the RNS interface."""
+        data = self._read_packet(lora)
+        self.packets_received += 1
+        if data and self._on_rnode_rx:
+            try:
+                self._on_rnode_rx(bytes(data))
+            except Exception as exc:
+                log.warning("rnode rx callback failed: %s", exc)
 
     def _configure_radio(
         self, lora, freq: int, sf: int, cr: int, bw: int,
@@ -400,6 +537,9 @@ class LoRaManager:
         if preamble:
             # setLoRaPacket(headerType, preambleLength, payloadLength, crcType)
             lora.setLoRaPacket(0x00, preamble, 255, True)
+        # rnode mode: re-apply IQ/power overrides after SetPacketParams (no-op
+        # for every other mode).
+        self._apply_rnode_overrides(lora)
 
     def _run_sniffer(
         self, freq: int, sf: int, cr: int, bw: int, label: str,
@@ -408,6 +548,8 @@ class LoRaManager:
         lora = self._init_radio()
         if not lora:
             self.running = False
+            self.ready = False
+            self._ready_event.set()
             return
         try:
             self._configure_radio(
@@ -417,15 +559,16 @@ class LoRaManager:
             self._emit(f"Sniffer started: {tag}", "success")
 
             # Pick packet handler based on mode
-            handler = (
-                self._handle_meshcore
-                if self.mode == "meshcore"
-                else self._handle_packet
-            )
+            if self.mode == "meshcore":
+                handler = self._handle_meshcore
+            elif self.mode == "rnode":
+                handler = self._handle_rnode
+            else:
+                handler = self._handle_packet
 
-            # Use RX_CONTINUOUS for meshcore (narrow BW, can't
+            # Use RX_CONTINUOUS for meshcore/rnode (narrow BW, can't
             # afford gaps between RX_SINGLE cycles)
-            use_continuous = self.mode == "meshcore"
+            use_continuous = self.mode in ("meshcore", "rnode")
             if use_continuous:
                 # Set IRQ mask explicitly (same as nuclear RX resume)
                 lora._irqSetup(
@@ -442,26 +585,53 @@ class LoRaManager:
                     pass
 
             errors = 0
+            self.ready = True
+            self._ready_event.set()
             while not self._stop_event.is_set():
                 try:
                     if use_continuous:
                         # Poll IRQ register directly — GPIO callback
-                        # with bouncetime is unreliable, misses packets
-                        time.sleep(0.05)
+                        # with bouncetime is unreliable, misses packets.
                         irq = lora.getIrqStatus()
-                        if irq & lora.IRQ_RX_DONE:
+                        if irq & (lora.IRQ_CRC_ERR | lora.IRQ_HEADER_ERR):
+                            lora.clearIrqStatus(0x03FF)
+                            if self.mode == "rnode":
+                                self._rnode_crc_errs = getattr(self, "_rnode_crc_errs", 0) + 1
+                        elif irq & lora.IRQ_RX_DONE:
                             lora.clearIrqStatus(0x03FF)
                             rxLen, rxIdx = lora.getRxBufferStatus()
                             lora._payloadTxRx = rxLen
                             lora._bufferIndex = rxIdx
                             if rxLen > 0:
                                 handler(lora, tag)
-                        elif irq & (lora.IRQ_CRC_ERR | lora.IRQ_HEADER_ERR):
-                            lora.clearIrqStatus(0x03FF)
+                            # Re-poll immediately (no sleep): RNode split frames
+                            # arrive back-to-back — a sleep here loses the 2nd
+                            # fragment. Service TX, then drain tight.
+                            if not self._tx_queue.empty():
+                                self._do_tx(lora)
+                            errors = 0
+                            continue
+                        # rnode diagnostic heartbeat (time-based, ~every 30s)
+                        if self.mode == "rnode":
+                            _now = time.monotonic()
+                            if _now - getattr(self, "_last_hb_t", 0.0) > 30:
+                                self._last_hb_t = _now
+                                try:
+                                    log.info(
+                                        "rnode RX hb: pkts=%d crc_err=%d "
+                                        "rssiInst=%s",
+                                        self.packets_received,
+                                        getattr(self, "_rnode_crc_errs", 0),
+                                        lora.rssiInst())
+                                except Exception:
+                                    pass
                         # Check TX queue between RX polls
                         if not self._tx_queue.empty():
                             self._do_tx(lora)
                         errors = 0
+                        # Short idle poll — was 0.05 at loop top; tighter now so
+                        # we service RX_DONE with lower latency under game load.
+                        time.sleep(0.02)
                         continue
                     else:
                         lora.request(lora.RX_SINGLE)
@@ -477,7 +647,7 @@ class LoRaManager:
                             "Too many radio errors, restarting...",
                             "warning",
                         )
-                        lora.end()
+                        self._cleanup_radio(lora, stopped=False)
                         time.sleep(1)
                         lora = self._init_radio()
                         if not lora:
@@ -493,12 +663,15 @@ class LoRaManager:
                                 _gpio.remove_event_detect(lora._irq)
                             except Exception:
                                 pass
+                        self.ready = True
                         errors = 0
         except Exception as exc:
+            self.last_error = str(exc)
             self._emit(f"Sniffer error: {exc}", "error")
             log.error("LoRa sniffer error: %s", exc)
         finally:
             self._cleanup_radio(lora)
+            self._ready_event.set()
             self._emit("Sniffer stopped.", "dim")
 
     # ------------------------------------------------------------------
@@ -561,7 +734,7 @@ class LoRaManager:
                                     "Too many radio errors, restarting...",
                                     "warning",
                                 )
-                                lora.end()
+                                self._cleanup_radio(lora, stopped=False)
                                 time.sleep(1)
                                 lora = self._init_radio()
                                 if not lora:
@@ -636,7 +809,7 @@ class LoRaManager:
                                 f"Too many radio errors, restarting...",
                                 "warning",
                             )
-                            lora.end()
+                            self._cleanup_radio(lora, stopped=False)
                             time.sleep(1)
                             lora = self._init_radio()
                             if not lora:
@@ -1112,36 +1285,48 @@ class LoRaManager:
 
     def send_meshcore_message(self, text: str, node_name: str) -> bytes | None:
         """Queue a MeshCore public group text for transmission. Returns dedup_key."""
-        if not self.running or self.mode != "meshcore":
-            self._emit("  MeshCore not running — start sniffer first", "warning")
-            return None
-        packet = self._build_mc_group_text(text, node_name)
-        dedup_key = self._preseed_dedup(packet)
-        self._tx_queue.put(packet)
-        return dedup_key
+        with self._tx_guard:
+            if self._quiescing or self._stop_event.is_set():
+                self.last_error = "MeshCore profile is changing; TX deferred"
+                return None
+            if not self.running or self.mode != "meshcore":
+                self._emit("  MeshCore not running — start sniffer first", "warning")
+                return None
+            packet = self._build_mc_group_text(text, node_name)
+            dedup_key = self._preseed_dedup(packet)
+            self._tx_queue.put(packet)
+            return dedup_key
 
     def send_meshcore_dm(self, text: str, node_name: str,
                          dest_pubkey: bytes) -> bytes | None:
         """Queue an encrypted DM (payload type 0x02) to a specific node."""
-        if not self.running or self.mode != "meshcore":
-            self._emit("  MeshCore not running — start sniffer first", "warning")
-            return None
-        packet = self._build_mc_dm(text, node_name, dest_pubkey)
-        if not packet:
-            return None
-        dedup_key = self._preseed_dedup(packet)
-        self._tx_queue.put(packet)
-        return dedup_key
+        with self._tx_guard:
+            if self._quiescing or self._stop_event.is_set():
+                self.last_error = "MeshCore profile is changing; TX deferred"
+                return None
+            if not self.running or self.mode != "meshcore":
+                self._emit("  MeshCore not running — start sniffer first", "warning")
+                return None
+            packet = self._build_mc_dm(text, node_name, dest_pubkey)
+            if not packet:
+                return None
+            dedup_key = self._preseed_dedup(packet)
+            self._tx_queue.put(packet)
+            return dedup_key
 
     def send_meshcore_advert(self, node_name: str,
                              lat: float = 0.0, lon: float = 0.0) -> None:
         """Queue a MeshCore advertisement for transmission."""
-        if not self.running or self.mode != "meshcore":
-            self._emit("  MeshCore not running — start sniffer first", "warning")
-            return
-        packet = self._build_mc_advert(node_name, lat, lon)
-        self._preseed_dedup(packet)
-        self._tx_queue.put(packet)
+        with self._tx_guard:
+            if self._quiescing or self._stop_event.is_set():
+                self.last_error = "MeshCore profile is changing; TX deferred"
+                return
+            if not self.running or self.mode != "meshcore":
+                self._emit("  MeshCore not running — start sniffer first", "warning")
+                return
+            packet = self._build_mc_advert(node_name, lat, lon)
+            self._preseed_dedup(packet)
+            self._tx_queue.put(packet)
 
     def _build_mc_group_text(self, text: str, node_name: str) -> bytes:
         """Build MeshCore Group Text packet on active channel."""
@@ -1256,9 +1441,13 @@ class LoRaManager:
 
     def _send_ack(self, ack_hash: bytes) -> None:
         """Queue an ACK for transmission."""
-        packet = self._build_ack(ack_hash)
-        self._tx_queue.put(packet)
-        self._emit(f"  TX ACK: {ack_hash.hex()}", "dim")
+        with self._tx_guard:
+            if self._quiescing or self._stop_event.is_set():
+                self.last_error = "MeshCore profile is changing; ACK deferred"
+                return
+            packet = self._build_ack(ack_hash)
+            self._tx_queue.put(packet)
+            self._emit(f"  TX ACK: {ack_hash.hex()}", "dim")
 
     def _build_mc_dm(self, text: str, node_name: str,
                      dest_pubkey: bytes) -> bytes | None:
@@ -1483,6 +1672,19 @@ class LoRaManager:
         return self._mc_keypair
 
     def _do_tx(self, lora) -> None:
+        # Cover dequeue, physical TX and full RX restoration with one marker.
+        # Do not hold the guard during radio I/O or worker shutdown.
+        with self._tx_guard:
+            if self._quiescing or self._stop_event.is_set() or self._tx_active:
+                return
+            self._tx_active = True
+        try:
+            self._drain_tx(lora)
+        finally:
+            with self._tx_guard:
+                self._tx_active = False
+
+    def _drain_tx(self, lora) -> None:
         """Transmit queued packets, then resume RX_CONTINUOUS.
 
         Nuclear approach: after TX, do FULL radio reconfiguration
@@ -1490,11 +1692,14 @@ class LoRaManager:
         beginPacket()/endPacket() corrupt multiple internal states
         in LoRaRF that surgical fixes cannot fully restore.
         """
-        while not self._tx_queue.empty():
-            try:
-                packet = self._tx_queue.get_nowait()
-            except Exception:
-                break
+        while True:
+            with self._tx_guard:
+                if self._quiescing or self._stop_event.is_set():
+                    break
+                try:
+                    packet = self._tx_queue.get_nowait()
+                except Empty:
+                    break
             try:
                 lora.beginPacket()
                 lora.write(list(packet), len(packet))
@@ -1557,6 +1762,10 @@ class LoRaManager:
                 255, lora._crcType, False,
             )
 
+        # rnode mode: SetPacketParams above cleared the standard-IQ bit — set
+        # it back (no-op for other modes).
+        self._apply_rnode_overrides(lora)
+
         # Re-arm RX with proper IRQ mask
         lora._irqSetup(
             lora.IRQ_RX_DONE | lora.IRQ_TIMEOUT
@@ -1570,29 +1779,50 @@ class LoRaManager:
         except Exception:
             pass
 
-    def _cleanup_radio(self, lora) -> None:
+    def _cleanup_radio(self, lora, *, stopped=True) -> None:
         """Release SPI without GPIO.cleanup() (preserves pin mode for reuse).
 
         LoRaRF's lora.end() calls gpio.cleanup() which clears BCM pin mode.
         Next begin() fails because setmode() only runs at module import time.
         We close SPI directly and skip gpio.cleanup().
         """
-        try:
-            if lora:
+        if lora:
+            try:
                 lora.sleep(lora.SLEEP_COLD_START)
-                from LoRaRF import SX126x as _sx
-                _sx.spi.close()
-        except Exception:
-            pass
-        self.running = False
+            except Exception:
+                pass
+            try:
+                module = importlib.import_module("LoRaRF.SX126x")
+                module.spi.close()
+            except Exception:
+                pass
+        if self._radio_lock_fd is not None:
+            os.close(self._radio_lock_fd)
+            self._radio_lock_fd = None
+        self.ready = False
+        if stopped:
+            self.running = False
 
     # ------------------------------------------------------------------
     # Stop
     # ------------------------------------------------------------------
 
-    def stop(self) -> None:
+    def stop(self) -> bool:
         """Signal the background thread to stop and wait for cleanup."""
         self._stop_event.set()
         if self._thread and self._thread.is_alive():
             self._thread.join(timeout=5)
+            if self._thread.is_alive():
+                self.last_error = "Radio worker has not stopped"
+                return False
         self._thread = None
+        self.running = self.ready = False
+        # Queue entries are raw bytes, so an old RNode frame must never be
+        # transmitted after a later switch back to MeshCore (or vice versa).
+        with self._tx_guard:
+            while True:
+                try:
+                    self._tx_queue.get_nowait()
+                except Empty:
+                    break
+        return True

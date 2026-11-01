@@ -1,12 +1,42 @@
+# 📡 KiloGramowy fork — release preparation (2026-11-01)
+
+- Consolidates the deployed MeshCore/Meshtastic integration and earlier receiver-prototype improvements on one review branch.
+- Includes local AUTO GPS RF approvals, receiver-position provenance and persistent mesh discoveries.
+- Includes ESP32/GPS startup recovery, alternating WiFi/BLE wardrive phases and exact upload receipts including cooldown handling.
+- Adds English documentation, privacy-reviewed demo derivatives, source credits and release-preparation checks.
+- Adds game-owned hardware shutdown: final data/XP save, worker and serial release, and managed AIO power off with USB last.
+- Adds the private **SYSTEM → Update Game** preview: explicit fork release source, one notice per approved release, full notes, separate install confirmation, code backup and interrupted-install recovery.
+- Keeps numeric version **0.9.16** unchanged. Startup retains **by LOCOSP**, with **Modified by KiloGramowy** underneath; the avatar appears only inside the update window.
+- Records **501/501 passing uConsole software tests**, including replay of the existing private recorded-frame fixture; see [Validation](docs/VALIDATION.md) for platform skips, native UI checks and the separate hardware evidence.
+- Preserves the original game/UI style, artwork, license and dated upstream history below. No new on-air reception or remote chat delivery is claimed by this documentation review. No release feed or public repository has been published.
+
+---
+
 # Changelog
 
-All notable changes to **Watch Dogs Go** are documented in this file.
+The numbered entries below retain LOCOSP’s dated upstream history. They describe behavior at those releases and may be superseded by the fork changes above—for example, the old `git pull` updater is not the current release-feed updater.
+
+All notable upstream changes to **Watch Dogs Go** are documented below.
 Format inspired by [Keep a Changelog](https://keepachangelog.com/).
 This project follows [Semantic Versioning](https://semver.org/) — currently in
 the `0.x` series, meaning the API and on-disk format may still change between
 minor versions.
 
 ---
+
+## [0.9.14] — 2026-10-07
+
+### Added
+- **In-game updater** — `SYSTEM > Update Game`. The game checks GitHub on launch
+  and flags `[UPD] New game vX available` when the checkout's own upstream is
+  ahead; the Update Game screen then runs `git pull` for you and prompts a
+  restart. Your loot/saves are untouched (gitignored) — no manual file copying.
+- README **"Updating"** section (in-game / terminal / installer paths).
+
+### Changed
+- The game version check is git-based — it fetches the checkout's own
+  `origin/<branch>` and compares commits, so it works on any branch/repo and
+  always matches what the updater actually pulls.
 
 ## [0.9.13] — 2026-06-04
 

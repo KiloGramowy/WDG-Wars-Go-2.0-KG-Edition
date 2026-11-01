@@ -1,15 +1,14 @@
 # Contributing to Watch Dogs Go
 
-Thanks for wanting to help. This is a one-person hobby project that grew
-into something bigger, so any extra hands are appreciated.
+Contributions to this uConsole fork should preserve the original LOCOSP game style and existing player data. The repository remains private during release preparation; use a separate checkout for development.
 
 ## TL;DR
 
-- **Bug reports** → open an [issue](https://github.com/LOCOSP/esp32-watch-dogs/issues),
-  attach `~/.watchdogs/last_run.log` and `~/.watchdogs/launcher.log`.
+- **Bug reports** → open an [issue](https://github.com/KiloGramowy/esp32-watch-dogs/issues),
+  attach only reviewed, redacted excerpts from `~/.watchdogs/last_run.log` and `~/.watchdogs/launcher.log`.
 - **Feature ideas** → open an issue with the `enhancement` label first,
   let's talk before you write code.
-- **Pull requests** → welcome, please target `master`. Small focused PRs
+- **Pull requests** → use the repository's default branch: `codex/wdg-go-wars-release` in the development repository, or `main` in the clean private review repository. Small focused PRs
   merge faster than big ones.
 - **Be nice.** This is meant to be fun.
 
@@ -19,18 +18,22 @@ into something bigger, so any extra hands are appreciated.
 
 Before opening an issue, please check:
 
-1. The bug isn't already in the **WIP list** in [CHANGELOG.md](CHANGELOG.md)
-   (Map Download, BLE HID, HID Type, BlueDucky, RACE Attack are intentionally
-   disabled).
-2. You're running the latest `master` (`git pull && bash setup.sh`).
-3. Your hardware is in the supported list (`ESP32-C5` + `Linux` minimum).
+1. Check the current [feature guide](docs/FEATURE_GUIDE.md) and the dated history
+   in [CHANGELOG.md](CHANGELOG.md). BLE HID, HID Type, BlueDucky and RACE Attack
+   remain disabled WIP menu entries. **SYSTEM → Download Map is implemented**;
+   it requires a configured Stadia API key.
+2. Record the current version and source commit. Use the [update instructions](docs/UPDATING.md)
+   appropriate to your installation; a deployed source overlay may differ from its old Git HEAD.
+   Do not run an unrestricted pull/setup over a working installation merely to file a report.
+3. Include the hardware relevant to the failing feature. Most UI tests work without an ESP32;
+   WiFi/BLE hardware tests need the compatible ESP32/firmware, and LoRa needs its own module.
 
 **A good bug report contains:**
 
 - What you tried to do (one sentence)
 - What happened instead (one sentence)
-- The last 30 lines of `~/.watchdogs/last_run.log`
-- The last 20 lines of `~/.watchdogs/launcher.log` if the game crashed
+- A reviewed, redacted excerpt of the last 30 lines of `~/.watchdogs/last_run.log`
+- A reviewed, redacted excerpt of the last 20 lines of `~/.watchdogs/launcher.log` if the game crashed
   before opening
 - Your hardware: `uname -a`, `lsusb`, `python3 --version`
 - A screenshot if it's a UI bug
@@ -44,15 +47,25 @@ them privately if you'd rather.
 ## Setting up a dev environment
 
 ```bash
-git clone https://github.com/LOCOSP/esp32-watch-dogs.git
+git clone --branch codex/wdg-go-wars-release --single-branch https://github.com/KiloGramowy/esp32-watch-dogs.git
 cd esp32-watch-dogs
-bash setup.sh        # creates .venv, installs deps
-sudo ./run.sh        # launches the game (needs sudo for GPIO/serial)
+bash setup.sh        # creates .venv and installs dependencies in this separate checkout
+./run.sh            # the launcher obtains sudo for GPIO/serial
 ```
 
-You don't need an ESP32 to test most UI changes — the game starts in a
-"no ESP32" mode and the menus, plugins, map renderer, terminal and
-overlays all work without hardware.
+You don't need an ESP32 to run the software UI tests. They use fake transports,
+temporary player data and recorded drawing calls, without opening the radio.
+An interactive game startup can attempt hardware detection and share home-directory
+settings with another checkout, so it is not an isolated test by itself.
+
+```bash
+.venv/bin/python3 -B -m unittest discover -s tests -v
+.venv/bin/python3 -B -m unittest test_meshtastic_rx_probe test_spi_mutation_regression
+```
+
+Optional platform dependencies and private recorded-frame fixtures can cause
+explicit skips. Keep private captures outside Git. Record the exact command,
+commit, failures and skips; current results are in [Validation](docs/VALIDATION.md).
 
 For LoRa and AIO v2 features you need a ClockworkPi uConsole with the
 AIO v2 module. For wardriving with attacks you need an ESP32-C5 running
@@ -65,7 +78,7 @@ AIO v2 module. For wardriving with attacks you need an ESP32-C5 running
 - **Python 3.10+**, no type-checking required but typed signatures
   welcome.
 - Match the surrounding style of the file you're editing.
-- Keep functions small. `app.py` is already 5000+ lines — please don't
+- Keep functions small. `app.py` is already large — please don't
   add to that monster without strong justification, prefer a new module
   in `watchdogs/`.
 - **No emoji in code or commit messages** unless the surrounding context
@@ -113,10 +126,7 @@ class MyPlugin(PluginBase):
 ```
 
 Drop it in `plugins/`, restart the game, and it appears under the
-**PLUGINS** menu tab. See `plugins/wardrive_upload.py` for a full example
-with overlay UI, network requests, and persistent state.
-
-See `plugins/wardrive_upload.py` for a real-world example with overlay
+**PLUGINS** menu tab. Select the entry with the normal arrows/Enter menu controls; its displayed key prefix is metadata, not a global key binding. See `plugins/wardrive_upload.py` for a real-world example with overlay
 UI, threaded HTTP requests, persistent state and background workers.
 The plugin API is small and stable — read `plugins/plugin_base.py` for
 the full base class.
@@ -125,14 +135,13 @@ the full base class.
 
 ## What needs help right now
 
-- Fixing one of the WIP features (BlueDucky / RACE / Map Download)
-- Splitting `app.py` into smaller modules
-- Adding tests (any tests at all — there are currently zero)
+- Focused fixes with a reproducible report, including the disabled WIP features
+- Useful regression coverage for scanning, radio ownership, storage and updating
 - Better documentation for the plugin API
 - Linux-distro support beyond Debian/Ubuntu (Fedora, Arch, Alpine)
 - macOS support for the game frontend (Pyxel works there, but lots of
   code assumes Linux serial paths and `lgpio`)
-- Translation of in-game strings (currently EN-only)
+- Consistent English UI wording and readable layout within the original windows
 
 ---
 
@@ -143,8 +152,7 @@ the same license as the project (see [LICENSE](LICENSE)).
 
 ---
 
-## Where to find me
+## Project contacts
 
-- **GitHub Issues** — best for bugs and feature discussions
-- **wdgwars.pl** — if you have an account, find me as `locosp`
-- **MeshCore on 869 MHz** — node `WDG_locosp` if you're in radio range
+- **[This fork's GitHub Issues](https://github.com/KiloGramowy/esp32-watch-dogs/issues)** — bugs and feature discussions for KiloGramowy's changes.
+- **[LOCOSP](https://github.com/LOCOSP)** — original WatchDogsGo author; original credits and license are retained.

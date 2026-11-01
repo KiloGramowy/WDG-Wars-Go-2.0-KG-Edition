@@ -94,18 +94,32 @@ class FlipperManager:
             self._connected = False
             return False
 
-    def close(self) -> None:
-        """Disconnect from Flipper."""
-        self._rx_running = False
-        if self._rx_thread and self._rx_thread.is_alive():
-            self._rx_thread.join(timeout=2)
+    def close(self) -> bool:
+        """Stop our RX operation, close serial and join its reader."""
+        if self._subghz_active:
+            self.subghz_stop()
+        self.stop_rx()
+        ok = True
         if self._ser:
             try:
-                self._ser.close()
+                if hasattr(self._ser, "cancel_read"):
+                    self._ser.cancel_read()
             except Exception:
                 pass
-        self._ser = None
+            try:
+                self._ser.close()
+            except Exception as exc:
+                log.warning("Flipper close failed: %s", exc)
+                ok = False
         self._connected = False
+        if self._rx_thread and self._rx_thread is not threading.current_thread():
+            self._rx_thread.join(timeout=2)
+        if self._rx_thread and self._rx_thread.is_alive():
+            return False
+        self._rx_thread = None
+        if ok:
+            self._ser = None
+        return ok
 
     def reconnect(self) -> bool:
         """Try to reconnect if connection was lost (port changed)."""

@@ -10,6 +10,7 @@ Uses ``pinctrl set/get`` directly for instant GPIO toggling.
 """
 
 import logging
+import re
 import shutil
 import subprocess
 import sys
@@ -65,6 +66,32 @@ def _pinctrl_get(pin: int) -> bool:
         return False
 
 
+def _pinctrl_read_confirmed(pin: int) -> Optional[bool]:
+    """Read the actual pin level; a failed/ambiguous read is not evidence of OFF."""
+    try:
+        result = subprocess.run(
+            ["pinctrl", "get", str(pin)],
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+            text=True,
+            timeout=3,
+        )
+        if result.returncode != 0:
+            log.warning("Could not confirm GPIO%d state (exit %s)", pin, result.returncode)
+            return None
+        levels = re.findall(
+            rf"^\s*{pin}:\s*[^|\r\n]*\|\s*(hi|lo)\b",
+            result.stdout or "", re.MULTILINE,
+        )
+        if len(levels) == 1:
+            return levels[0] == "hi"
+        log.warning("Could not confirm GPIO%d state from pinctrl output", pin)
+    except Exception as exc:
+        log.warning("Could not confirm GPIO%d state: %s", pin, exc)
+    return None
+
+
 class AioManager:
     """Interface to HackerGadgets AIO v2 — direct GPIO control."""
 
@@ -90,6 +117,13 @@ class AioManager:
         except Exception as exc:
             log.warning("GPIO status read failed: %s", exc)
             return None
+
+    @staticmethod
+    def get_feature_state(feature: str) -> Optional[bool]:
+        """Return a confirmed actual level, or None when it cannot be read."""
+        if feature not in GPIO_MAP:
+            return None
+        return _pinctrl_read_confirmed(GPIO_MAP[feature])
 
     @staticmethod
     def toggle(feature: str, on: bool) -> bool:
@@ -169,3 +203,101 @@ class AioManager:
 
         t = threading.Thread(target=_run, daemon=True)
         t.start()
+
+
+class AioPowerSession:
+    """Track power enabled by one game session without claiming existing rails.
+
+    Only a confirmed OFF -> requested ON transition is owned. Record that
+    claim before writing hardware: a failed/interrupted write may have applied.
+    A preexisting ON or unknown state never grants ownership through toggle().
+    claim() lets the game explicitly adopt a confirmed ON rail after acquiring
+    its device. Call
+    begin_shutdown() before stopping workers, then shutdown() after they have
+    released their devices. No services or other processes are stopped here.
+    """
+
+    _SHUTDOWN_ORDER = ("lora", "sdr", "gps", "usb")
+
+    def __init__(self, controller=AioManager):
+        self._controller = controller
+        self._lock = threading.RLock()
+        self._owned: set[str] = set()
+        self._closing = False
+
+    def _read_state(self, feature: str) -> Optional[bool]:
+        try:
+            state = self._controller.get_feature_state(feature)
+        except Exception as exc:
+            log.warning("Could not confirm %s power state: %s", feature, exc)
+            return None
+        return state if type(state) is bool else None
+
+    def _write(self, feature: str, on: bool) -> bool:
+        try:
+            return self._controller.toggle(feature, on) is True
+        except Exception as exc:
+            log.warning("Could not set %s power %s: %s", feature, on, exc)
+            return False
+
+    def toggle(self, feature: str, on: bool) -> bool:
+        """Write power, preserving ownership until OFF is actually confirmed.
+
+        Once shutdown begins, new ON requests are rejected. Explicit OFF
+        requests remain available, but drop a claim only after write success
+        and a confirmed LOW read. This does not change AioManager.toggle().
+        """
+        if feature not in GPIO_MAP or type(on) is not bool:
+            return False
+        with self._lock:
+            if on and self._closing:
+                log.warning("Ignoring %s power ON during shutdown", feature)
+                return False
+            if on and self._read_state(feature) is False:
+                self._owned.add(feature)
+            if not self._write(feature, on):
+                log.warning("%s power %s write failed; ownership retained", feature, on)
+                return False
+            if not on:
+                if self._read_state(feature) is not False:
+                    log.warning("%s power OFF could not be confirmed; ownership retained", feature)
+                    return False
+                self._owned.discard(feature)
+            return True
+
+    def claim(self, feature: str) -> bool:
+        """Adopt a confirmed ON rail after explicit device acquisition, without writing it."""
+        if feature not in GPIO_MAP:
+            return False
+        with self._lock:
+            if self._closing or self._read_state(feature) is not True:
+                return False
+            self._owned.add(feature)
+            return True
+
+    def begin_shutdown(self) -> None:
+        """Prevent new asynchronous ON requests before workers are stopped."""
+        with self._lock:
+            self._closing = True
+
+    def shutdown(self, blocked_features=()) -> dict[str, bool]:
+        """Turn off owned rails, USB last, returning {feature: confirmed_off}.
+
+        Only owned features appear in the result. A blocked, failed, or
+        unverified feature returns False and remains owned for a later retry.
+        The caller supplies blocks for live workers, flashing, or other users;
+        this helper cannot establish their device ownership itself.
+        """
+        with self._lock:
+            self._closing = True
+            blocked = set(blocked_features)
+            result = {}
+            for feature in self._SHUTDOWN_ORDER:
+                if feature not in self._owned:
+                    continue
+                if feature in blocked:
+                    log.warning("Leaving owned %s power ON: shutdown is blocked", feature)
+                    result[feature] = False
+                    continue
+                result[feature] = self.toggle(feature, False)
+            return result

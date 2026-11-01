@@ -9,15 +9,20 @@ Controls:
   PgUp/PgDn (Fn+U / Fn+K on uConsole) — scroll terminal
 """
 
+import atexit
+import logging
 import math
 import os
 import random
 import re
+import signal
 import sys
 import threading
 import time
 from queue import Queue
 from pathlib import Path
+from contextlib import contextmanager
+from types import SimpleNamespace
 
 import pyxel
 
@@ -32,15 +37,19 @@ from .dragon_drain import DragonDrainAttack
 from .mitm import MITMAttack
 from .bt_ducky import BlueDuckyAttack
 from .race_attack import RACEAttack
-from .aio_manager import AioManager
+from .aio_manager import AioManager, AioPowerSession
 from .whitelist_manager import WhitelistManager
 from .lora_manager import LoRaManager
+from .meshtastic_manager import MeshtasticManager
 from .sdr_manager import SDRManager
+from .subghz_manager import SubGhzManager
 from .plugin_loader import discover_plugins
 from .watch_manager import WatchManager
 from .flipper_manager import FlipperManager
+from .proximity_manager import ProximityManager
 from .portals import get_all_portals, upload_html_to_esp32
 from . import upload_manager
+from .game_updates import GameUpdates
 
 # ---------------------------------------------------------------------------
 # Constants
@@ -78,6 +87,11 @@ C_MENU_BG = 0
 C_MENU_BORDER = 5
 C_MENU_SEL = 3
 C_MENU_TEXT = 7
+
+# Proximity (state/trend labels mirror watchdogs/proximity/prox.py)
+PROX_STATE_NAMES = ("UNKNOWN", "WEAK", "NEAR", "CLOSE", "VERY CLOSE", "LOST")
+PROX_TREND_WORDS = {2: "CLOSING FAST", 1: "GETTING CLOSER", 0: "HOLDING",
+                    -1: "MOVING AWAY", -2: "MOVING AWAY FAST"}
 
 ZOOM_LEVELS = [
     (360.0, "WORLD"),
@@ -132,6 +146,8 @@ HACKER_QUIPS = [
     ["LoRa waves~", "BLE signals", "HID inject!", "mesh me up", "radio active"],
     # SYSTEM
     ["connection", "is power", "stay dark", "ghost mode", "ctrl+alt+hack"],
+    # CRISIS / SURVIVAL
+    ["off-grid ready", "knowledge=power", "no signal, no fear", "survive the dark", "offline vault"],
 ]
 
 # (cat_name, [(hotkey, label, cmd_or_action, state_key, input_type), ...])
@@ -139,6 +155,50 @@ HACKER_QUIPS = [
 # cmd starting with "_" = special Python-side action (not ESP32 serial)
 # Attacks that require an external WiFi adapter (monitor mode)
 _NEEDS_EXT_WIFI = {"dragon_drain"}
+
+# Emergency scanner: RF band name -> human-readable service (ASCII for pyxel font)
+EMERGENCY_SVC = {
+    "SM-VHF":    "STRAZ MIEJ.",
+    "STRAZ-VHF": "STRAZ POZ.",
+    "EMS-VHF":   "KARETKA",
+    "POL-VHF":   "POLICJA",
+    "TETRA-UL":  "SLUZBY TETRA",
+    "TETRA-DL":  "SIEC TETRA",
+}
+# Per-service HUD colour (pyxel palette idx): white=karetka, red=straż, blue=policja
+EMERGENCY_SVC_COL = {
+    "SM-VHF":    9,            # orange - municipal guard
+    "STRAZ-VHF": C_ERROR,     # red    - fire
+    "EMS-VHF":   C_TEXT,      # white  - ambulance
+    "POL-VHF":   12,          # blue   - police
+    "TETRA-UL":  C_HACK_CYAN, # cyan   - digital services
+    "TETRA-DL":  C_HACK_CYAN,
+}
+# Per-service alert sound (WAV in assets/, pyxel sound slot). Fire->straż,
+# ambulance->karetka, police->policja, everything else -> generic warning.
+EMERGENCY_SND = {
+    "STRAZ-VHF": ("fire.wav",      57),
+    "EMS-VHF":   ("ambulance.wav", 58),
+    "POL-VHF":   ("police.wav",    56),
+    "SM-VHF":    ("warning.wav",   59),
+    "TETRA-UL":  ("warning.wav",   59),
+}
+EMERGENCY_SND_DEFAULT = ("warning.wav", 59)
+
+# uConsole-side durable library for captured sub-GHz signals (independent of
+# the Monster SD, which is unreliable). One place, survives reboots/port shuffles.
+SUBGHZ_LIB_DIR = os.path.expanduser("~/.watchdogs/subghz_library")
+SUBGHZ_FREQ_FILE = os.path.expanduser("~/.watchdogs/subghz_freq")  # persist [F]
+
+# Monster RF sub-GHz screen menu (label, action|None-for-separator)
+SUBGHZ_MENU = [
+    ("--- MONSTER RF / CC1101 (JanOS RF) ---", None),
+    ("Read (listen / decode)",     "read"),
+    ("Record RAW",                 "record"),
+    ("Frequency analyzer (find freq)", "analyzer"),
+    ("Saved signals (SD)",         "files"),
+    ("Status / info",              "status"),
+]
 
 MENU_CATS = [
     ("SCAN", [
@@ -170,12 +230,20 @@ MENU_CATS = [
     ("ADDONS", [
         ("h", "BLE HID (WIP)",   "_bt_hid_wip",            "_bt_hid_wip",  None),
         ("i", "HID Type (WIP)",  "_bt_hid_wip",            "_bt_hid_wip",  None),
-        ("9", "MeshCore Messenger", "_meshcore",            "meshcore",     None),
+        ("9", "MeshCore Chat",    "_meshcore",            "meshcore",     None),
+        ("8", "Meshtastic Chat",  "_meshtastic",          "meshtastic",   None),
+        ("7", "Meshtastic Profile", "_meshtastic_profile", "_mt_profile_screen", None),
         ("r", "MeshCore Region", "_meshcore_region",         "_mc_region_screen", None),
+        ("w", "WDGWars Chat",    "_wdgwars",               "wdgwars",      None),
         ("f", "Flipper Zero",    "_flipper",               "_flipper",     None),
         ("a", "ADS-B Radar",     "_sdr_adsb",              "_sdr_adsb",    None),
         ("4", "433 MHz Scanner", "_sdr_433",               "_sdr_433",     None),
+        ("e", "Emergency Radio", "_sdr_emergency",         "_sdr_emergency", None),
+        ("s", "Monster RF SubGHz", "_subghz",              "_subghz",        None),
+        ("m", "Mute Sounds",     "_mute_toggle",           "_mute_toggle",   None),
         ("p", "PipBoy Watch",   "_watch_connect",         "_watch",       None),
+        ("y", "Proximity",       "_prox_toggle",           "_prox_toggle",   None),
+        ("z", "Prox Radar",      "_prox_view",             "_prox_view",     None),
     ]),
     ("SYSTEM", [
         ("x", "STOP ALL",        "stop",                   "_stop_all",    None),
@@ -189,6 +257,13 @@ MENU_CATS = [
         ("u", "Upload WPA-SEC",  "_wpasec_upload",         "_wpasec_up",   None),
         ("p", "Download WPA-SEC","_wpasec_download",       "_wpasec_dl",   None),
         ("f", "Flash ESP32",    "_flash_esp32",           "_flash_esp",   None),
+        ("i", "Update Game",    "_update_game",           "_gameupd",     None),
+    ]),
+    ("CRISIS", [
+        ("w", "Wikipedia",   "_srv_wiki",   "_srv_wiki",   None),
+        ("c", "ctOS Map",    "_srv_ctos",   "_srv_ctos",   None),
+        ("n", "Navigation",  "_srv_nav",    "_srv_nav",    None),
+        ("s", "Status",      "_srv_status", "_srv_status", None),
     ]),
 ]
 
@@ -343,8 +418,27 @@ class MapProjection:
 class WatchDogsGame:
 
     def __init__(self, serial_port=None, loot_path=None):
+        self._shutting_down = False
+        self._cleanup_done = False
+        self._cleanup_running = False
+        self._cleanup_errors = []
+        self._exit_requested = False
+        self._exit_handlers = {}
+        self._aio_power = AioPowerSession()
+        # Pyxel's native quit runs Python atexit callbacks before process::exit.
+        # Register before acquiring USB or any other device, including failed boot.
+        atexit.register(self._cleanup)
+        try:
+            self._initialize(serial_port, loot_path)
+        finally:
+            self._cleanup()
+            self._restore_exit_handlers()
+            atexit.unregister(self._cleanup)
+
+    def _initialize(self, serial_port=None, loot_path=None):
         pyxel.init(W, H, title="ESP32 Watch Dogs", fps=FPS,
                    quit_key=pyxel.KEY_NONE, display_scale=2)
+        self._install_exit_handlers()
         try:
             pyxel.fullscreen(True)
         except Exception:
@@ -392,7 +486,7 @@ class WatchDogsGame:
             _aio_st = AioManager.get_status() or {}
             self._usb_enabled = _aio_st.get("usb", False)
             if not self._usb_enabled:
-                if AioManager.toggle("usb", True):
+                if self._aio_power.toggle("usb", True):
                     self._usb_enabled = True
                     import time as _t
                     _t.sleep(6)  # ESP32 boot + USB enumerate on CM5
@@ -424,6 +518,8 @@ class WatchDogsGame:
                     self.serial.serial_conn.reset_input_buffer()
                 self.state.connected = True
                 self._esp32 = True
+                if self._aio_available:
+                    self._aio_power.claim("usb")
                 # Clear any leftover state from previous crashed session
                 self.serial.send_command("stop")
                 self.serial.serial_conn.reset_input_buffer()
@@ -435,6 +531,8 @@ class WatchDogsGame:
 
         # Open GPS
         self.gps.setup()
+        if self._aio_available and self.gps.available:
+            self._aio_power.claim("gps")
 
         # Init loot manager (uses app dir or home)
         # Resolve project root from this file's location (works under sudo).
@@ -519,14 +617,59 @@ class WatchDogsGame:
         self._fw_remote_version: str = ""   # latest on GitHub
         self._fw_update_available = False
 
+        # Own-fork release checks never pull code merely by opening the screen.
+        self._init_game_updates()
+
         # MeshCore Messenger (runs in background when LoRa enabled)
         self._lora = LoRaManager()
         self._lora._on_node = self._on_mc_node
         self._lora._on_message = self._on_mc_message
         self._lora._on_dm = self._on_mc_dm
         self._lora._on_dm_ack = self._on_mc_dm_ack
+        self._mt = MeshtasticManager()
+        self._mt._on_node = self._on_mt_node
+        self._mt._on_text = self._on_mt_text
+        self._mt._on_status = self._on_mt_status
+        self._mt._on_tx = self._on_mt_tx
+        self._mt_event_queue = Queue()
+        self._mt_screen = False
+        self._mt_profile = self._mt.profile_id
+        self._mt_profile_screen = False
+        self._mt_profile_sel = 0
+        self._mt_tx_pending = {}
+        self._lora_protocol_picker = False
+        self._lora_protocol_sel = 1  # Meshtastic LEFT, MeshCore RIGHT/default
+        self._radio_protocol = ""
+        self._mesh_view_protocol = "meshcore"
         self._sdr = SDRManager()
         self._sdr_aircraft_xp: set = set()  # ICAO set for XP dedup
+        self._subghz = SubGhzManager()      # Monster RF (JanOS RF, CC1101) bridge
+        self._subghz_logf = None            # loot capture log file handle
+        self._subghz_last_file = ""         # last saved capture path (for replay)
+        # Dedicated Sub-GHz screen state (Flipper/Momentum-style)
+        self._subghz_screen = False
+        self._subghz_mode = "idle"          # idle | read | record | files
+        self._subghz_sel = 0
+        self._subghz_catches: list = []     # caught/decoded signals (newest first)
+        self._subghz_rssi = -120            # live RSSI meter value
+        self._subghz_files: list = []       # saved signals (index-aware entries)
+        self._subghz_sd_by_idx: dict = {}   # SD idx -> entry (for subghz_tx)
+        self._subghz_naming = False         # renaming a saved signal
+        self._subghz_name_buf = ""          # rename text buffer
+        self._subghz_pending_name = False   # auto-name the newest capture
+        self._subghz_rec_start = 0.0        # RAW record start time
+        self._subghz_freqs = [433.92, 433.89, 434.08, 315.00, 318.00,
+                              390.00, 868.35, 915.00]   # [F] cycles these
+        # capture frequency (Read/Record) - persisted so it survives restarts
+        # (the light is on 433.89, not the 433.92 default -> must not reset).
+        self._subghz_freq = 433.92
+        try:
+            with open(SUBGHZ_FREQ_FILE) as _fh:
+                self._subghz_freq = float(_fh.read().strip())
+        except Exception:
+            pass
+        self._subghz_notice = ""            # transient status line on the screen
+        self._subghz_drops = 0              # unrecognized bursts this session (activity)
         self._watch = WatchManager()
         self._watch_screen = False     # watch overlay active
         self._watch_scan_sel = 0       # selected device in scan list
@@ -561,6 +704,21 @@ class WatchDogsGame:
         self._mc_tx_pending: dict[bytes, int] = {}  # dedup_key → log index
         self._mc_input = ""
         self._mc_scroll = 0
+        # WDGWars Reticulum/LXMF chat (TCP to hub — Phase 1, radio-independent)
+        from .reticulum_manager import ReticulumManager, RNS_AVAILABLE
+        self._wd = ReticulumManager() if RNS_AVAILABLE else None
+        if self._wd:
+            self._wd._on_message = self._on_wd_message
+            self._wd._on_delivered = self._on_wd_delivered
+            self._wd._on_failed = self._on_wd_failed
+            self._wd._on_status = self._on_wd_status
+        self._wd_event_queue: Queue = Queue()  # thread-safe callback events
+        self._wd_screen = False
+        self._wd_log: list = []  # [(text, color, tag?)]
+        self._wd_input = ""
+        self._wd_scroll = 0
+        self._wd_started = False
+        self._wd_tx_pending: dict[int, int] = {}  # token → log index
         # Load MeshCore config (node name, channels)
         from .lora_manager import load_meshcore_config, save_meshcore_config
         _mc_cfg = load_meshcore_config()
@@ -575,6 +733,16 @@ class WatchDogsGame:
         # MeshCore regional preset (EU/UK, US/CA, ...) — picker in ADDONS menu.
         from .lora_manager import DEFAULT_MESHCORE_REGION
         self._mc_region = _mc_cfg.get("region", DEFAULT_MESHCORE_REGION)
+        from .radio_profiles import RadioProfileController
+        self._rf_profiles = RadioProfileController(initial={
+            "meshcore": self._mc_region, "meshtastic": self._mt_profile})
+        # The independent RF state records the last successful application;
+        # old MeshCore channel configuration may still carry its legacy region.
+        self._mc_region = self._rf_profiles.status("meshcore")["active_profile"]
+        self._mt_profile = self._rf_profiles.status("meshtastic")["active_profile"]
+        self._rf_last_poll = -float("inf")
+        self._rf_notices = {}
+        self._rf_confirm = None
         self._mc_region_screen = False
         self._mc_region_sel = 0
         self._mc_channels_list = _mc_cfg.get("_channels", [])
@@ -599,6 +767,20 @@ class WatchDogsGame:
                 if nd.get("pubkey"):
                     self._lora._known_pubkeys[nid] = bytes.fromhex(
                         nd["pubkey"])
+
+        # Meshtastic uses the same chat/contact renderer with its own state.
+        self._mt_view = {
+            "log": [], "input": "", "scroll": 0, "nodes_panel": False,
+            "node_sel": 0, "node_action": False, "node_action_sel": 0,
+            "note_editing": False, "note_buf": "", "dm_target": None,
+            "chan_picker": False, "chan_sel": 0, "active_ch": 0,
+            "channels_list": [], "node_name": "", "nodes": [],
+        }
+        if self.loot:
+            self._mt_view["nodes"] = list(self.loot.load_meshtastic_contacts().values())
+            for channel, message, rssi, timestamp in self.loot.load_meshtastic_messages():
+                self._mt_view["log"].append((f"\x10 {message}", C_SUCCESS, timestamp[-8:-3]))
+        self._mt.set_known_nodes(self._mt_view["nodes"])
 
         # Flipper Zero
         self._flipper = FlipperManager()
@@ -664,6 +846,9 @@ class WatchDogsGame:
         self.ble_devices: list[BleDevice] = []
         self.wifi_networks: list[WifiNetwork] = []
         self.markers: list[MapMarker] = []
+        for protocol, contacts in (("meshcore", self._mc_nodes), ("meshtastic", self._mt_view["nodes"])):
+            for contact in contacts:
+                self._update_mesh_marker(protocol, contact)
         self.particles: list[Particle] = []
         self.msgs: list[tuple[str, int, int]] = []
         self.scan_pulse = 0
@@ -700,10 +885,19 @@ class WatchDogsGame:
 
         # Wardriving auto-repeat (continuous scan loop)
         self._wifi_scan_done_time = 0.0  # time.time() when last WiFi scan finished
+        self._wifi_scan_start_time = 0.0
         self._bt_scan_done_time = 0.0    # time.time() when last BT scan finished
         self._bt_scan_start_time = 0.0   # timeout guard for BT scan
         self._SCAN_INTERVAL = 2.0        # seconds between scan cycles
         self._BT_SCAN_TIMEOUT = 15.0     # auto-finish BT scan after this
+        self._ESP_SCAN_TIMEOUT = 20.0    # missing completion is an error, not a busy loop
+        self._wardrive_selected = set()  # User choices; physical WiFi/BLE stay exclusive.
+        self._wardrive_phase = ""
+        self._wardrive_last_phase = ""
+        self._wardrive_phase_done = 0.0
+        self._wardrive_paused = False
+        self._wardrive_save_failed = False
+        self._wardrive_save_errors_at_start = None
 
         # GPS wait dialog (before wardriving)
         self._gps_wait = False           # waiting for GPS fix before starting
@@ -719,6 +913,12 @@ class WatchDogsGame:
         self._pending_cmd = None
         self._pending_cmd_frame = 0
         self._pending_cmd_name = ""
+        self._pending_cmd_state = ""
+        self._esp_stop_ack = False
+        self._esp_stop_requested_at = 0.0
+        self._esp_stop_waiting = False
+        self._esp_stop_timed_out = False
+        self._esp_stop_required = False
 
         # Input dialog (for commands needing params)
         self.input_mode = False
@@ -730,6 +930,8 @@ class WatchDogsGame:
         # Loot screen
         self.loot_screen = False
         self._loot_totals: dict = {}
+        self._muted = False   # mute all notification sounds (siren, MC notify)
+        self._svc_snd_loaded: set = set()   # pyxel slots with a WAV already loaded
         self._loot_search = ""              # search query
         self._loot_search_active = False    # cursor in search field
         self._loot_search_results: list[dict] = []
@@ -740,6 +942,12 @@ class WatchDogsGame:
         self._mitm = MITMAttack(msg_fn=self._mitm_msg, loot=self.loot)
         self._blueducky = BlueDuckyAttack(msg_fn=self._attack_msg, loot=self.loot)
         self._race = RACEAttack(msg_fn=self._attack_msg, loot=self.loot)
+
+        # WDGWars proximity (host hci0 BLE presence — separate subprocess radio)
+        self._prox = ProximityManager()
+        self._prox_screen = False
+        if self._prox.wanted():
+            self._prox.start()          # auto-start unless turned off last time
 
         # Attack sub-screen state (for multi-step flows)
         self._attack_mode = ""  # "" = none, "dragon_drain", "blueducky", "race", "evil_portal", "evil_twin"
@@ -803,22 +1011,49 @@ class WatchDogsGame:
         self._boot_serial_port = port
         self._build_boot_checks()
 
-        # Auto-start MeshCore if LoRa hardware is already powered on
+        # Already powered hardware still requires an explicit protocol choice.
         if self._lora_enabled:
-            try:
-                self._lora.set_mc_channels(self._mc_channels_list)
-                self._lora.start_meshcore(self._mc_region)
-                self._term_add("[SYS] LoRa active — MeshCore auto-started",
-                               raw=True)
-                lat = self.player_lat if self.gps_fix else 0.0
-                lon = self.player_lon if self.gps_fix else 0.0
-                self._lora.send_meshcore_advert(self._mc_node_name, lat, lon)
-                self._term_add("[MC] Auto-advert sent to mesh network",
-                               raw=True)
-            except Exception:
-                pass
+            self._lora_protocol_picker = True
 
-        pyxel.run(self.update, self.draw)
+        if not self._exit_requested:
+            pyxel.run(self._guard_update, self._guard_draw)
+
+    def _install_exit_handlers(self):
+        if threading.current_thread() is not threading.main_thread():
+            return
+        def request_exit(signum, frame):
+            # Finish the current GPIO/write operation before the next frame
+            # closes it. Do not throw SystemExit through a Rust callback.
+            self._exit_requested = True
+        for name in ("SIGTERM", "SIGHUP"):
+            signum = getattr(signal, name, None)
+            if signum is not None:
+                self._exit_handlers[signum] = signal.getsignal(signum)
+                signal.signal(signum, request_exit)
+
+    def _restore_exit_handlers(self):
+        for signum, previous in self._exit_handlers.items():
+            signal.signal(signum, previous)
+        self._exit_handlers.clear()
+
+    def _guard_update(self):
+        try:
+            if self._exit_requested and not getattr(self, "_flash_running", False):
+                self._cleanup()
+                pyxel.quit()
+                return
+            self.update()
+        except BaseException:
+            # Pyxel exits directly on callback exceptions, bypassing atexit.
+            self._cleanup()
+            raise
+
+    def _guard_draw(self):
+        try:
+            self.draw()
+        except BaseException:
+            self._cleanup()
+            raise
 
     # ------------------------------------------------------------------
     # XP & Level
@@ -958,7 +1193,7 @@ class WatchDogsGame:
             ("ESP32 WATCH DOGS v1.0", C_HACK_CYAN),
             ("=" * 40, C_DIM),
             ("", 0),
-            ("SYSTEM CHECK", C_TEXT),
+            ("SYSTEM CHECK", C_HACK_CYAN),
             ("", 0),
         ]
 
@@ -1006,7 +1241,7 @@ class WatchDogsGame:
             checks.append(("  LoRaRF — not found (LoRa radio)", C_WARNING))
 
         checks.append(("", 0))
-        checks.append(("HARDWARE", C_TEXT))
+        checks.append(("HARDWARE", C_HACK_CYAN))
         checks.append(("", 0))
 
         # ESP32
@@ -1175,18 +1410,25 @@ class WatchDogsGame:
         # ── Subtitle ──
         sub_y = logo_bottom + 8
         pyxel.text((W - 36) // 2 + 40, sub_y, "by LOCOSP", C_DIM)
-        pyxel.text((W - 64) // 2, sub_y + 12, "ESP32-C5 Edition", C_TEXT)
+        _modified = "Modified by KiloGramowy"
+        pyxel.text((W - len(_modified) * 5) // 2, sub_y + 12,
+                   _modified, C_DIM)
+        # Edition subtitle types in as the system initializes.
+        _ed = "ESP32-C5 Edition"
+        _ex = (W - 64) // 2
+        _en = min(len(_ed), max(0, frame - 6))
+        pyxel.text(_ex, sub_y + 24, _ed[:_en], C_TEXT)
+        if _en < len(_ed) and frame % 6 < 4:
+            pyxel.text(_ex + _en * 5, sub_y + 24, "_", C_HACK_CYAN)
 
         # ── System checks (bottom, auto-scroll) ──
         visible = min(len(self._boot_checks), frame // 4 + 1)
         cx0 = 30
-        cy0 = sub_y + 30
+        cy0 = sub_y + 42
         max_y = H - 14  # bottom limit for text
         max_visible_lines = (max_y - cy0) // 10
         # Auto-scroll: if more lines than fit, scroll up
         scroll_off = max(0, visible - max_visible_lines)
-
-        pyxel.text(cx0, cy0 - 10, "SYSTEM CHECK", C_HACK_CYAN)
 
         for i in range(scroll_off, visible):
             text, color = self._boot_checks[i]
@@ -1195,6 +1437,10 @@ class WatchDogsGame:
             y = cy0 + (i - scroll_off) * 10
             if y > max_y:
                 break
+            # Status dot before each indented check line — reads as a checklist.
+            if text.startswith("  "):
+                _dc = color if color in (C_ERROR, C_WARNING) else C_SUCCESS
+                pyxel.circ(cx0 + 4, y + 3, 1, _dc)
             if i == visible - 1 and frame % 20 < 10:
                 pyxel.text(cx0 + len(text) * 4 + 2, y, "_", C_HACK_CYAN)
             pyxel.text(cx0, y, text, color)
@@ -1205,6 +1451,14 @@ class WatchDogsGame:
         pct = min(visible / total, 1.0) if total > 0 else 1.0
         bar_w = int((W - 60) * pct)
         pyxel.rect(30, bar_y, bar_w, 3, C_HACK_CYAN)
+        # Boot energy: a shimmer runs the filled bar + a glowing leading tip.
+        if bar_w > 4:
+            _bs = int((pyxel.frame_count * 3) % (bar_w + 10))
+            if _bs < bar_w:
+                pyxel.line(30 + _bs, bar_y, 30 + _bs, bar_y + 2, 7)
+        if 0 < bar_w < (W - 60):
+            _tipc = 7 if pyxel.frame_count % 10 < 5 else C_HACK_CYAN
+            pyxel.rect(30 + bar_w - 1, bar_y - 1, 2, 5, _tipc)
         pyxel.rectb(30, bar_y, W - 60, 3, C_DIM)
 
     def msg(self, text, color=C_TEXT):
@@ -1226,12 +1480,27 @@ class WatchDogsGame:
 
     def _try_reconnect_esp32(self) -> bool:
         """Try to detect and reconnect ESP32. Like JanOS wait_for_esp32."""
+        if getattr(self, "_shutting_down", False):
+            return False
         port = detect_esp32_port()
         if not port:
             return False
         try:
             self.serial = SerialManager(port)
             self.serial.setup()
+            # A replugged ESP32 cannot acknowledge a stop sent to the old port.
+            # Establish a new barrier directly, without recursing through _send.
+            if not self.serial.send_command("stop"):
+                raise OSError("ESP32 stop handshake could not be written")
+            self._clear_esp_scan_state(cancel_pending=True)
+            self._esp_stop_waiting = True
+            self._esp_stop_required = False
+            self._esp_stop_timed_out = self._esp_stop_ack = False
+            self._esp_stop_requested_at = time.monotonic()
+            self._pending_cmd_frame = pyxel.frame_count + 15
+            if getattr(self, "_wardrive_selected", None):
+                self._wardrive_pause("ESP32 reconnected", request_stop=False)
+            self._term_add("[TX] stop (reconnect handshake)", raw=True)
             self._esp32 = True
             self.state.connected = True
             self._boot_serial_port = port
@@ -1244,6 +1513,14 @@ class WatchDogsGame:
                     pass
             return True
         except Exception as e:
+            self._esp32 = False
+            self.state.connected = False
+            if self.serial:
+                try:
+                    self.serial.close()
+                except Exception:
+                    pass
+            self.serial = None
             self._term_add(f"[ERR] Reconnect failed: {e}", raw=True)
             return False
 
@@ -1274,15 +1551,67 @@ class WatchDogsGame:
         except Exception:
             pass
 
-    def _send(self, cmd: str):
-        if self.serial and self.serial.is_open:
-            self.serial.send_command(cmd)
-            self._term_add(f"[TX] {cmd}", raw=True)
-        elif self._try_reconnect_esp32():
-            self.serial.send_command(cmd)
-            self._term_add(f"[TX] {cmd} (after reconnect)", raw=True)
-        else:
+    def _game_git(self, root, *args, timeout=30):
+        """Run a git command in `root`, as the repo OWNER when the game is root.
+
+        The game runs under `sudo ./run.sh` (root), but the checkout is owned by
+        the player and root has no GitHub SSH key / known_hosts — so git over
+        SSH fails with 'Host key verification failed' and the updater's fetch /
+        pull silently die. Dropping to the owner (`sudo -u <owner>`) makes git
+        use THEIR ssh config, which works for the private dev repo (SSH) and the
+        public repo (HTTPS) alike. `-c safe.directory` covers the ownership
+        guard. When the game isn't root, git runs directly.
+        """
+        import os
+        import subprocess
+        cmd = ["git", "-C", str(root), "-c", f"safe.directory={root}", *args]
+        try:
+            if hasattr(os, "geteuid") and os.geteuid() == 0:
+                import pwd
+                uid = os.stat(root).st_uid
+                if uid != 0:
+                    owner = pwd.getpwuid(uid).pw_name
+                    cmd = ["sudo", "-n", "-H", "-u", owner] + cmd
+        except Exception:
+            pass
+        return subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
+
+    def _check_game_update(self) -> None:
+        """Worker: fetch a published release; UI changes stay on the main loop."""
+        try:
+            self._game_update_events.put(("check", self._game_updates.check()))
+        except Exception:
+            logging.getLogger(__name__).exception("Game release check failed")
+            self._game_update_events.put(("check_error", "Could not check for updates."))
+
+    def _send(self, cmd: str, *, wardrive=False):
+        if getattr(self, "_shutting_down", False):
+            return False
+        if (not wardrive and getattr(self, "_wardrive_selected", None)
+                and cmd.strip().partition(" ")[0] not in ("version", "ping")):
+            self._cancel_wardrive_plan(clear_active=True)
+        reconnected = False
+        if not self.serial or not self.serial.is_open:
+            reconnected = self._try_reconnect_esp32()
+        if not self.serial or not self.serial.is_open:
             self._term_add("[ERR] No serial connection", raw=True)
+            return False
+        if reconnected and getattr(self, "_esp_stop_waiting", False):
+            if cmd.strip() == "stop":
+                return True  # The reconnect handshake already wrote this command.
+            self._term_add("[ERR] ESP32 reconnected; wait for stop confirmation", raw=True)
+            return False
+        try:
+            sent = self.serial.send_command(cmd)
+        except Exception as exc:
+            self._term_add(f"[ERR] Serial command failed: {exc}", raw=True)
+            return False
+        if not sent:
+            self._term_add("[ERR] Serial command was not sent", raw=True)
+            return False
+        suffix = " (after reconnect)" if reconnected else ""
+        self._term_add(f"[TX] {cmd}{suffix}", raw=True)
+        return True
 
     # ------------------------------------------------------------------
     # Terminal helpers
@@ -1348,12 +1677,35 @@ class WatchDogsGame:
                 self._finish_boot()
             return
 
+        # Once devices were stopped for an upgrade, never restart scans or
+        # poll closed transports. Only the updater remains interactive.
+        if getattr(self, "_gameupd_closed_for_install", False):
+            self._poll_game_update_events()
+            self._update_gameupd_screen()
+            return
+
+        # One-shot: check GitHub for a newer game version (background, once).
+        if not getattr(self, "_game_check_started", False):
+            self._game_check_started = True
+            self._request_game_update_check()
+
         self._poll_serial()
         self._poll_gps()
+        self._assign_missing_mesh_gps()
         self._poll_lora()
+        self._poll_reticulum()
         self._poll_sdr()
+        self._poll_subghz()
         self._poll_watch()
         self._poll_wpasec_result()
+        self._poll_proximity()
+        # LoRa Reticulum active → hand the GIL to the radio RX thread each
+        # frame so it services RX_DONE promptly and reads each packet before
+        # the next arrives (clean FIFO reads → RNS can decrypt → delivery).
+        # This throttles the game to ~12 FPS for the duration of LoRa use;
+        # deliberate — the CM5 has headroom and reliable chat RX wins here.
+        if self._wd is not None and self._wd.lora_active:
+            time.sleep(0.05)
         self._breath = (self._breath + 1) % 120
 
         # Camera follows player
@@ -1363,11 +1715,7 @@ class WatchDogsGame:
         self.scan_pulse = (self.scan_pulse + 1) % 60
 
         # Delayed command (stop → wait → new cmd)
-        if self._pending_cmd and pyxel.frame_count >= self._pending_cmd_frame:
-            self._send(self._pending_cmd)
-            self.msg(f"[START] {self._pending_cmd_name}...", C_HACK_CYAN)
-            self.glitch_timer = 5
-            self._pending_cmd = None
+        self._dispatch_pending_esp_command()
 
         self._update_hack()
         self._update_wardriving_loop()
@@ -1390,6 +1738,15 @@ class WatchDogsGame:
             self._battery_pct = self._read_battery()
             self._loot_points_ts = time.time()
 
+        self._poll_game_update_events()
+        self._maybe_show_game_update_notice()
+        if getattr(self, "_game_update_notice", None) is not None:
+            self._update_game_update_notice()
+            return
+        if getattr(self, "_gameupd_screen", False):
+            self._update_gameupd_screen()
+            return
+
         # Keys
         # Loot screen toggle (backtick / grave accent)
         _bq = getattr(pyxel, "KEY_BACKQUOTE", getattr(pyxel, "KEY_GRAVE_ACCENT", 96))
@@ -1407,6 +1764,8 @@ class WatchDogsGame:
             self._update_mitm_screen()
         elif self._flipper_screen:
             self._update_flipper_screen()
+        elif self._subghz_screen:
+            self._update_subghz_screen()
         elif getattr(self, '_flash_screen', False):
             self._update_flash_screen()
         elif any(getattr(p, 'overlay_active', False) for p in self._plugins):
@@ -1418,10 +1777,20 @@ class WatchDogsGame:
             self._update_watch_screen()
         elif self._wl_screen:
             self._update_wl_screen()
+        elif self._lora_protocol_picker:
+            self._update_lora_protocol_picker()
+        elif self._mt_profile_screen:
+            self._update_mt_profile_picker()
+        elif self._mt_screen:
+            self._update_mt_screen()
         elif self._mc_screen:
             self._update_mc_screen()
+        elif self._wd_screen:
+            self._update_wd_screen()
         elif self._mc_region_screen:
             self._update_mc_region_picker()
+        elif self._prox_screen:
+            self._update_prox_screen()
         elif self._cluster_popup:
             self._update_cluster_popup()
         elif self.loot_screen:
@@ -1460,7 +1829,8 @@ class WatchDogsGame:
                 if pyxel.btnp(pyxel.KEY_0):
                     self.proj.reset_view()
                 if pyxel.btnp(pyxel.KEY_S) and not self._attack_mode:
-                    self._send("stop")
+                    self._request_esp_stop()
+                    self._clear_esp_scan_state(cancel_pending=True)
                     self.wifi_scanning = False
                     self.ble_scanning = False
                     self._wifi_scan_only = False
@@ -1517,12 +1887,18 @@ class WatchDogsGame:
                 self._gps_wait = True
                 self.msg("[GPS] Waiting for fix...", C_WARNING)
             elif pyxel.btnp(pyxel.KEY_N) or pyxel.btnp(pyxel.KEY_ESCAPE):
+                if getattr(self, "_wardrive_selected", None):
+                    self._cancel_wardrive_plan()
                 self._gps_wait_dialog = False
                 self._gps_wait = False
                 self._gps_wait_cmd = ""
                 self.msg("[GPS] Cancelled", C_DIM)
         elif self.confirm_quit:
             if pyxel.btnp(pyxel.KEY_Y):
+                if getattr(self, "_flash_running", False):
+                    self.msg("[FLASH] Wait for firmware flashing to finish", C_WARNING)
+                    self.confirm_quit = False
+                    return
                 self._cleanup()
                 pyxel.quit()
             if pyxel.btnp(pyxel.KEY_N) or pyxel.btnp(pyxel.KEY_ESCAPE):
@@ -1544,9 +1920,16 @@ class WatchDogsGame:
                 pass  # handled in _update_watch_screen
             elif self._wl_screen:
                 pass  # handled in _update_wl_screen
-            elif self._mc_screen:
+            elif (self._mc_screen or self._mt_screen or self._lora_protocol_picker
+                  or self._mt_profile_screen or self._mc_region_screen):
                 pass  # handled in _update_mc_screen
+            elif self._wd_screen:
+                pass  # handled in _update_wd_screen
+            elif self._prox_screen:
+                pass  # handled in _update_prox_screen
             elif self._gps_wait:
+                if getattr(self, "_wardrive_selected", None):
+                    self._cancel_wardrive_plan()
                 self._gps_wait = False
                 self._gps_wait_cmd = ""
                 self.msg("[GPS] Wait cancelled", C_DIM)
@@ -1589,9 +1972,10 @@ class WatchDogsGame:
             self.menu_open = False
             self._start_input_dialog(cat_idx, item_idx, input_type)
             return
-        # Keep menu open for toggle actions (GPS, LoRa, SDR, USB)
+        # Keep menu open for toggle actions (GPS, LoRa, SDR, USB, Mute)
         if state_key not in ("_gps_toggle", "_lora_toggle",
-                             "_sdr_toggle", "_usb_toggle"):
+                             "_sdr_toggle", "_usb_toggle", "_mute_toggle",
+                             "_prox_toggle"):
             self.menu_open = False
         self._execute_item(cmd, state_key, name, [])
 
@@ -1612,10 +1996,61 @@ class WatchDogsGame:
         self.input_field_idx = 0
         self.input_mode = True
 
+    def _survival_open(self, url, label):
+        """Crisis hub: open an offline resource (Kiwix / ctOS map) in a browser."""
+        import subprocess
+        from .config import SURVIVAL_BROWSER
+        try:
+            subprocess.Popen(
+                [SURVIVAL_BROWSER, f"--app={url}"],
+                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            self.msg(f"[CRISIS] {label}", C_SUCCESS)
+            self._term_add(f"[CRISIS] launched {label} -> {url}", raw=True)
+        except FileNotFoundError:
+            self.msg(f"[CRISIS] {SURVIVAL_BROWSER} not found", C_ERROR)
+        except Exception as e:
+            self.msg(f"[CRISIS] launch failed: {e}", C_ERROR)
+
+    def _survival_nav(self):
+        """Crisis hub: launch Organic Maps (offline vector maps + routing)."""
+        import subprocess
+        from .config import SURVIVAL_NAV_CMD
+        try:
+            subprocess.Popen(
+                list(SURVIVAL_NAV_CMD),
+                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            self.msg("[CRISIS] Navigation (Organic Maps)", C_SUCCESS)
+            self._term_add("[CRISIS] launched Organic Maps (offline nav)", raw=True)
+        except FileNotFoundError:
+            self.msg("[CRISIS] flatpak / Organic Maps not installed", C_ERROR)
+        except Exception as e:
+            self.msg(f"[CRISIS] launch failed: {e}", C_ERROR)
+
+    def _survival_status(self):
+        """Crisis hub: probe local offline services (non-blocking) and report."""
+        import threading
+        threading.Thread(target=self._survival_status_worker, daemon=True).start()
+        self.msg("[CRISIS] Checking offline resources...", C_HACK_CYAN)
+
+    def _survival_status_worker(self):
+        import urllib.request
+        from .config import SURVIVAL_WIKI_URL, SURVIVAL_CTOS_MAP_URL
+        self._term_add("[CRISIS] Offline resources:", raw=True)
+        for label, url in (("Wikipedia/Kiwix", SURVIVAL_WIKI_URL),
+                           ("ctOS Map", SURVIVAL_CTOS_MAP_URL)):
+            try:
+                with urllib.request.urlopen(url, timeout=2) as r:
+                    ok = 200 <= r.getcode() < 400
+                self._term_add(f"  [{'UP  ' if ok else '??  '}] {label}: {url}",
+                               raw=True)
+            except Exception:
+                self._term_add(f"  [DOWN] {label}: {url}", raw=True)
+
     def _execute_item(self, cmd: str, state_key: str, name: str,
                       field_values: list):
         if state_key == "_stop_all":
-            self._send("stop")
+            self._request_esp_stop()
+            self._clear_esp_scan_state(cancel_pending=True)
             self.wifi_scanning = False
             self.ble_scanning = False
             self._wifi_scan_only = False
@@ -1661,6 +2096,20 @@ class WatchDogsGame:
             else:
                 self._start_map_download()
             return
+        if state_key == "_srv_wiki":
+            from .config import SURVIVAL_WIKI_URL
+            self._survival_open(SURVIVAL_WIKI_URL, "Wikipedia offline")
+            return
+        if state_key == "_srv_ctos":
+            from .config import SURVIVAL_CTOS_MAP_URL
+            self._survival_open(SURVIVAL_CTOS_MAP_URL, "ctOS Map")
+            return
+        if state_key == "_srv_nav":
+            self._survival_nav()
+            return
+        if state_key == "_srv_status":
+            self._survival_status()
+            return
         if state_key == "_bt_hid_wip":
             self.msg("[HID] BLE HID disabled — work in progress", C_WARNING)
             self.msg("[HID] Feature will return in a future update", C_DIM)
@@ -1688,6 +2137,21 @@ class WatchDogsGame:
         if state_key == "_sdr_433":
             self._sdr_433()
             return
+        if state_key == "_sdr_emergency":
+            self._sdr_emergency()
+            return
+        if state_key == "_subghz":
+            self._subghz_open_screen()
+            return
+        if state_key == "_mute_toggle":
+            self._toggle_mute()
+            return
+        if state_key == "_prox_toggle":
+            self._toggle_proximity()
+            return
+        if state_key == "_prox_view":
+            self._prox_screen = True
+            return
         if state_key == "_watch":
             self._watch_connect()
             return
@@ -1708,6 +2172,9 @@ class WatchDogsGame:
         if state_key == "_flash_esp":
             self._start_flash_esp32()
             return
+        if state_key == "_gameupd":
+            self._start_game_update()
+            return
         # Plugin commands: format is "_p_<idx>_<action>"
         if state_key and state_key.startswith("_p_"):
             rest = state_key[3:]
@@ -1726,6 +2193,9 @@ class WatchDogsGame:
             return
         if cmd.startswith("_"):
             self._handle_python_attack(cmd, state_key, name, field_values)
+            return
+        if state_key in ("wardriving", "bt_scanning") and hasattr(self, "_wardrive_selected"):
+            self._toggle_wardrive(state_key)
             return
         if not self._esp32:
             # Try reconnect before giving up
@@ -1752,14 +2222,11 @@ class WatchDogsGame:
         final_cmd = (cmd + " " + " ".join(v for v in field_values if v)
                      if field_values else cmd)
         if running:
-            self._send("stop")
-            self.msg(f"[STOP] {name}", C_DIM)
-            self._set_running(state_key, False)
-            # Reset rescan timers
-            if state_key == "wardriving":
-                self._wifi_scan_done_time = 0.0
-            elif state_key == "bt_scanning":
-                self._bt_scan_done_time = 0.0
+            if self._request_esp_stop():
+                self.msg(f"[STOP] {name}", C_DIM)
+                self._clear_esp_scan_state(cancel_pending=True)
+            else:
+                self.msg(f"[ERR] Could not stop {name}", C_ERROR)
         else:
             self._start_scan_cmd(final_cmd, state_key, name)
 
@@ -1774,23 +2241,99 @@ class WatchDogsGame:
 
     def _start_scan_cmd(self, final_cmd: str, state_key: str, name: str):
         """Start an ESP32 command. Send stop first only if something is running."""
-        if self._anything_running_on_esp():
-            # Something running — stop first, then send after delay
-            self._send("stop")
+        scheduled = state_key in ("wardriving", "bt_scanning")
+        if not scheduled and getattr(self, "_wardrive_selected", None):
+            self._cancel_wardrive_plan()
+        if self._esp_stop_waiting and self._esp_stop_timed_out:
+            self.msg("[ERR] ESP32 stop is unconfirmed; check its connection", C_ERROR)
+            return False
+        if (self._esp_stop_waiting or getattr(self, "_esp_stop_required", False)
+                or self._anything_running_on_esp()):
+            if not self._request_esp_stop(cancel_pending=False, wardrive=scheduled):
+                self.msg("[ERR] Could not stop the current ESP32 operation", C_ERROR)
+                return False
             self._pending_cmd = final_cmd
-            self._pending_cmd_frame = pyxel.frame_count + 15  # ~500ms
             self._pending_cmd_name = name
-        else:
-            # Nothing running — send directly
-            self._send(final_cmd)
-            self.msg(f"[START] {name}...", C_HACK_CYAN)
-            self.glitch_timer = 5
+            self._pending_cmd_state = state_key
+            self.msg(f"[INIT] Stopping ESP32 before {name}...", C_DIM)
+            return True
+        return self._begin_esp_scan(final_cmd, state_key, name)
+
+    def _request_esp_stop(self, *, cancel_pending=True, wardrive=False):
+        """Keep the stop barrier even if the player has not queued a next scan."""
+        if not wardrive and getattr(self, "_wardrive_selected", None):
+            self._cancel_wardrive_plan()
+        if self._esp_stop_waiting:
+            if cancel_pending:
+                self._clear_esp_scan_state(cancel_pending=True)
+            return True
+        if not self._send("stop", wardrive=True):
+            self._esp_stop_required = True
+            return False
+        self._clear_esp_scan_state(cancel_pending=cancel_pending)
+        self._esp_stop_waiting = True
+        self._esp_stop_required = False
+        self._esp_stop_timed_out = False
+        self._esp_stop_ack = False
+        self._esp_stop_requested_at = time.monotonic()
+        self._pending_cmd_frame = pyxel.frame_count + 15  # ~500ms minimum
+        return True
+
+    def _clear_esp_scan_state(self, *, cancel_pending=False):
+        """The ESP32 has one operation owner; old rescan timers cannot survive it."""
+        for key in ("wifi_scanning", "ble_scanning", "_wifi_scan_only", "_ble_scan_only",
+                    "_bt_tracking", "_bt_airtag", "sniffing", "capturing_hs"):
+            setattr(self, key, False)
+        self._wifi_scan_done_time = self._bt_scan_done_time = 0.0
+        self._wifi_scan_start_time = self._bt_scan_start_time = 0.0
+        if cancel_pending:
+            self._pending_cmd = None
+            self._pending_cmd_state = self._pending_cmd_name = ""
+
+    def _begin_esp_scan(self, final_cmd, state_key, name):
+        scheduled = state_key in getattr(self, "_wardrive_selected", ())
+        if not self._send(final_cmd, wardrive=scheduled):
+            self.msg(f"[ERR] Could not start {name}", C_ERROR)
+            return False
+        self._clear_esp_scan_state()
         self._set_running(state_key, True)
+        if state_key in ("wardriving", "wifi_scan"):
+            self._wifi_scan_start_time = time.time()
         if state_key in ("bt_scanning", "ble_scan"):
             self._bt_scan_start_time = time.time()
-        self.msg(f"[INIT] {name}...", C_DIM)
+        if scheduled:
+            self._wardrive_phase_started(state_key)
+        self.msg(f"[START] {name}...", C_HACK_CYAN)
+        self.glitch_timer = 5
+        return True
+
+    def _dispatch_pending_esp_command(self):
+        if not self._esp_stop_waiting:
+            return
+        if (time.monotonic() - self._esp_stop_requested_at >= 5.0
+                and not self._esp_stop_timed_out):
+            self._clear_esp_scan_state(cancel_pending=True)
+            self._esp_stop_timed_out = True
+            if getattr(self, "_wardrive_selected", None):
+                self._wardrive_pause("ESP32 stop was not confirmed")
+            message = "[ERR] ESP32 stop was not confirmed; new operation cancelled"
+            self.msg(message, C_ERROR)
+            self._term_add(message, raw=True)
+        if not self._esp_stop_ack or pyxel.frame_count < self._pending_cmd_frame:
+            return
+        cmd, state, name = self._pending_cmd, self._pending_cmd_state, self._pending_cmd_name
+        self._pending_cmd = None
+        self._pending_cmd_state = self._pending_cmd_name = ""
+        self._esp_stop_waiting = False
+        self._esp_stop_timed_out = False
+        self._esp_stop_ack = False
+        self._esp_stop_requested_at = 0.0
+        if cmd:
+            self._begin_esp_scan(cmd, state, name)
 
     def _is_running(self, state_key: str) -> bool:
+        if state_key in ("wardriving", "bt_scanning") and hasattr(self, "_wardrive_selected"):
+            return state_key in self._wardrive_selected
         return {
             "wardriving":    self.wifi_scanning,
             "bt_scanning":   self.ble_scanning,
@@ -1806,12 +2349,17 @@ class WatchDogsGame:
             "race":          self._race.running,
             "portal":        self.state.portal_running,
             "evil_twin":     self.state.evil_twin_running,
-            "meshcore":      self._lora.running and self._lora.mode == "meshcore",
+            "meshcore":      self._lora.running and self._lora.ready and self._lora.mode == "meshcore",
+            "meshtastic":    self._mt.running and self._mt.ready,
             "_sdr_adsb":     self._sdr.running and "adsb" in self._sdr.mode,
             "_sdr_433":      self._sdr.running and "433" in self._sdr.mode,
+            "_sdr_emergency": self._sdr.running and "emerg" in self._sdr.mode,
+            "_subghz":        self._subghz.connected,
+            "_mute_toggle":   getattr(self, "_muted", False),
+            "_prox_toggle":   self._prox.enabled,
             "_watch":        self._watch.connected,
             "_gps_toggle":   self._gps_enabled,
-            "_lora_toggle":  self._lora_enabled,
+            "_lora_toggle":  bool(self._active_lora_protocol()),
             "_sdr_toggle":   self._sdr_enabled,
             "_usb_toggle":   self._usb_enabled,
         }.get(state_key, False)
@@ -1831,6 +2379,161 @@ class WatchDogsGame:
         elif state_key == "bt_airtag":    self._bt_airtag      = val
         elif state_key == "sniffer":      self.sniffing        = val
         elif state_key == "handshake":    self.capturing_hs    = val
+
+    def _wardrive_notice(self, text, color=C_DIM):
+        self._term_add("[WARD] " + text, raw=True)
+        self.msg("[WARD] " + text, color)
+
+    def _wardrive_next_key(self):
+        selected = self._wardrive_selected
+        previous = self._wardrive_phase or self._wardrive_last_phase
+        if len(selected) == 2 and previous:
+            return "bt_scanning" if previous == "wardriving" else "wardriving"
+        return "wardriving" if "wardriving" in selected else "bt_scanning"
+
+    def _cancel_wardrive_plan(self, *, clear_active=False):
+        if not hasattr(self, "_wardrive_selected"):
+            return
+        self._wardrive_selected.clear()
+        self._wardrive_phase = self._wardrive_last_phase = ""
+        self._wardrive_phase_done = 0.0
+        self._wardrive_paused = self._wardrive_save_failed = False
+        self._wardrive_save_errors_at_start = None
+        self._gps_wait = self._gps_wait_dialog = False
+        self._gps_wait_cmd = self._gps_wait_state = self._gps_wait_name = ""
+        if self._pending_cmd_state in ("wardriving", "bt_scanning"):
+            self._pending_cmd = None
+            self._pending_cmd_state = self._pending_cmd_name = ""
+        if clear_active:
+            self.wifi_scanning = self.ble_scanning = False
+            self._wifi_scan_start_time = self._bt_scan_start_time = 0.0
+            self._wifi_scan_done_time = self._bt_scan_done_time = 0.0
+
+    def _wardrive_pause(self, reason, *, request_stop=True):
+        if not getattr(self, "_wardrive_selected", None):
+            return
+        if (request_stop and not getattr(self, "_esp_stop_required", False)
+                and self._anything_running_on_esp()):
+            self._request_esp_stop(wardrive=True)
+        self._clear_esp_scan_state(cancel_pending=True)
+        self._wardrive_phase = ""
+        self._wardrive_phase_done = 0.0
+        self._wardrive_paused = True
+        self._gps_wait = self._gps_wait_dialog = False
+        self._gps_wait_cmd = ""
+        self._wardrive_notice(reason + "; wardrive paused. Toggle OFF/ON to retry", C_ERROR)
+
+    def _toggle_wardrive(self, key):
+        label = "WiFi" if key == "wardriving" else "BLE"
+        if key in self._wardrive_selected:
+            self._wardrive_selected.remove(key)
+            if not self._wardrive_selected:
+                owned = bool(self._wardrive_phase or self._pending_cmd_state in ("wardriving", "bt_scanning"))
+                self._cancel_wardrive_plan()
+                if owned and not self._request_esp_stop(wardrive=True):
+                    self._clear_esp_scan_state(cancel_pending=True)
+                    self._wardrive_notice("Could not confirm ESP32 stop", C_ERROR)
+                self._wardrive_notice("WiFi and BLE OFF")
+                return
+            if self._wardrive_phase == key:
+                if self._wardrive_phase_done:
+                    self._wardrive_notice(label + " OFF; finishing the scan pause")
+                    self._wardrive_tick()
+                    return
+                if not self._wardrive_saved():
+                    self._wardrive_pause("Scan data could not be saved")
+                    return
+                if not self._request_esp_stop(wardrive=True):
+                    self._wardrive_pause("Could not stop the current phase")
+                    return
+                self._wardrive_last_phase, self._wardrive_phase = key, ""
+                self._wardrive_phase_done = 0.0
+            if self._pending_cmd_state == key:
+                self._pending_cmd = None
+                self._pending_cmd_state = self._pending_cmd_name = ""
+            self._wardrive_notice(label + " OFF; remaining mode kept")
+            self._wardrive_tick()
+            return
+        if not self._esp32 and not self._try_reconnect_esp32():
+            self._wardrive_notice("No ESP32 connection", C_ERROR)
+            return
+        first = not self._wardrive_selected
+        self._wardrive_selected.add(key)
+        self._wardrive_paused = False
+        if first and not self.gps_fix:
+            self._gps_wait_cmd = "scan_networks" if key == "wardriving" else "scan_bt"
+            self._gps_wait_state, self._gps_wait_name = key, label + " Wardrive"
+            self._gps_wait_dialog = True
+            self._wardrive_notice(label + " selected; GPS fix required")
+            return
+        if self._gps_wait or self._gps_wait_dialog:
+            self._wardrive_notice(label + " selected; waiting for GPS fix")
+            return
+        self._wardrive_notice(label + (" queued after current phase" if self._wardrive_phase else " ON"))
+        self._wardrive_tick()
+
+    def _wardrive_phase_started(self, key):
+        self._wardrive_phase = key
+        self._wardrive_phase_done = 0.0
+        self._wardrive_save_failed = False
+        self._wardrive_save_errors_at_start = getattr(self.loot, "wardrive_save_errors", None)
+        label = "WiFi" if key == "wardriving" else "BLE"
+        queued = self._wardrive_next_key()
+        suffix = ""
+        if queued != key:
+            suffix = "; " + ("WiFi" if queued == "wardriving" else "BLE") + " queued"
+        self._wardrive_notice(label + " active" + suffix, C_HACK_CYAN)
+
+    def _wardrive_saved(self):
+        counter = getattr(self.loot, "wardrive_save_errors", None)
+        return (getattr(self.loot, "active", False) and not self._wardrive_save_failed and counter is not None
+                and counter == self._wardrive_save_errors_at_start)
+
+    def _wardrive_complete(self, key):
+        if getattr(self, "_wardrive_phase", "") != key:
+            return False
+        if self._wardrive_phase_done:
+            return True
+        if not self._wardrive_saved():
+            self._wardrive_pause("Scan data could not be saved")
+            return True
+        self._wardrive_phase_done = time.monotonic()
+        if key == "wardriving":
+            self.wifi_scanning = False
+            self._wifi_scan_start_time = 0.0
+        else:
+            self.ble_scanning = False
+            self._bt_scan_start_time = 0.0
+        label = "WiFi" if key == "wardriving" else "BLE"
+        self._wardrive_notice(label + " complete and saved; next phase in 2 s", C_SUCCESS)
+        return True
+
+    def _wardrive_tick(self):
+        if (not self._wardrive_selected or self._wardrive_paused or self._gps_wait
+                or self._gps_wait_dialog or self._pending_cmd):
+            return
+        if not getattr(self.loot, "active", False):
+            self._wardrive_pause("Loot storage is unavailable")
+            return
+        phase = self._wardrive_phase
+        if phase:
+            if not self._wardrive_phase_done or time.monotonic() - self._wardrive_phase_done < self._SCAN_INTERVAL:
+                return
+            if not self._wardrive_saved():
+                self._wardrive_pause("Scan data could not be saved")
+                return
+            next_key = self._wardrive_next_key()
+            if next_key != phase and not self._request_esp_stop(wardrive=True):
+                self._wardrive_pause("Could not stop the current phase")
+                return
+            self._wardrive_last_phase, self._wardrive_phase = phase, ""
+            self._wardrive_phase_done = 0.0
+        else:
+            next_key = self._wardrive_next_key()
+        command = "scan_networks" if next_key == "wardriving" else "scan_bt"
+        label = "WiFi Wardrive" if next_key == "wardriving" else "BLE Wardrive"
+        if not self._start_scan_cmd(command, next_key, label):
+            self._wardrive_pause("Could not start " + label)
 
     # ------------------------------------------------------------------
     # Python-native attacks (Dragon Drain, MITM, BlueDucky, RACE)
@@ -1954,6 +2657,8 @@ class WatchDogsGame:
 
         # ── MeshCore Messenger ──
         if cmd == "_meshcore":
+            if self._lora_enabled and not self._switch_lora_protocol("meshcore"):
+                return
             aio_lora = self._lora_enabled and self._lora.running
             watch_lora = self._watch.connected
             if not aio_lora and not watch_lora:
@@ -1964,6 +2669,7 @@ class WatchDogsGame:
                 self._watch.send_command("lora_start")
                 self._watch_log_add("[Watch] LoRa started for MeshCore", C_HACK_CYAN)
             self._mc_screen = True
+            self._mt_screen = False
             self._mc_scroll = 0
             self.menu_open = False
             # Show keyboard shortcuts on first open of this session
@@ -1976,15 +2682,64 @@ class WatchDogsGame:
                 self._mc_help_shown = True
             return
 
+        if cmd == "_meshtastic":
+            if not self._lora_enabled:
+                self.msg("[MT] Enable LoRa first (SYSTEM > LoRa)", C_WARNING)
+                return
+            if not self._switch_lora_protocol("meshtastic"):
+                return
+            self._mt_screen = True
+            self._mc_screen = False
+            self._mt_view["scroll"] = 0
+            self.menu_open = False
+            if not getattr(self, "_mt_help_shown", False):
+                self._mt_view["log"].append(("\x11 C-N Name  C-H Nodes  C-X Clear  ESC Back", C_DIM))
+                self._mt_help_shown = True
+            return
+
+        if cmd == "_meshtastic_profile":
+            profiles = (self._rf_profiles.choices("meshtastic")
+                        if getattr(self, "_rf_profiles", None) else ("sfnarrow", "longfast"))
+            self._mt_profile_sel = profiles.index(self._mt_profile) if self._mt_profile in profiles else 0
+            self._rf_confirm = None
+            self._mt_profile_screen = True
+            self.menu_open = False
+            return
+
+        # ── WDGWars Reticulum/LXMF chat ──
+        if cmd == "_wdgwars":
+            if self._wd is None:
+                self.msg("[WD] Reticulum missing — pip install rns lxmf",
+                         C_WARNING)
+                return
+            self._wd_screen = True
+            self._wd_scroll = 0
+            self.menu_open = False
+            if not self._wd_started:
+                self._wd.nick = self._mc_node_name
+                self._wd.start()
+                self._wd_started = True
+                self._wd_log.append(
+                    ("\x11 Connecting to WDGWars hub over TCP...",
+                     C_HACK_CYAN))
+                self._wd_log.append(
+                    (f"\x11 You: {self._mc_node_name}  —  #general", 13))
+                self._wd_log.append(
+                    ("\x11 Send a message to join the fan-out, then you "
+                     "receive broadcasts.", C_DIM))
+            return
+
         # ── MeshCore Region picker ──
         if cmd == "_meshcore_region":
             from .lora_manager import MESHCORE_PRESETS
-            keys = list(MESHCORE_PRESETS.keys())
+            keys = (self._rf_profiles.choices("meshcore")
+                    if getattr(self, "_rf_profiles", None) else list(MESHCORE_PRESETS.keys()))
             try:
                 self._mc_region_sel = keys.index(self._mc_region)
             except ValueError:
                 self._mc_region_sel = 0
             self._mc_region_screen = True
+            self._rf_confirm = None
             self.menu_open = False
             return
 
@@ -2276,7 +3031,7 @@ class WatchDogsGame:
     def _toggle_gps(self):
         new_state = not self._gps_enabled
         if self._aio_available:
-            ok = AioManager.toggle("gps", new_state)
+            ok = self._aio_power.toggle("gps", new_state)
             if not ok:
                 self.msg("[GPS] GPIO toggle failed", C_ERROR)
                 return
@@ -2302,43 +3057,381 @@ class WatchDogsGame:
             self._term_add("[SYS] GPS disabled", raw=True)
         self.glitch_timer = 2
 
-    def _toggle_lora(self):
-        new_state = not self._lora_enabled
-        if self._aio_available:
-            ok = AioManager.toggle("lora", new_state)
-            if not ok:
-                self.msg("[LoRa] GPIO toggle failed", C_ERROR)
-                return
-        # Start/stop MeshCore
-        if new_state:
-            self._lora.start_meshcore(self._mc_region)
-            self._lora_enabled = True
-            if self._lora.running:
-                self.msg("[LoRa] ON — MeshCore started", C_SUCCESS)
-                self._term_add("[SYS] LoRa enabled, MeshCore active", raw=True)
+    def _active_lora_protocol(self):
+        if self._mt.running and self._mt.ready:
+            return "meshtastic"
+        if self._lora.running and getattr(self._lora, "ready", False):
+            return self._lora.mode
+        return ""
+
+    def _stop_radio_owner(self):
+        """Stop before retuning; a timed-out worker retains ownership."""
+        if self._wd is not None and self._wd.lora_active:
+            self._wd.disable_lora()
+        if self._mt.running and not self._mt.stop():
+            self.msg("[LoRa] Meshtastic stop pending; radio remains owned", C_ERROR)
+            return False
+        if self._lora.running and not self._lora.stop():
+            self.msg("[LoRa] Radio stop pending; cannot switch", C_ERROR)
+            return False
+        self._radio_protocol = ""
+        return True
+
+    def _switch_lora_protocol(self, protocol):
+        if getattr(self, "_shutting_down", False):
+            return False
+        if self._active_lora_protocol() == protocol:
+            return True
+        if not self._lora_enabled or not self._stop_radio_owner():
+            return False
+        try:
+            controller = getattr(self, "_rf_profiles", None)
+            target = controller.target(protocol) if controller is not None else None
+            if protocol == "meshtastic":
+                profile = target or self._mt_profile
+                ok = self._mt.start(profile)
             else:
-                self.msg("[LoRa] GPIO ON but radio init failed", C_WARNING)
-                self._term_add("[SYS] LoRa GPIO on, SX1262 init failed — use Watch LoRa", raw=True)
-            # Announce presence to mesh network
-            lat = self.player_lat if self.gps_fix else 0.0
-            lon = self.player_lon if self.gps_fix else 0.0
-            self._lora.send_meshcore_advert(self._mc_node_name, lat, lon)
-        else:
-            if self._lora.running:
-                self._lora.stop()
-            self._lora_enabled = False
-            self._mc_screen = False
-            self._mc_bubbles.clear()
-            self.msg("[LoRa] OFF", C_WARNING)
-            self._term_add("[SYS] LoRa disabled, MeshCore stopped", raw=True)
+                profile = target or self._mc_region
+                self._lora.set_mc_channels(self._mc_channels_list)
+                self._lora.set_mc_active_channel(self._mc_active_ch)
+                ok = self._lora.start_meshcore(profile)
+            if not ok:
+                self._radio_protocol = ""
+                self.msg("[LoRa] Radio initialization failed", C_ERROR)
+                return False
+            if self._aio_available:
+                self._aio_power.claim("lora")
+            if protocol == "meshtastic":
+                self._mt_profile = profile
+            else:
+                self._mc_region = profile
+            if controller is not None:
+                controller.applied(protocol, profile)
+            self._radio_protocol = protocol
+            self.state.lora_running = True
+            self.state.lora_mode = protocol
+            self.msg(f"[LoRa] {protocol} active", C_SUCCESS)
+            if protocol == "meshcore":
+                lat = self.player_lat if self.gps_fix else 0.0
+                lon = self.player_lon if self.gps_fix else 0.0
+                self._lora.send_meshcore_advert(self._mc_node_name, lat, lon)
+            return True
+        except Exception as exc:
+            self._radio_protocol = ""
+            self.msg(f"[LoRa] {exc}", C_ERROR)
+            return False
+
+    def _toggle_lora(self):
+        if not self._lora_enabled:
+            self._lora_protocol_sel = 1
+            self._lora_protocol_picker = True
+            self.menu_open = False
+            return
+        if not self._stop_radio_owner():
+            return
+        if self._aio_available and not self._aio_power.toggle("lora", False):
+            self.msg("[LoRa] GPIO toggle failed", C_ERROR)
+            return
+        self._lora_enabled = False
+        self.state.lora_running = False
+        self.state.lora_mode = ""
+        self._mc_screen = self._mt_screen = False
+        self._mc_bubbles.clear()
+        self.msg("[LoRa] OFF", C_WARNING)
         self.glitch_timer = 2
+
+    def _update_lora_protocol_picker(self):
+        if pyxel.btnp(pyxel.KEY_LEFT):
+            self._lora_protocol_sel = 0
+        elif pyxel.btnp(pyxel.KEY_RIGHT):
+            self._lora_protocol_sel = 1
+        elif pyxel.btnp(pyxel.KEY_ESCAPE):
+            self._lora_protocol_picker = False
+            self._esc_consumed_frame = pyxel.frame_count
+        elif pyxel.btnp(pyxel.KEY_RETURN):
+            was_powered = self._lora_enabled
+            if not was_powered:
+                if not self._aio_available or not self._aio_power.toggle("lora", True):
+                    self.msg("[LoRa] GPIO toggle failed", C_ERROR)
+                    return
+                self._lora_enabled = True
+            protocol = ("meshtastic", "meshcore")[self._lora_protocol_sel]
+            self._lora_protocol_picker = False
+            if not self._switch_lora_protocol(protocol) and not was_powered:
+                if self._stop_radio_owner():
+                    self._aio_power.toggle("lora", False)
+                    self._lora_enabled = False
+
+    def _draw_lora_protocol_picker(self):
+        # Same frame, palette, row height and keyboard hints as the region picker.
+        pyxel.rect(0, HUD_TOP, W, TERM_Y - HUD_TOP, 0)
+        dx, dy, dw, dh = 100, 120, 440, 90
+        pyxel.rect(dx, dy, dw, dh, 0)
+        pyxel.rectb(dx, dy, dw, dh, C_WARNING)
+        pyxel.rectb(dx + 1, dy + 1, dw - 2, dh - 2, C_COAST)
+        pyxel.text(dx + 4, dy + 4, "LORA - Select protocol", C_WARNING)
+        pyxel.line(dx + 2, dy + 14, dx + dw - 3, dy + 14, C_COAST)
+        for index, label in enumerate(("Meshtastic", "MeshCore")):
+            x = dx + 12 + index * 212
+            selected = self._lora_protocol_sel == index
+            if selected:
+                pyxel.rect(x, dy + 30, 200, 17, C_WARNING)
+            pyxel.text(x + 8, dy + 35, label, 0 if selected else C_TEXT)
+        pyxel.text(dx + 4, dy + dh - 12, "LEFT/RIGHT select   ENTER apply   ESC cancel", C_DIM)
+
+    def _update_mt_profile_picker(self):
+        if getattr(self, "_rf_profiles", None) is not None:
+            self._update_radio_profile_picker("meshtastic")
+            return
+        profiles = ("sfnarrow", "longfast")
+        if pyxel.btnp(pyxel.KEY_UP):
+            self._mt_profile_sel = max(0, self._mt_profile_sel - 1)
+        elif pyxel.btnp(pyxel.KEY_DOWN):
+            self._mt_profile_sel = min(1, self._mt_profile_sel + 1)
+        elif pyxel.btnp(pyxel.KEY_ESCAPE):
+            self._mt_profile_screen = False
+            self._esc_consumed_frame = pyxel.frame_count
+        elif pyxel.btnp(pyxel.KEY_RETURN):
+            selected = profiles[self._mt_profile_sel]
+            if self._mt.running:
+                if not self._mt.stop():
+                    self.msg("[MT] Stop pending; profile unchanged", C_ERROR)
+                    return
+                if not self._mt.start(selected):
+                    self.msg(f"[MT] {self._mt.last_error}", C_ERROR)
+                    return
+            elif not self._mt.set_profile(selected):
+                self.msg(f"[MT] {self._mt.last_error}", C_ERROR)
+                return
+            self._mt_profile = selected
+            self._mt_profile_screen = False
+
+    def _draw_mt_profile_picker(self):
+        if getattr(self, "_rf_profiles", None) is not None:
+            self._draw_radio_profile_picker("meshtastic")
+            return
+        from meshtastic_rx_probe import get_profile
+        pyxel.rect(0, HUD_TOP, W, TERM_Y - HUD_TOP, 0)
+        dx, dy, dw, dh = 100, 118, 440, 100
+        pyxel.rect(dx, dy, dw, dh, 0)
+        pyxel.rectb(dx, dy, dw, dh, C_WARNING)
+        pyxel.rectb(dx + 1, dy + 1, dw - 2, dh - 2, C_COAST)
+        pyxel.text(dx + 4, dy + 4, "MESHTASTIC - Select profile (MANUAL)", C_WARNING)
+        pyxel.line(dx + 2, dy + 14, dx + dw - 3, dy + 14, C_COAST)
+        for i, key in enumerate(("sfnarrow", "longfast")):
+            cfg = get_profile(key)
+            y = dy + 25 + i * 18
+            selected = self._mt_profile_sel == i
+            if selected:
+                pyxel.rect(dx + 2, y - 1, dw - 4, 17, C_WARNING)
+            label = f"{cfg['channel_name']} {cfg['frequency_hz']/1e6:.3f} SF{cfg['sf']} BW{cfg['bandwidth_hz']/1000:g} CR4/5"
+            pyxel.text(dx + 6, y + 3, label, 0 if selected else C_TEXT)
+        pyxel.text(dx + 4, dy + dh - 12, "UP/DOWN select   ENTER apply   ESC cancel", C_DIM)
+
+    def _apply_radio_profile(self, protocol, key, notify=False):
+        """Apply RF only; protocol, channels, chat and player data stay owned elsewhere."""
+        controller = self._rf_profiles
+        manager = self._mt if protocol == "meshtastic" else self._lora
+        notices = self._rf_notices
+        if manager.running and getattr(manager, "mode", protocol) != protocol:
+            notices[protocol] = "Profile pending; radio belongs to another protocol"
+            return False
+        try:
+            if not manager.retune_profile(key):
+                notices[protocol] = "RF pending / error: " + str(manager.last_error or "radio busy")
+                if notify:
+                    self.msg("[RF] " + notices[protocol], C_WARNING)
+                return False
+            if protocol == "meshtastic":
+                self._mt_profile = key
+            else:
+                self._mc_region = key
+            controller.applied(protocol, key)
+            notices[protocol] = "RF profile set; chat channel kept"
+            if notify:
+                self.msg("[RF] " + notices[protocol], C_SUCCESS)
+            return True
+        except Exception as exc:
+            notices[protocol] = "RF settings error: " + str(exc)
+            if notify:
+                self.msg("[RF] " + notices[protocol], C_ERROR)
+            return False
+
+    def _poll_radio_profiles(self):
+        """Resolve GPS at most once a second, and retune only the current owner."""
+        controller = getattr(self, "_rf_profiles", None)
+        if controller is None:
+            return
+        now = time.monotonic()
+        if now - getattr(self, "_rf_last_poll", -float("inf")) < 1.0:
+            return
+        self._rf_last_poll = now
+        try:
+            radio_fix = getattr(self.gps, "radio_fix", None)
+            controller.update(radio_fix() if radio_fix else None)
+            protocol = self._active_lora_protocol()
+            if protocol not in ("meshcore", "meshtastic"):
+                return
+            target = controller.target(protocol)
+            current = self._mt_profile if protocol == "meshtastic" else self._mc_region
+            if target and target != current:
+                self._apply_radio_profile(protocol, target)
+            elif target == current and controller.status(protocol)["active_profile"] != current:
+                controller.applied(protocol, current)
+        except Exception as exc:
+            self._rf_notices["gps"] = "AUTO GPS error: " + str(exc)
+
+    def _update_radio_profile_picker(self, protocol):
+        controller = self._rf_profiles
+        choices = controller.choices(protocol)
+        index_name = "_mt_profile_sel" if protocol == "meshtastic" else "_mc_region_sel"
+        screen_name = "_mt_profile_screen" if protocol == "meshtastic" else "_mc_region_screen"
+        if not choices:
+            setattr(self, screen_name, False)
+            return
+        index = min(max(0, getattr(self, index_name)), len(choices) - 1)
+        confirm = self._rf_confirm
+        if confirm is not None and confirm["protocol"] == protocol:
+            if pyxel.btnp(pyxel.KEY_ESCAPE) or pyxel.btnp(pyxel.KEY_N):
+                self._rf_confirm = None
+                self._esc_consumed_frame = pyxel.frame_count
+            elif pyxel.btnp(pyxel.KEY_Y):
+                try:
+                    if confirm["action"] == "remember":
+                        # Repeat the manual/actual check in case an external
+                        # event changed the selection while the dialog was open.
+                        status = controller.status(protocol)
+                        actual = self._mt_profile if protocol == "meshtastic" else self._mc_region
+                        if (status["mode"] != "manual" or status["manual_profile"] != confirm["key"]
+                                or actual != confirm["key"]):
+                            raise ValueError("Press ENTER first to apply a MANUAL profile")
+                        controller.remember(protocol, confirm["key"], confirm["preview"])
+                        notice = "Profile saved for the displayed 2 km circle only"
+                    else:
+                        controller.forget_area(protocol, confirm["preview"])
+                        notice = "Local AUTO assignment removed"
+                    self._rf_notices[protocol] = notice
+                    self.msg("[RF] " + notice, C_SUCCESS)
+                except Exception as exc:
+                    self._rf_notices[protocol] = str(exc)
+                    self.msg("[RF] " + str(exc), C_ERROR)
+                self._rf_confirm = None
+            return
+        if pyxel.btnp(pyxel.KEY_UP):
+            index = max(0, index - 1)
+        elif pyxel.btnp(pyxel.KEY_DOWN):
+            index = min(len(choices) - 1, index + 1)
+        elif pyxel.btnp(pyxel.KEY_ESCAPE):
+            setattr(self, screen_name, False)
+            self._rf_confirm = None
+            self._esc_consumed_frame = pyxel.frame_count
+        elif pyxel.btnp(pyxel.KEY_A):
+            try:
+                controller.set_auto(protocol)
+                self._rf_notices[protocol] = "AUTO requires a GPS fix and an approved local profile"
+            except Exception as exc:
+                self._rf_notices[protocol] = str(exc)
+                self.msg("[RF] " + str(exc), C_ERROR)
+        elif pyxel.btnp(pyxel.KEY_M) or pyxel.btnp(pyxel.KEY_RETURN):
+            try:
+                controller.set_manual(protocol, choices[index])
+                self._apply_radio_profile(protocol, choices[index], notify=True)
+            except Exception as exc:
+                self._rf_notices[protocol] = str(exc)
+                self.msg("[RF] " + str(exc), C_ERROR)
+        elif pyxel.btnp(pyxel.KEY_S) or pyxel.btnp(pyxel.KEY_F):
+            action = "remember" if pyxel.btnp(pyxel.KEY_S) else "forget"
+            key = choices[index]
+            status = controller.status(protocol)
+            actual = self._mt_profile if protocol == "meshtastic" else self._mc_region
+            if action == "remember" and (status["mode"] != "manual"
+                    or status["manual_profile"] != key or actual != key):
+                self._rf_notices[protocol] = "Press ENTER first to apply a MANUAL profile"
+            else:
+                preview = controller.preview_area(protocol)
+                if preview is None:
+                    self._rf_notices[protocol] = "Saving/removing requires a stable GPS fix"
+                elif action == "forget" and hasattr(controller, "has_area") and not controller.has_area(protocol, preview):
+                    self._rf_notices[protocol] = "No saved assignment for this area"
+                else:
+                    self._rf_confirm = dict(protocol=protocol, action=action, key=key,
+                                            preview=dict(preview))
+        setattr(self, index_name, index)
+
+    def _draw_radio_profile_picker(self, protocol):
+        from .radio_profiles import PROFILES
+        controller = self._rf_profiles
+        choices = controller.choices(protocol)
+        index = getattr(self, "_mt_profile_sel" if protocol == "meshtastic" else "_mc_region_sel")
+        status = controller.status(protocol)
+        actual = self._mt_profile if protocol == "meshtastic" else self._mc_region
+        label = "MESHTASTIC" if protocol == "meshtastic" else "MESHCORE"
+        visible = min(6, len(choices))
+        dx, dw, dh = 100, 440, 128 + visible * 14
+        dy = HUD_TOP + max(0, (TERM_Y - HUD_TOP - dh) // 2)
+        pyxel.rect(0, HUD_TOP, W, TERM_Y - HUD_TOP, 0)
+        pyxel.rect(dx, dy, dw, dh, 0)
+        pyxel.rectb(dx, dy, dw, dh, C_WARNING)
+        pyxel.rectb(dx + 1, dy + 1, dw - 2, dh - 2, C_COAST)
+        pyxel.text(dx + 4, dy + 4, label + " - RF Profile", C_WARNING)
+        pyxel.line(dx + 2, dy + 14, dx + dw - 3, dy + 14, C_COAST)
+        confirm = self._rf_confirm
+        if confirm is not None and confirm["protocol"] == protocol:
+            preview = confirm["preview"]
+            action = "SAVE" if confirm["action"] == "remember" else "REMOVE"
+            lines = [action + " LOCAL AUTO ASSIGNMENT?",
+                     "Protocol: " + label,
+                     "Profile: " + PROFILES[confirm["key"]]["label"],
+                     "Area: " + preview["label"],
+                     f"GPS center: {preview['lat']:.6f}, {preview['lon']:.6f}",
+                     f"CIRCLE - radius {preview['radius_km']:g} km",
+                     "This circle only; not the whole country.",
+                     "Y confirm   N/ESC cancel"]
+            for i, text in enumerate(lines):
+                pyxel.text(dx + 6, dy + 23 + i * 14, text[:106], C_WARNING if i == 0 else C_TEXT)
+            return
+        mode = "AUTO GPS" if status["mode"] == "auto" else "MANUAL"
+        pyxel.text(dx + 6, dy + 20, f"Mode: {mode}    GPS region: {status['region']}", C_HACK_CYAN)
+        actual_cfg = PROFILES.get(actual, {})
+        actual_label = actual_cfg.get("label", actual)
+        if actual_cfg:
+            actual_label += (f" {actual_cfg['frequency_hz']/1e6:.3f} SF{actual_cfg['sf']}"
+                             f" BW{actual_cfg['bandwidth_hz']/1000:g} CR4/{actual_cfg['coding_rate_denominator']}")
+        manager = self._mt if protocol == "meshtastic" else self._lora
+        rf_state = "Active RF" if manager.running and manager.ready and manager.mode == protocol else "Saved RF / radio OFF"
+        pyxel.text(dx + 6, dy + 32, f"{rf_state}: {actual_label}"[:106], C_TEXT)
+        pyxel.text(dx + 6, dy + 44, status["gps_status"][:106], C_WARNING)
+        pyxel.text(dx + 6, dy + 56, status["reason"][:106], C_DIM)
+        notice = self._rf_notices.get(protocol) or self._rf_notices.get("gps", "")
+        pyxel.text(dx + 6, dy + 68, notice[:106], C_WARNING)
+        if protocol == "meshtastic":
+            channel = self._mt.channel_name
+        else:
+            channels = self._mc_channels_list
+            channel = channels[self._mc_active_ch].name if channels else "--"
+        channel_text = "Chat channel: " + channel + " (unchanged by GPS)"
+        if choices and PROFILES[choices[min(max(index, 0), len(choices) - 1)]]["region"] == "US":
+            channel_text += "  USA RF/antenna: TEST PENDING"
+        pyxel.text(dx + 6, dy + 80, channel_text[:106], C_DIM)
+        start = max(0, min(index - visible + 1, len(choices) - visible))
+        for row, key in enumerate(choices[start:start + visible]):
+            cfg = PROFILES[key]
+            y = dy + 96 + row * 14
+            selected = start + row == index
+            if selected:
+                pyxel.rect(dx + 2, y - 1, dw - 4, 13, C_WARNING)
+            entry = (f"{cfg['label']}  {cfg['frequency_hz']/1e6:.3f} "
+                     f"SF{cfg['sf']} BW{cfg['bandwidth_hz']/1000:g} CR4/{cfg['coding_rate_denominator']}")
+            pyxel.text(dx + 6, y + 3, entry[:106], 0 if selected else C_TEXT)
+        pyxel.text(dx + 4, dy + dh - 21, "A AUTO  M/ENTER MANUAL  UP/DOWN profile  ESC Back", C_DIM)
+        pyxel.text(dx + 4, dy + dh - 11, "S Save for this area   F Remove assignment", C_DIM)
 
     def _toggle_sdr(self):
         new_state = not self._sdr_enabled
         if not self._aio_available:
             self.msg("[SDR] AIO v2 not available", C_ERROR)
             return
-        ok = AioManager.toggle("sdr", new_state)
+        ok = self._aio_power.toggle("sdr", new_state)
         if not ok:
             self.msg("[SDR] GPIO toggle failed", C_ERROR)
             return
@@ -2367,6 +3460,8 @@ class WatchDogsGame:
             loot_dir = ""
         ok = self._sdr.start_adsb(loot_dir)
         if ok:
+            if self._aio_available:
+                self._aio_power.claim("sdr")
             self.msg("[ADS-B] Radar active", C_SUCCESS)
             self._term_add("[SDR] ADS-B radar started — tracking aircraft", raw=True)
             self._earn_badge("skywatch")
@@ -2401,6 +3496,8 @@ class WatchDogsGame:
             loot_dir = ""
         ok = self._sdr.start_433(loot_dir, self.player_lat, self.player_lon)
         if ok:
+            if self._aio_available:
+                self._aio_power.claim("sdr")
             self.msg("[433] Scanner active", C_SUCCESS)
             self._term_add("[SDR] 433 MHz scanner started — listening for sensors", raw=True)
             self._earn_badge("iot_hunter")
@@ -2414,12 +3511,996 @@ class WatchDogsGame:
                 self._term_add("[SDR] Install: sudo apt install rtl-433", raw=True)
         self.glitch_timer = 2
 
+    def _sdr_emergency(self):
+        """Emergency-vehicle RF presence scanner (fire VHF + police/EMS TETRA)."""
+        self._term_add("[SVC] Emergency Radio selected...", raw=True)
+        if not self._sdr.has_rtl_power():
+            self.msg("[SDR] rtl_power missing (apt install rtl-sdr)", C_ERROR)
+            self._term_add("[SDR] rtl_power not installed", raw=True)
+            return
+        if self._sdr.running and "emerg" in self._sdr.mode:
+            self._sdr.stop()
+            self.msg("[SVC] Emergency scan stopped", C_WARNING)
+            self._term_add("[SDR] Emergency radio scanner stopped", raw=True)
+            return
+        # RTL-SDR is a USB dongle (always enumerated) -> don't hard-block on the
+        # AIO SDR toggle; power the AIO rail if we can, but run either way.
+        if not self._sdr_enabled and self._aio_available:
+            try:
+                if self._aio_power.toggle("sdr", True):
+                    self._sdr_enabled = True
+                    self._term_add("[SYS] SDR power on (AIO)", raw=True)
+            except Exception:
+                pass
+        # One RTL-SDR dongle -> emergency scan needs it exclusively.
+        if self._sdr.running:
+            self._sdr.stop()
+            self._term_add("[SDR] stopped other SDR mode (single dongle)", raw=True)
+        try:
+            loot_dir = self.loot.session_dir if self.loot else ""
+        except Exception:
+            loot_dir = ""
+        ok = self._sdr.start_emergency(loot_dir, self.player_lat, self.player_lon)
+        if ok:
+            if self._aio_available:
+                self._aio_power.claim("sdr")
+            self.msg("[SVC] Emergency radio scan ACTIVE", C_SUCCESS)
+            self._term_add("[SDR] Emergency scan ON: STRAZ-VHF + TETRA "
+                           "(presence/RSSI, no decode)", raw=True)
+            self._earn_badge("emergency")
+        else:
+            self._term_add("[SDR] Emergency scan FAILED to start", raw=True)
+            for etype, data in self._sdr.poll_events():
+                if etype == "error":
+                    self.msg(f"[SDR] {data}", C_ERROR)
+                    self._term_add(f"[SDR] {data}", raw=True)
+        self.glitch_timer = 2
+
+    # ---- Monster RF (JanOS RF, CC1101) sub-GHz — dedicated screen ----------
+    def _subghz_open_screen(self):
+        if not SubGhzManager.available():
+            self.msg("[SubGHz] pyserial missing", C_ERROR)
+            return
+        self._subghz_screen = True
+        self._subghz_mode = "idle"
+        self._subghz_sel = 1                      # first actionable (0 = header)
+        self.menu_open = False
+        if not self._subghz.connected:
+            self._subghz_notice = "Connecting to Monster RF (ttyUSB)..."
+            threading.Thread(target=self._subghz_connect_worker, daemon=True).start()
+        else:
+            self._subghz_notice = f"Connected: {self._subghz.port}"
+
+    def _subghz_connect_worker(self, then=None):
+        """Connect to the Monster RF off the main thread (find_port blocks)."""
+        if getattr(self, "_shutting_down", False):
+            return
+        if not self._subghz.connected:
+            excl = (self._boot_serial_port,) if self._boot_serial_port else ()
+            if not self._subghz.connect(exclude=excl):
+                if getattr(self, "_shutting_down", False):
+                    return
+                # Not found. If the game's ESP32 auto-detect grabbed the Monster
+                # itself (a CH340 -> ttyUSB port; the real pentest XIAO is
+                # native-USB -> ttyACM), release it and retry so sub-GHz can use
+                # it. This happens when ttyACM0 hangs and detection falls back.
+                bp = self._boot_serial_port or ""
+                if "ttyUSB" in bp and self.serial is not None:
+                    try:
+                        self.serial.close()
+                    except Exception:
+                        pass
+                    self.serial = None
+                    self._esp32 = False
+                    self._boot_serial_port = None
+                    self._term_add(
+                        f"[SubGHz] released {bp} from ESP32 (it's the Monster)",
+                        raw=True)
+                    if not self._subghz.connect():
+                        self._subghz_notice = "Monster RF not found (JanOS RF?)"
+                        return
+                else:
+                    self._subghz_notice = "Monster RF not found (JanOS RF?)"
+                    return
+            if getattr(self, "_shutting_down", False):
+                self._subghz.shutdown()
+                return
+            self._earn_badge("flipper")
+            try:
+                if (self.loot and self.loot.session_dir
+                        and self._subghz_logf is None):
+                    self._subghz_logf = open(
+                        os.path.join(self.loot.session_dir,
+                                     "subghz_captures.log"), "a")
+            except Exception:
+                self._subghz_logf = None
+            self._subghz_notice = f"Connected: {self._subghz.port}"
+        if then:
+            time.sleep(1.2)   # drain the connect subghz_status reply first so it
+            if getattr(self, "_shutting_down", False):
+                return
+            try:              # doesn't merge into the next command's output
+                then()
+            except Exception:
+                pass
+
+    def _subghz_screen_action(self, action):
+        """Run a screen action, connecting first (async) if needed."""
+        if not self._subghz.connected:
+            threading.Thread(
+                target=self._subghz_connect_worker,
+                args=(lambda: self._subghz_do(action),), daemon=True).start()
+            self._subghz_notice = "Connecting..."
+            return
+        self._subghz_do(action)
+
+    def _subghz_do(self, action):
+        if action == "read":
+            self._subghz_drops = 0
+            self._subghz.drops = 0
+            self._subghz_catches = []
+            self._subghz_mode = "read"
+            self._subghz_notice = (f"Listening @ {self._subghz_freq:.2f} MHz "
+                                   "- press your remote")
+            threading.Thread(target=self._subghz_start_capture,
+                             args=(False,), daemon=True).start()
+        elif action == "record":
+            self._subghz_drops = 0
+            self._subghz.drops = 0
+            self._subghz_catches = []
+            self._subghz_mode = "record"
+            self._subghz_rec_start = time.time()
+            self._subghz_notice = (f"Recording RAW @ {self._subghz_freq:.2f} MHz"
+                                   " - press your remote")
+            threading.Thread(target=self._subghz_start_capture,
+                             args=(True,), daemon=True).start()
+        elif action == "analyzer":
+            self._subghz_drops = 0
+            self._subghz.drops = 0
+            self._subghz_catches = []
+            self._subghz_fa_hits = []
+            self._subghz.cmd_analyzer(-90)
+            self._subghz_mode = "analyzer"
+            self._subghz_notice = ("Analyzer: press a remote - finds its REAL "
+                                   "frequency (any band)")
+        elif action == "files":
+            self._subghz_mode = "files"
+            self._subghz_sel = 0
+            self._subghz_files = []
+            self._subghz_notice = "Loading saved signals from SD..."
+            self._subghz_expect_list = True
+            self._subghz.cmd_list("sd")      # JanOS-style: ONE read, static list
+        elif action == "status":
+            self._subghz.cmd_status()
+            self._subghz_notice = "Status requested"
+
+    def _subghz_start_capture(self, raw):
+        """Tune to the selected capture frequency, then start RX. Paced in a
+        thread (the JanOS RF console drops back-to-back commands)."""
+        try:
+            m = self._subghz
+            m.cmd_stop()
+            time.sleep(0.35)
+            m.cmd_clear()                 # start clean - drop stale ambient
+            time.sleep(0.35)
+            m.cmd_freq(self._subghz_freq)
+            time.sleep(0.35)
+            m.cmd_rx(raw=bool(raw))
+        except Exception:
+            pass
+
+    def _subghz_relist_sd(self, delay=1.4):
+        """Re-read the SD list ONCE after rename/delete. Coalesced (~2.5s) so
+        the explicit call and the 'renamed' event don't fire two overlapping
+        subghz_list -> duplicated/flickering rows."""
+        now = time.time()
+        if now - getattr(self, "_subghz_relist_ts", 0.0) < 2.5:
+            return
+        self._subghz_relist_ts = now
+        def _w():
+            time.sleep(delay)
+            self._subghz_expect_list = True
+            try:
+                self._subghz.cmd_list("sd")
+            except Exception:
+                pass
+        threading.Thread(target=_w, daemon=True).start()
+
+    def _subghz_save_and_list(self):
+        """After a capture: persist mem -> SD, then list the SD (JanOS-style)."""
+        try:
+            m = self._subghz
+            m.cmd_stop(); time.sleep(0.5)
+            m.cmd_save("all"); time.sleep(1.8)
+            self._subghz_expect_list = True
+            m.cmd_list("sd")     # -> list_result -> _subghz_files
+        except Exception:
+            pass
+
+    def _subghz_stop_and_save(self):
+        """Stop RX/record, then copy captured mem signals to SD (so they show up
+        in Saved and can be replayed). Paced in a thread — the JanOS RF console
+        has no flow control, so back-to-back commands get dropped."""
+        if not self._subghz.connected:
+            return
+
+        def _work():
+            try:
+                self._subghz.cmd_stop()
+                time.sleep(0.8)
+                self._subghz.cmd_list("mem")     # -> catches (list_result mem)
+                time.sleep(1.0)
+                self._subghz.cmd_save("all")     # persist mem -> SD
+                time.sleep(1.6)                  # SD writes are slow
+                # export each signal's clean metadata to the uConsole library
+                if not getattr(self, "_subghz_refreshing", False):
+                    self._subghz_refresh_from_monster()
+            except Exception:
+                pass
+
+        threading.Thread(target=_work, daemon=True).start()
+
+    @staticmethod
+    def _subghz_parse_entry(line: str) -> dict:
+        """Parse a [SUBGHZ_LIST] row, e.g.
+        '[SUBGHZ_LIST] idx=1 type=Princeton freq=433.92 bits=24 id=037C74 ...
+         name=00001_Princeton_433' or a RAW '... edges=9 name=00002_raw_433920'."""
+        idx = typ = freq = name = idcode = ""
+        for tok in line.split()[1:]:
+            if tok.startswith("idx="):
+                idx = tok[4:]
+            elif tok.startswith("type="):
+                typ = tok[5:]
+            elif tok.startswith("freq="):
+                freq = tok[5:]
+            elif tok.startswith("name="):
+                name = tok[5:]
+            elif tok.startswith("id="):
+                idcode = tok[3:]
+            elif "=" not in tok and not name:
+                name = tok
+        idpart = f" id={idcode}" if idcode else ""
+        disp = f"[{idx}] {typ:<9} {freq}MHz{idpart}  {name}".rstrip()
+        # Saved signals live under /sdcard/lab/subghz/<name>
+        path = ("/sdcard/lab/subghz/" + name) if name else ""
+        return {"idx": idx, "type": typ, "freq": freq, "name": name,
+                "display": disp, "path": path}
+
+    @staticmethod
+    def _subghz_fmt_name(fname: str) -> str:
+        """'00001_Princeton_433.92_037C74.sub' -> 'Princeton 433.92 037C74'."""
+        n = fname[:-4] if fname.endswith(".sub") else fname
+        parts = n.split("_", 1)
+        if len(parts) == 2 and parts[0].isdigit():
+            n = parts[1]
+        return n.replace("_", " ")
+
+    def _subghz_info_entry(self, line):
+        """Parse a [SUBGHZ_INFO] reply into an index-aware Saved entry usable for
+        subghz_tx: {idx, type, raw, name, display}."""
+        import re
+        m = re.search(r"\[SUBGHZ_INFO\][^\[]*", line)
+        meta = m.group(0) if m else line
+
+        def g(k):
+            mm = re.search(k + r"=(\S+)", meta)
+            return mm.group(1) if mm else ""
+
+        idx = g("idx")
+        if not idx:
+            return None
+        try:
+            idxn = int(idx)
+        except ValueError:
+            return None
+        typ, name, frq, idc = g("type"), g("name"), g("freq"), g("id")
+        israw = (typ.lower() == "raw")
+        disp_name = self._subghz_fmt_name(name) if name else f"signal {idxn}"
+        idpart = f" {idc}" if idc else ""
+        disp = f"[{idxn}] {(typ or '?'):<9} {frq or '?'}MHz{idpart}  {disp_name}".rstrip()
+        return {"idx": idxn, "type": typ, "raw": israw, "name": name,
+                "display": disp,
+                "path": ("/sdcard/lab/subghz/" + name if name else "")}
+
+    def _subghz_ingest_info(self, line):
+        """Update the live SD index map from an info reply. Does NOT rebuild the
+        Saved list — the uConsole library owns display (custom names)."""
+        e = self._subghz_info_entry(line)
+        if not e:
+            return
+        self._subghz_sd_by_idx[e["idx"]] = e
+
+    def _subghz_fa_parse(self, line):
+        """Pull freq / protocol / id / te from a [SUBGHZ_RX] analyzer decode."""
+        import re
+        fr = re.search(r"freq=([\d.]+)", line)
+        if not fr:
+            return None
+        idm = re.search(r"id=([0-9A-Fa-f]+)", line)
+        tp = re.search(r"type=(\w+)", line) or re.search(r"proto=(\w+)", line)
+        te = re.search(r"te=(\d+)", line)
+        return {"freq": fr.group(1),
+                "proto": tp.group(1) if tp else "?",
+                "id": idm.group(1) if idm else "?",
+                "te": te.group(1) if te else "?"}
+
+    def _subghz_read_library(self):
+        """The Saved list, 100% from the uConsole library (instant, offline).
+        Each .sub carries the user Display name + the Monster SD index used to
+        transmit (subghz_tx) + the Raw flag."""
+        out = []
+        try:
+            for fn in sorted(os.listdir(SUBGHZ_LIB_DIR)):
+                if not fn.endswith(".sub"):
+                    continue
+                disp, idx, israw, typ, frq = "", None, False, "", ""
+                try:
+                    for ln in open(os.path.join(SUBGHZ_LIB_DIR, fn)):
+                        if ln.startswith("# Display:"):
+                            disp = ln.split(":", 1)[1].strip()
+                        elif ln.startswith("# SDIndex:"):
+                            try:
+                                idx = int(ln.split(":", 1)[1].strip())
+                            except ValueError:
+                                idx = None
+                        elif ln.startswith("# Raw:"):
+                            israw = ln.split(":", 1)[1].strip() == "1"
+                        elif ln.startswith("Protocol:"):
+                            typ = ln.split(":", 1)[1].strip()
+                        elif ln.startswith("Frequency:"):
+                            frq = ln.split(":", 1)[1].strip()
+                except Exception:
+                    continue
+                if not disp:
+                    disp = self._subghz_fmt_name(fn)
+                fmhz = ""
+                try:
+                    fmhz = ("%.2f" % (int(frq) / 1e6)) if frq else ""
+                except Exception:
+                    pass
+                tag = "TX?" if idx is None else "TX"
+                label = f"{disp}   [{typ or '?'} {fmhz}MHz {tag}]"
+                out.append({"name": fn, "display": label, "disp_raw": disp,
+                            "idx": idx, "raw": israw})
+        except Exception:
+            pass
+        out.sort(key=lambda e: (e["idx"] is None, e["idx"] or 0, e["name"]))
+        return out
+
+    def _subghz_set_display(self, fname, newname):
+        """Rename a saved signal = edit its Display line locally (instant, no
+        Monster round-trip; the SD copy and its index are untouched)."""
+        fp = os.path.join(SUBGHZ_LIB_DIR, fname)
+        try:
+            lines = open(fp).read().splitlines()
+        except Exception:
+            return False
+        out, found = [], False
+        for ln in lines:
+            if ln.startswith("# Display:"):
+                out.append("# Display: " + newname)
+                found = True
+            else:
+                out.append(ln)
+        if not found:
+            out.append("# Display: " + newname)
+        try:
+            with open(fp, "w") as fh:
+                fh.write("\n".join(out) + "\n")
+            return True
+        except Exception:
+            return False
+
+    def _subghz_refresh_from_monster(self):
+        """Rebuild the index-aware Saved list from the Monster SD. This thread
+        reads the replies itself (main-loop poll is paused via _subghz_refreshing)
+        so it can stop at the real end of the library and show live progress.
+        Bounded by list_dir\'s "Found N files" count -> no 12x fixed loop, no hang."""
+        import re
+        self._subghz_refreshing = True
+        m = self._subghz
+        entries = {}
+        try:
+            if not m.connected:
+                return
+            m.send("subghz_stop")
+            time.sleep(0.7)
+            try:
+                m._ser.reset_input_buffer()
+            except Exception:
+                pass
+            for _et, _d in m.poll_events():
+                pass
+            # How many signals are on SD? The short "Found N file(s)" line
+            # survives even when the file list itself gets serial-mangled.
+            count = 0
+            m.send("list_dir /sdcard/lab/subghz")
+            time.sleep(2.0)
+            for _et, _d in m.poll_events():
+                txt = _d if isinstance(_d, str) else (
+                    " ".join(_d) if isinstance(_d, (list, tuple)) else str(_d))
+                mm = re.search(r"Found\s+(\d+)\s+file", txt)
+                if mm:
+                    count = int(mm.group(1))
+            n = count if 0 < count <= 60 else 20
+            misses = 0
+            for idx in range(1, n + 1):
+                self._subghz_notice = f"Reading Monster SD {idx}/{n}..."
+                m.cmd_info(idx, "sd")
+                time.sleep(0.9)
+                hit = False
+                for _et, _d in m.poll_events():
+                    if _et in ("info_meta", "info_result"):
+                        line = _d if isinstance(_d, str) else " ".join(_d)
+                        if "[SUBGHZ_INFO]" in line:
+                            e = self._subghz_info_entry(line)
+                            if e:
+                                entries[e["idx"]] = e
+                                self._subghz_write_sub([line])
+                                hit = True
+                if not hit:
+                    misses += 1
+                    if misses >= 3 and not count:   # no count -> stop after gaps
+                        break
+                else:
+                    misses = 0
+            if entries:
+                self._subghz_sd_by_idx = dict(entries)
+            # Saved list is rebuilt from the uConsole library (custom names +
+            # the SD index each signal transmits with).
+            self._subghz_files = self._subghz_read_library()
+            self._subghz_notice = f"Saved: {len(self._subghz_files)} signal(s)"
+        except Exception:
+            pass
+        finally:
+            self._subghz_refreshing = False
+
+    def _subghz_write_sub(self, lines):
+        """Build a Flipper .sub in the uConsole library from a subghz_info reply.
+        Metadata is clean on the wire; decoded fixed-code signals -> a proper
+        key .sub (portable/replayable); RAW -> best-effort timings."""
+        import re
+        text = " ".join(lines)
+        if "SUBGHZ_INFO_ERR" in text or "not_found" in text:
+            return
+        m = re.search(r"\[SUBGHZ_INFO\][^\[]*", text)
+        meta = m.group(0) if m else text
+
+        def g(k):
+            mm = re.search(k + r"=(\S+)", meta)
+            return mm.group(1) if mm else ""
+
+        name, typ = g("name"), g("type")
+        frq, idc, bits, te = g("freq"), g("id"), g("bits"), g("te")
+        if not name:
+            return
+        # Reject garbage names produced when the serial merges/drops bytes
+        # (e.g. "00004_rawsubghz_info", "00001_77") so junk files stop piling up.
+        if ("subghz" in name.lower() or "info" in name.lower()
+                or not re.match(r"^\d{3,}_[A-Za-z0-9][A-Za-z0-9._-]{2,}$", name)):
+            return
+        if not typ:
+            return
+        if not name.endswith(".sub"):
+            name += ".sub"
+        freq = "433920000"
+        if frq:
+            try:
+                freq = str(int(round(float(frq) * 1e6)))
+            except Exception:
+                pass
+        if typ and typ.lower() != "raw" and idc:
+            try:
+                keyb = int(idc, 16).to_bytes(8, "big")
+            except Exception:
+                keyb = bytes(8)
+            key = " ".join("%02X" % b for b in keyb)
+            body = ("Filetype: Flipper SubGhz Key File\nVersion: 1\n"
+                    f"Frequency: {freq}\n"
+                    "Preset: FuriHalSubGhzPresetOok650Async\n"
+                    f"Protocol: {typ}\nBit: {bits or '24'}\nKey: {key}\n")
+            if te:
+                body += f"TE: {te}\n"
+        else:
+            raw = ""
+            if "[SUBGHZ_INFO_RAW]" in text:
+                raw = text.split("[SUBGHZ_INFO_RAW]", 1)[1]
+            ints = re.findall(r"-?\d{2,}", raw)
+            body = ("Filetype: Flipper SubGhz RAW File\nVersion: 1\n"
+                    f"Frequency: {freq}\n"
+                    "Preset: FuriHalSubGhzPresetOok650Async\n"
+                    f"Protocol: RAW\nRAW_Data: {' '.join(ints)}\n")
+        # --- uConsole-authoritative metadata ---
+        # File is keyed by the Monster SD auto-name (stable link). We store the
+        # user Display name, the SD index (for subghz_tx) and Raw flag, plus
+        # capture time + GPS. Display / Captured / GPS are PRESERVED across
+        # refreshes so renames and stamps survive.
+        idx = g("idx")
+        israw = bool(typ) and typ.lower() == "raw"
+        fpath = os.path.join(SUBGHZ_LIB_DIR, name)
+        keep = {}
+        try:
+            if os.path.exists(fpath):
+                for ln in open(fpath):
+                    for k in ("# Display:", "# Captured:", "# GPS:"):
+                        if ln.startswith(k):
+                            keep[k] = ln.rstrip("\n")
+        except Exception:
+            pass
+        disp = keep.get("# Display:", "# Display: " + self._subghz_fmt_name(name))
+        cap = keep.get("# Captured:",
+                       "# Captured: " + time.strftime("%Y-%m-%dT%H:%M:%S"))
+        gps = keep.get("# GPS:")
+        if gps is None and self.gps_fix:
+            latc = "N" if self.player_lat >= 0 else "S"
+            lonc = "E" if self.player_lon >= 0 else "W"
+            gps = (f"# GPS: {abs(self.player_lat):.6f}{latc} "
+                   f"{abs(self.player_lon):.6f}{lonc}")
+        body += disp + "\n" + f"# SDName: {name}\n"
+        if idx:
+            body += f"# SDIndex: {idx}\n"
+        body += f"# Raw: {1 if israw else 0}\n" + cap + "\n"
+        if gps:
+            body += gps + "\n"
+        try:
+            os.makedirs(SUBGHZ_LIB_DIR, exist_ok=True)
+            with open(fpath, "w") as fh:
+                fh.write(body)
+        except Exception:
+            return
+
+    def _update_subghz_screen(self):
+        px = pyxel
+        mode = self._subghz_mode
+        if mode == "idle":
+            n = len(SUBGHZ_MENU)
+            if px.btnp(px.KEY_UP):
+                s = self._subghz_sel - 1
+                while s >= 0 and SUBGHZ_MENU[s][1] is None:
+                    s -= 1
+                if s >= 0:
+                    self._subghz_sel = s
+            elif px.btnp(px.KEY_DOWN):
+                s = self._subghz_sel + 1
+                while s < n and SUBGHZ_MENU[s][1] is None:
+                    s += 1
+                if s < n:
+                    self._subghz_sel = s
+            elif px.btnp(px.KEY_RETURN):
+                act = SUBGHZ_MENU[self._subghz_sel][1]
+                if act:
+                    self._subghz_screen_action(act)
+            elif px.btnp(px.KEY_F):
+                fl = self._subghz_freqs
+                try:
+                    i = (fl.index(self._subghz_freq) + 1) % len(fl)
+                except ValueError:
+                    i = 0
+                self._subghz_freq = fl[i]
+                try:
+                    os.makedirs(os.path.dirname(SUBGHZ_FREQ_FILE), exist_ok=True)
+                    with open(SUBGHZ_FREQ_FILE, "w") as _fh:
+                        _fh.write(f"{self._subghz_freq:.2f}")
+                except Exception:
+                    pass
+                self._subghz_notice = (f"Capture freq: {self._subghz_freq:.2f}"
+                                       " MHz (saved - survives restart)")
+            elif px.btnp(px.KEY_ESCAPE):
+                self._subghz_screen = False
+                self._esc_consumed_frame = px.frame_count
+        elif mode in ("read", "record", "analyzer"):
+            if px.btnp(px.KEY_S):
+                # [S] = SAVE the caught signal(s) to SD, then show the list
+                caught = bool(self._subghz_catches) or self._subghz.key_count > 0
+                if caught:
+                    self._subghz_mode = "files"
+                    self._subghz_sel = 0
+                    self._subghz_files = []
+                    self._subghz_notice = "Saving to SD..."
+                    threading.Thread(target=self._subghz_save_and_list,
+                                     daemon=True).start()
+                else:
+                    self._subghz.cmd_stop()
+                    self._subghz_mode = "idle"
+                    self._subghz_sel = 1
+                    self._subghz_notice = "Nothing caught"
+                self._esc_consumed_frame = px.frame_count
+            elif px.btnp(px.KEY_ESCAPE):
+                # [ESC] = stop and leave WITHOUT saving
+                self._subghz.cmd_stop()
+                self._subghz.cmd_clear()          # drop what was caught
+                self._subghz_mode = "idle"
+                self._subghz_sel = 1
+                self._subghz_notice = "Cancelled (not saved)"
+                self._esc_consumed_frame = px.frame_count
+        elif mode == "files" and self._subghz_naming:
+            # Typing a custom name for the selected saved signal.
+            if px.btnp(px.KEY_RETURN):
+                entry = (self._subghz_files[self._subghz_sel]
+                         if self._subghz_files else None)
+                nm = self._subghz_name_buf.strip()
+                if entry and entry.get("idx") and nm:
+                    self._subghz.cmd_rename(entry["idx"], nm)   # rename on SD
+                    self._subghz_notice = f"Renaming to {nm}..."
+                    self._subghz_relist_sd()
+                self._subghz_naming = False
+                self._subghz_name_buf = ""
+            elif px.btnp(px.KEY_ESCAPE):
+                self._subghz_naming = False
+                self._subghz_name_buf = ""
+                self._subghz_notice = "Rename cancelled"
+                self._esc_consumed_frame = px.frame_count
+            elif px.btnp(px.KEY_BACKSPACE):
+                self._subghz_name_buf = self._subghz_name_buf[:-1]
+            else:
+                c = self._get_char_input()
+                if c and len(self._subghz_name_buf) < 40:
+                    # firmware allows [A-Za-z0-9_.-]; map spaces to _
+                    if c == " ":
+                        c = "_"
+                    if c.isalnum() or c in "_.-":
+                        self._subghz_name_buf += c
+        elif mode == "files":
+            if px.btnp(px.KEY_UP):
+                self._subghz_sel = max(0, self._subghz_sel - 1)
+            elif px.btnp(px.KEY_DOWN):
+                self._subghz_sel = min(max(0, len(self._subghz_files) - 1),
+                                       self._subghz_sel + 1)
+            elif px.btnp(px.KEY_RETURN) and self._subghz_files:
+                entry = self._subghz_files[self._subghz_sel]
+                idx = entry.get("idx")
+                if idx:
+                    self._subghz.cmd_tx(idx, "sd", entry.get("raw", False))
+                    nm = entry.get("display", f"idx {idx}")
+                    self._subghz_notice = f"Emulating {nm} ..."
+                    self._term_add(f"[SUBGHZ] TX idx={idx} sd"
+                                   + (" raw" if entry.get("raw") else ""), raw=True)
+                else:
+                    self._subghz_notice = "Indexing from SD... wait a moment, then ENTER"
+            elif px.btnp(px.KEY_R) and self._subghz_files:
+                # RAW replay (faithful waveform) - like the reference app's 'r'
+                # action. Use when decoded TX doesn't trigger the device.
+                entry = self._subghz_files[self._subghz_sel]
+                idx = entry.get("idx")
+                if idx:
+                    self._subghz.cmd_tx(idx, "sd", True)
+                    self._subghz_notice = ("Emulating RAW %s ..."
+                                           % entry.get("disp_raw", f"idx {idx}"))
+                    self._term_add(f"[SUBGHZ] TX idx={idx} sd raw", raw=True)
+                else:
+                    self._subghz_notice = "Indexing from SD... wait, then press R"
+            elif px.btnp(px.KEY_N) and self._subghz_files:
+                # rename the selected signal (writes subghz_rename on the SD)
+                entry = self._subghz_files[self._subghz_sel]
+                if entry.get("idx"):
+                    self._subghz_naming = True
+                    self._subghz_name_buf = ""
+                    self._subghz_notice = "Type a name, ENTER to save"
+            elif px.btnp(px.KEY_D) and self._subghz_files:
+                # delete the selected signal from the SD, then re-list
+                entry = self._subghz_files[self._subghz_sel]
+                if entry.get("idx"):
+                    self._subghz.cmd_delete(entry["idx"])
+                    self._subghz_notice = "Deleting..."
+                    self._subghz_sel = max(0, self._subghz_sel - 1)
+                    self._subghz_relist_sd()
+            elif px.btnp(px.KEY_ESCAPE):
+                self._subghz_mode = "idle"
+                self._subghz_sel = 1
+                self._esc_consumed_frame = px.frame_count
+
+    def _draw_subghz_rssi(self, x, y):
+        px = pyxel
+        r = self._subghz_rssi
+        frac = max(0.0, min(1.0, (r + 110) / 70.0))
+        px.text(x, y, f"RSSI {r:>4} dBm", C_DIM)
+        bx, bw = x + 90, 190
+        px.rectb(bx, y - 1, bw, 9, C_COAST)
+        # Segmented LED signal meter — greens low, yellow mid, red hot.
+        seg_w, gap = 8, 2
+        nseg = max(1, (bw - 4) // (seg_w + gap))
+        lit = int(nseg * frac)
+        for i in range(nseg):
+            sx = bx + 2 + i * (seg_w + gap)
+            pos = i / max(1, nseg - 1)
+            if i < lit:
+                sc = 8 if pos > 0.8 else (C_WARNING if pos > 0.55 else C_SUCCESS)
+            else:
+                sc = 1
+            px.rect(sx, y, seg_w, 7, sc)
+        # Peak-hold marker that slowly decays back down.
+        pk = max(frac, self.__dict__.get("_subghz_rssi_peak", 0.0) - 0.01)
+        self._subghz_rssi_peak = pk
+        pkx = bx + 2 + int((nseg - 1) * pk) * (seg_w + gap)
+        px.rect(pkx, y - 1, 2, 9, 7)
+
+    def _draw_subghz_screen(self):
+        px = pyxel
+        px.cls(0)
+        px.rect(0, 0, W, 14, 1)
+        px.text(6, 4, "MONSTER RF // SUB-GHZ", C_HACK_CYAN)
+        px.text(220, 4, f"{getattr(self._subghz, 'freq', 433.92):.2f} MHz", C_WARNING)
+        conn = self._subghz.connected
+        px.text(340, 4, (self._subghz.port or "?") if conn else "connecting...",
+                C_SUCCESS if conn else C_DIM)
+        px.text(W - 60, 4, "[ESC]", C_DIM)
+        px.line(0, 14, W, 14, C_HACK_CYAN)
+        if self._subghz_notice:
+            px.text(6, 20, self._subghz_notice[:98], C_DIM)
+
+        mode = self._subghz_mode
+        if mode == "idle":
+            y = 44
+            for i, (label, act) in enumerate(SUBGHZ_MENU):
+                if act is None:
+                    px.text(10, y, label, C_DIM)
+                    y += 15
+                    continue
+                sel = (i == self._subghz_sel)
+                if sel:
+                    px.rect(8, y - 1, 320, 12, C_HACK_CYAN)
+                    # Live selection glint — matches the main menu cursor.
+                    _sw = int((px.frame_count * 4) % (320 + 24)) - 12
+                    for _dx, _sc in ((0, 7), (-1, 6), (1, 6)):
+                        _sx = 8 + _sw + _dx
+                        if 8 < _sx < 327:
+                            px.line(_sx, y - 1, _sx, y + 8, _sc)
+                px.text(14, y + 2, label, 0 if sel else C_TEXT)
+                y += 15
+            px.text(10, H - 36,
+                    f"Capture freq: {self._subghz_freq:.2f} MHz   [F] change   "
+                    "(Analyzer auto-finds it)", C_WARNING)
+            px.text(10, H - 24, "UP/DOWN select    ENTER    [F] freq    ESC exit",
+                    C_DIM)
+            px.text(10, H - 12,
+                    "Read=listen  Record=RAW  Analyzer=find freq  Saved=replay",
+                    C_DIM)
+        elif mode in ("read", "record"):
+            rec = (mode == "record")
+            if rec:
+                if (px.frame_count // 8) % 2 == 0:
+                    px.circ(15, 39, 4, C_ERROR)
+                el = int(time.time() - self._subghz_rec_start)
+                px.text(26, 36, f"REC RAW  {el}s   (listening in background)", C_ERROR)
+            else:
+                px.text(10, 36, "LISTENING in background - waiting for a signal",
+                        C_HACK_CYAN)
+            self._draw_subghz_rssi(10, 54)
+            px.text(300, 54, f"activity: {self._subghz_drops} bursts", C_DIM)
+            px.text(440, 54, f"in mem: {self._subghz.key_count}", C_SUCCESS)
+            px.text(10, 72, "CAUGHT SIGNALS:", C_WARNING)
+            if not self._subghz_catches:
+                px.text(14, 88,
+                        "recording raw timings..." if rec
+                        else "press your remote (gate / doorbell, 433 MHz)", C_DIM)
+            else:
+                yy = 88
+                for sgl in self._subghz_catches[:22]:
+                    px.text(14, yy, sgl[:112], C_SUCCESS)
+                    yy += 11
+            px.text(10, H - 12,
+                    "[S] save to SD    [ESC] cancel (no save)", C_DIM)
+        elif mode == "analyzer":
+            px.text(10, 36, "FREQUENCY ANALYZER - point a remote and press it",
+                    C_HACK_CYAN)
+            self._draw_subghz_rssi(10, 54)
+            px.text(440, 54, f"in mem: {self._subghz.key_count}", C_SUCCESS)
+            hits = getattr(self, "_subghz_fa_hits", [])
+            px.text(10, 74, "STRONGEST SIGNAL NEAR YOU:", C_WARNING)
+            if not hits:
+                px.text(14, 92,
+                        "waiting - press any remote (gate / light / car key)...",
+                        C_DIM)
+            else:
+                top = hits[0]
+                px.text(14, 92, f"{top['freq']} MHz", C_SUCCESS)
+                px.text(150, 92,
+                        f"{top['proto']}   id={top['id']}   te={top['te']}us",
+                        C_TEXT)
+                yy = 112
+                for h in hits[1:9]:
+                    px.text(14, yy,
+                            f"{h['freq']} MHz   {h['proto']}   id={h['id']}",
+                            C_DIM)
+                    yy += 11
+            px.text(10, H - 12,
+                    "[ESC]/[S] stop & save the caught signal (at its real freq)",
+                    C_DIM)
+        elif mode == "files":
+            px.text(10, 36, "SAVED SIGNALS (SD):", C_WARNING)
+            if not self._subghz_files:
+                px.text(14, 54, "no saved signals / loading from SD...", C_DIM)
+            else:
+                yy = 54
+                for i, entry in enumerate(self._subghz_files[:22]):
+                    sel = (i == self._subghz_sel)
+                    if sel:
+                        px.rect(8, yy - 1, W - 16, 12, C_HACK_CYAN)
+                    px.text(14, yy + 2, entry.get("display", "?")[:114],
+                            0 if sel else C_TEXT)
+                    yy += 12
+            if self._subghz_naming:
+                # name input overlay
+                px.rect(8, H - 44, W - 16, 16, 0)
+                px.rectb(8, H - 44, W - 16, 16, C_HACK_CYAN)
+                cur = "_" if px.frame_count % 30 < 20 else ""
+                px.text(12, H - 39, "NEW NAME: " + self._subghz_name_buf + cur,
+                        C_SUCCESS)
+                px.text(10, H - 12,
+                        "[A-Z0-9_.-] type   ENTER save   ESC cancel", C_DIM)
+            else:
+                px.text(10, H - 12,
+                        "[ENTER]TX  [R]RAW-TX  [N]rename  [D]delete  [ESC]back",
+                        C_DIM)
+
+    def _poll_subghz(self):
+        if not self._subghz.connected:
+            return
+        if getattr(self, "_subghz_refreshing", False):
+            return   # the refresh thread drains replies itself (avoids a race)
+        # While listening, poll status ~1.5s so the "captured (mem)" count is live.
+        if (self._subghz_mode in ("read", "record", "analyzer")
+                and pyxel.frame_count % 45 == 0):
+            self._subghz.cmd_status()
+        try:
+            for et, d in self._subghz.poll_events():
+                if et == "rssi":
+                    self._subghz_rssi = d
+                elif et == "signal":
+                    self._subghz_catches.insert(0, d)
+                    del self._subghz_catches[40:]
+                    fa = self._subghz_fa_parse(d)
+                    if fa:
+                        hs = [h for h in getattr(self, "_subghz_fa_hits", [])
+                              if (h["freq"], h["id"]) != (fa["freq"], fa["id"])]
+                        hs.insert(0, fa)
+                        self._subghz_fa_hits = hs[:12]
+                    self._subghz_notice = (f"Detected {fa['freq']}MHz {fa['proto']}"
+                                           if fa else "Signal caught!")
+                    self._play_subghz_beep()
+                    self.gain_xp(10)
+                    if self._subghz_logf:
+                        try:
+                            _gps = ""
+                            if self.gps_fix:
+                                _la = "N" if self.player_lat >= 0 else "S"
+                                _lo = "E" if self.player_lon >= 0 else "W"
+                                _gps = (f" gps={abs(self.player_lat):.6f}{_la},"
+                                        f"{abs(self.player_lon):.6f}{_lo}")
+                            self._subghz_logf.write(
+                                time.strftime('%Y-%m-%dT%H:%M:%S') + _gps
+                                + " " + d + "\n")
+                            self._subghz_logf.flush()
+                        except Exception:
+                            pass
+                    if ".sub" in d:
+                        for tok in d.replace(",", " ").split():
+                            if tok.endswith(".sub"):
+                                self._subghz_last_file = tok
+                elif et == "list_result":
+                    src, lines = d
+                    if src == "mem":
+                        entries = [self._subghz_parse_entry(ln) for ln in lines]
+                        if entries:
+                            self._subghz_catches = [e["display"] for e in entries]
+                    elif src == "sd":
+                        if not getattr(self, "_subghz_expect_list", False):
+                            continue   # stray emit (e.g. mangled TX line) - keep list
+                        self._subghz_expect_list = False
+                        fs = []
+                        seen = set()
+                        for ln in lines:
+                            e = self._subghz_parse_entry(ln)
+                            nm = e.get("name", "")
+                            if not (e.get("idx") and nm and e.get("freq")):
+                                continue            # drop mangled/partial rows
+                            if nm in seen:
+                                continue            # dedup within this one read
+                            seen.add(nm)
+                            e["raw"] = (e.get("type", "").upper() == "RAW")
+                            e["disp_raw"] = self._subghz_fmt_name(nm)
+                            e["display"] = (f"{e['disp_raw']}   "
+                                            f"[{e.get('type','?')} "
+                                            f"{e.get('freq','?')}MHz]")
+                            fs.append(e)
+                        self._subghz_files = fs
+                        if self._subghz_mode == "files":
+                            self._subghz_sel = min(self._subghz_sel,
+                                                   max(0, len(fs) - 1))
+                            self._subghz_notice = (f"Saved: {len(fs)} signal(s)"
+                                                   if fs else "No saved signals")
+                elif et == "info_meta":
+                    self._subghz_write_sub([d])
+                    self._subghz_ingest_info(d)
+                elif et == "info_result":
+                    self._subghz_write_sub(d)
+                    self._subghz_ingest_info(
+                        " ".join(d) if isinstance(d, (list, tuple)) else str(d))
+                elif et == "tx":
+                    sd = str(d).lower()
+                    # Decoded key -> "...done"; RAW replay -> "frame=N/N reps=M".
+                    if "force raw replay" in sd and "frame=" not in sd:
+                        continue  # opening line only; the result line follows
+                    ok = ("done" in sd or "frame=" in sd or "reps=" in sd)
+                    self._subghz_notice = ("Transmitted OK - sent to device" if ok
+                                           else "TX failed: " + str(d))
+                    self._term_add("[SUBGHZ] " + str(d), raw=True)
+                    if ok:
+                        self.gain_xp(15)
+                        self._play_subghz_beep()
+                elif et == "renamed":
+                    self._term_add("[SUBGHZ] " + str(d), raw=True)
+                    self._subghz_relist_sd(0.3)
+                elif et == "files_result":
+                    pass  # SD list is best-effort; Saved is driven by the
+                          # uConsole library + subghz_info refresh
+                elif et == "drop":
+                    self._subghz_drops += 1
+                elif et == "status":
+                    self._subghz_notice = d
+                elif et == "error":
+                    self._subghz_notice = "ERR: " + str(d)
+                # info -> ignored (no terminal flood)
+        except Exception:
+            pass
+
+    def _toggle_mute(self):
+        """Toggle all notification sounds (siren + MeshCore notify)."""
+        self._muted = not getattr(self, "_muted", False)
+        if self._muted:
+            self.msg("[SND] Powiadomienia wyciszone", C_WARNING)
+            self._term_add("[SND] notifications MUTED", raw=True)
+        else:
+            self.msg("[SND] Dzwiek wlaczony", C_SUCCESS)
+            self._term_add("[SND] notifications ON", raw=True)
+
+    def _toggle_proximity(self):
+        """Turn WDGWars proximity radar on/off (persisted across restarts)."""
+        on = self._prox.toggle()
+        if on:
+            self.msg("[PROX] Radar wlaczony", C_SUCCESS)
+            self._term_add("[PROX] proximity ON", raw=True)
+        else:
+            self.msg("[PROX] Radar wylaczony", C_WARNING)
+            self._term_add("[PROX] proximity OFF", raw=True)
+
+    def _host_bt_busy(self) -> bool:
+        """True when something else is using the host hci0 radio (BlueDucky,
+        RACE, the watch) or an ESP32 BT scan is running — proximity yields for
+        the duration so it never fights for the controller / 2.4 GHz airtime."""
+        return bool(
+            self._blueducky.running or self._blueducky.connected
+            or self._race.running or self._watch.connected
+            or self.ble_scanning or self._ble_scan_only
+            or self._bt_tracking or self._bt_airtag)
+
+    def _poll_proximity(self):
+        """Once per frame: pause proximity while the host BT is otherwise busy,
+        keep the radio subprocess alive, and refresh the snapshot."""
+        if self._host_bt_busy():
+            self._prox.pause()
+        else:
+            self._prox.resume()
+        self._prox.tick()
+
+    def _update_prox_screen(self):
+        if pyxel.btnp(pyxel.KEY_O):
+            self._toggle_proximity()
+        # Exit on any of the keys a player reaches for: ESC, TAB (the menu key),
+        # Q or Backspace. Only ESC needs the consumed-frame guard so it does not
+        # also trip the global quit dialog.
+        if (pyxel.btnp(pyxel.KEY_TAB) or pyxel.btnp(pyxel.KEY_Q)
+                or pyxel.btnp(pyxel.KEY_BACKSPACE)
+                or pyxel.btnp(pyxel.KEY_ESCAPE)):
+            self._prox_screen = False
+            self._esc_consumed_frame = pyxel.frame_count
+
     def _toggle_usb(self):
         new_state = not self._usb_enabled
         if not self._aio_available:
             self.msg("[USB] AIO v2 not available", C_ERROR)
             return
-        ok = AioManager.toggle("usb", new_state)
+        ok = self._aio_power.toggle("usb", new_state)
         if not ok:
             self.msg("[USB] GPIO toggle failed", C_ERROR)
             return
@@ -2501,11 +4582,12 @@ class WatchDogsGame:
 
     def _poll_sdr(self):
         """Process SDR events (ADS-B aircraft, 433 MHz sensors)."""
-        if not self._sdr.running:
+        closing = getattr(self, "_shutting_down", False)
+        if not self._sdr.running and not closing:
             return
         try:
             # Prune stale entries every ~2 seconds
-            if pyxel.frame_count % 60 == 0:
+            if not closing and pyxel.frame_count % 60 == 0:
                 self._sdr.prune_stale()
                 self._sdr.update_gps(self.player_lat, self.player_lon)
             for etype, data in self._sdr.poll_events():
@@ -2522,6 +4604,22 @@ class WatchDogsGame:
                         self.gain_xp(10)
                 elif etype == "sensor_new":
                     self.gain_xp(5)
+                elif etype == "emergency_alert":
+                    sig = data
+                    arrow = " ^" if sig.trend == "up" else ""
+                    svc = EMERGENCY_SVC.get(sig.band, sig.band)
+                    svc_col = EMERGENCY_SVC_COL.get(sig.band, C_ERROR)
+                    # Latch: keep the alert visible ~20s after the brief keyup.
+                    self._emerg_latch = (sig.band, sig.rssi, sig.trend, time.time())
+                    self.msg(f"[SVC] {svc} {sig.rssi:.0f}dB{arrow}", svc_col)
+                    self._term_add(
+                        f"[SDR] {svc} ({sig.band}) {sig.freq:.3f}MHz "
+                        f"{sig.rssi:.0f}dB (+{sig.jump:.0f}) {sig.trend}", raw=True)
+                    self._play_svc_sound(sig.band)
+                    self.gain_xp(15)
+                    self._earn_badge("emergency")
+                elif etype == "emergency_clear":
+                    self._term_add(f"[SDR] {data} cleared", raw=True)
         except Exception:
             pass
 
@@ -2739,11 +4837,18 @@ class WatchDogsGame:
             board = self._flash_boards[self._flash_sel]
             self._flash_running = True
             self._term_add(f"[FLASH] Selected: {board}", raw=True)
-            threading.Thread(target=self._flash_do, args=(board,),
+            threading.Thread(target=self._run_flash, args=(board,),
                              daemon=True).start()
         elif pyxel.btnp(pyxel.KEY_ESCAPE):
             self._flash_screen = False
             self._esc_consumed_frame = pyxel.frame_count
+
+    def _run_flash(self, board: str):
+        try:
+            if not getattr(self, "_shutting_down", False):
+                self._flash_do(board)
+        finally:
+            self._flash_running = False
 
     def _flash_do(self, board: str):
         """Download firmware and flash in background thread."""
@@ -2834,28 +4939,42 @@ class WatchDogsGame:
             self.state.connected = False
             self._term_add(f"[FLASH] Serial {port} released", raw=True)
 
-        # Step 3: USB power cycle to reset ESP32 cleanly before flash
+        # Step 3: USB power cycle + catch the ROM download window before flash.
+        # The XIAO C5's running firmware disables the USB-JTAG reset, so esptool
+        # can't reset the running app (Write timeout). A GPIO23 power cycle resets
+        # the chip; esptool must then connect during the brief ROM window (before
+        # the app boots and disables reset again) — so poll for the port and flash
+        # IMMEDIATELY (no long wait). See reference_flash_xiao_c5.
         if self._aio_available and board == "xiao":
             self._term_add("[FLASH] USB power cycle (reset ESP32)...", raw=True)
-            AioManager.toggle("usb", False)
+            self._aio_power.toggle("usb", False)
             time.sleep(2)
-            AioManager.toggle("usb", True)
-            time.sleep(4)  # wait for ESP32 boot + USB enumerate
-            # Re-detect port (may have changed after power cycle)
-            port = detect_esp32_port() or port
-            self._term_add(f"[FLASH] ESP32 on {port}", raw=True)
+            self._aio_power.toggle("usb", True)
+            for _ in range(80):  # tight-poll for the port (~1s), catch ROM window
+                if Path(port).exists():
+                    break
+                time.sleep(0.03)
+            else:
+                port = detect_esp32_port() or port
+            self._term_add(f"[FLASH] ESP32 on {port} (ROM window)", raw=True)
 
         # Flash with esptool
         self._term_add("[FLASH] Flashing...", raw=True)
         self.msg("[FLASH] Flashing ESP32...", C_WARNING)
 
-        after = "hard_reset"
+        # --no-stub: the stub flasher fails to start on the ESP32-C5
+        # ("Failed to start stub flasher") — write via the ROM loader instead.
+        # After a xiao flash we power-cycle to boot (a hard-reset boot-loops the
+        # chip: rst:0x7 TG0_WDT), so leave the chip alone with --after no-reset.
+        power_cycle_after = self._aio_available and board == "xiao"
+        after = "no-reset" if power_cycle_after else "hard-reset"
         cmd = [
             sys.executable, "-m", "esptool",
             "-p", port, "-b", str(profile["baud"]),
             "--before", profile["before"],
             "--after", after,
             "--chip", "esp32c5",
+            "--no-stub",
             "write-flash",
             "--flash-mode", "dio",
             "--flash-freq", "80m",
@@ -2876,6 +4995,15 @@ class WatchDogsGame:
 
             if proc.returncode == 0:
                 self._term_add("[FLASH] Flash complete!", raw=True)
+                if power_cycle_after:
+                    # --after no-reset left the chip halted; a GPIO23 power cycle
+                    # boots the new firmware cleanly (a hard-reset boot-loops it).
+                    self._term_add("[FLASH] Power cycle to boot new firmware...",
+                                   raw=True)
+                    self._aio_power.toggle("usb", False)
+                    time.sleep(2)
+                    self._aio_power.toggle("usb", True)
+                    time.sleep(4)
                 self.msg("[FLASH] Success! ESP32 rebooting...", C_SUCCESS)
                 # Reconnect after short delay
                 time.sleep(3)
@@ -2907,7 +5035,10 @@ class WatchDogsGame:
                 name = self._gps_wait_name
                 self._gps_wait_cmd = ""
                 self.msg("[GPS] Fix acquired — starting!", C_SUCCESS)
-                self._start_scan_cmd(cmd, state, name)
+                if getattr(self, "_wardrive_selected", None):
+                    self._wardrive_tick()
+                else:
+                    self._start_scan_cmd(cmd, state, name)
             else:
                 # Show satellite info periodically
                 if pyxel.frame_count % 60 == 0:
@@ -2920,29 +5051,54 @@ class WatchDogsGame:
                     self.msg(f"[GPS] Waiting for fix... {sat}", C_WARNING)
             return
 
+        if self._pending_cmd:
+            return
+
+        # A scan that never acknowledges completion must not look busy forever.
+        timeout = getattr(self, "_ESP_SCAN_TIMEOUT", 20.0)
+        for label, active, started, done in (
+                ("WiFi", self.wifi_scanning or self._wifi_scan_only,
+                 self._wifi_scan_start_time, self._wifi_scan_done_time),
+                ("BLE", self.ble_scanning or self._ble_scan_only,
+                 self._bt_scan_start_time, self._bt_scan_done_time)):
+            if active and started > 0 and not done and now - started > timeout:
+                if getattr(self, "_wardrive_phase", ""):
+                    self._wardrive_pause(label + " scan timed out")
+                    return
+                self._request_esp_stop()
+                self._clear_esp_scan_state(cancel_pending=True)
+                message = f"[ERR] {label} scan timed out; check ESP32 connection"
+                self.msg(message, C_ERROR)
+                self._term_add(message, raw=True)
+                return
+
+        if hasattr(self, "_wardrive_selected"):
+            self._wardrive_tick()
+            return
+
         # WiFi wardriving auto-repeat
         if (self.wifi_scanning and self._wifi_scan_done_time > 0
                 and not self._pending_cmd):
             if now - self._wifi_scan_done_time >= self._SCAN_INTERVAL:
-                self._wifi_scan_done_time = 0.0
-                self._send("scan_networks")
-                self.msg("[SCAN] WiFi rescan...", C_DIM)
+                if self._send("scan_networks"):
+                    self._wifi_scan_done_time = 0.0
+                    self._wifi_scan_start_time = now
+                    self.msg("[SCAN] WiFi rescan...", C_DIM)
+                else:
+                    self._clear_esp_scan_state(cancel_pending=True)
+                    self.msg("[ERR] WiFi rescan failed", C_ERROR)
 
         # BT wardriving auto-repeat
         if (self.ble_scanning and self._bt_scan_done_time > 0
                 and not self._pending_cmd):
             if now - self._bt_scan_done_time >= self._SCAN_INTERVAL:
-                self._bt_scan_done_time = 0.0
-                self._send("scan_bt")
-                self._bt_scan_start_time = now
-                self.msg("[SCAN] BT rescan...", C_DIM)
-
-        # BT scan timeout guard (auto-finish after 15s if no completion signal)
-        if (self.ble_scanning and self._bt_scan_start_time > 0
-                and self._bt_scan_done_time == 0.0):
-            if now - self._bt_scan_start_time > self._BT_SCAN_TIMEOUT:
-                self._bt_scan_done_time = now
-                self.msg("[BT] Scan timeout — restarting cycle", C_DIM)
+                if self._send("scan_bt"):
+                    self._bt_scan_done_time = 0.0
+                    self._bt_scan_start_time = now
+                    self.msg("[SCAN] BT rescan...", C_DIM)
+                else:
+                    self._clear_esp_scan_state(cancel_pending=True)
+                    self.msg("[ERR] BT rescan failed", C_ERROR)
 
     # ------------------------------------------------------------------
     # Picker overlay (network / portal selection)
@@ -3141,6 +5297,19 @@ class WatchDogsGame:
                         save_meshcore_config(name_val, self._mc_channels_list)
                         self.msg(f"[MC] Node name: {name_val}", C_SUCCESS)
                     return
+                if self._input_pending_cat == -9:  # Meshtastic local node name
+                    name_val = vals[0] if vals else ""
+                    if self._mt.set_node_name(name_val):
+                        self._mt_view["node_name"] = self._mt.node_name
+                        self._mt_view["log"].append(
+                            (f"\x11 Node name: {self._mt.node_name}", C_HACK_CYAN))
+                        self.msg(f"[MT] Node name: {self._mt.node_name}", C_SUCCESS)
+                    else:
+                        self.input_mode = True
+                        self._mt_view["log"].append(
+                            (f"\x11 {self._mt.last_error}", C_ERROR))
+                        self.msg(f"[MT] {self._mt.last_error}", C_ERROR)
+                    return
                 if self._input_pending_cat == -6:  # WPA-sec token
                     token = vals[0].strip() if vals else ""
                     if token:
@@ -3265,6 +5434,8 @@ class WatchDogsGame:
         if getattr(self, '_serial_busy', False):
             return
         if not self.serial or not self.serial.is_open:
+            if getattr(self, "_shutting_down", False):
+                return
             # Auto-reconnect: try every ~3s (90 frames at 30 FPS)
             if not self._esp32 and pyxel.frame_count % 90 == 0:
                 if self._try_reconnect_esp32():
@@ -3281,6 +5452,8 @@ class WatchDogsGame:
             except Exception:
                 pass
             self.serial = None
+            if getattr(self, "_wardrive_selected", None):
+                self._wardrive_pause("ESP32 disconnected", request_stop=False)
             self.msg("[ERR] ESP32 disconnected!", C_ERROR)
             self._term_add("[ERR] ESP32 disconnected — plug in & retry", raw=True)
             return
@@ -3313,7 +5486,8 @@ class WatchDogsGame:
             try:
                 self.loot.log_serial(s)
             except Exception:
-                pass
+                if getattr(self, "_wardrive_phase", ""):
+                    self._wardrive_save_failed = True
 
         # Detect handshake completion for game event
         if s.startswith("SSID:") and "AP:" in s:
@@ -3372,7 +5546,8 @@ class WatchDogsGame:
                     self.loot.save_bt_device(mac, rssi, name, False, False)
                     self.loot.save_wardriving_bt(mac, rssi, name)
                 except Exception:
-                    pass
+                    if getattr(self, "_wardrive_phase", "") == "bt_scanning":
+                        self._wardrive_save_failed = True
             # Pretty terminal line instead of raw
             new_mark = "*" if is_new else " "
             suffix = f" {tag_type}" if tag_type else ""
@@ -3422,7 +5597,8 @@ class WatchDogsGame:
                     try:
                         self.loot.save_wardriving_network(net)
                     except Exception:
-                        pass
+                        if getattr(self, "_wardrive_phase", "") == "wardriving":
+                            self._wardrive_save_failed = True
                 # Pretty terminal line instead of raw CSV
                 tag = "*" if is_new else " "
                 ssid = net.ssid[:20] if net.ssid else "<hidden>"
@@ -3434,24 +5610,7 @@ class WatchDogsGame:
 
         # --- Operation state from serial output ---
         sl = s.lower()
-        if "sniffer start" in sl or "packet sniffer" in sl:
-            self.sniffing = True
-        elif "handshake" in sl and ("start" in sl or "captur" in sl):
-            self.capturing_hs = True
-        elif "stop command" in sl or "all stopped" in sl:
-            if not self._pending_cmd:
-                self.wifi_scanning = False
-                self.ble_scanning = False
-                self._wifi_scan_only = False
-                self._ble_scan_only = False
-                self._bt_tracking = False
-                self._bt_airtag = False
-                self._airtag_count = 0
-                self._smarttag_count = 0
-                self._wifi_scan_done_time = 0.0
-                self._bt_scan_done_time = 0.0
-            self.sniffing = False
-            self.capturing_hs = False
+        self._handle_esp_operation_state(sl)
 
         # --- Portal / Evil Twin capture parsing ---
         if self.state.portal_running or self.state.evil_twin_running:
@@ -3510,16 +5669,23 @@ class WatchDogsGame:
                     self.msg("[ET] No networks found", C_WARNING)
                     self._attack_mode = ""
                     self._attack_step = ""
+            elif self._wardrive_complete("wardriving"):
+                pass
             elif self._wifi_scan_only:
                 self._wifi_scan_only = False
+                self._wifi_scan_start_time = 0.0
                 self.msg("[WiFi] Scan complete", C_SUCCESS)
             elif self.wifi_scanning:
                 # Wardriving auto-repeat
                 self._wifi_scan_done_time = time.time()
         if ("summary:" in sl or "scan complete" in sl
                 or "ble scan done" in sl or "bt scan done" in sl):
-            if self._ble_scan_only:
+            if getattr(self, "_wardrive_phase", "") == "bt_scanning":
+                if "summary:" in sl:
+                    self._wardrive_complete("bt_scanning")
+            elif self._ble_scan_only:
                 self._ble_scan_only = False
+                self._bt_scan_start_time = 0.0
                 self.msg("[BLE] Scan complete", C_SUCCESS)
             elif self.ble_scanning:
                 # Wardriving auto-repeat
@@ -3527,6 +5693,32 @@ class WatchDogsGame:
 
         # Add to terminal panel (non-parsed lines)
         self._term_add(s)
+
+    def _handle_esp_operation_state(self, line):
+        stopped = "all operations stopped" in line or "all stopped" in line
+        if "stop command" in line or stopped:
+            # Receipt of "stop" alone is not completion. JanOS 1.7.0 follows
+            # it with "All operations stopped."; do not start before that reply.
+            if self._esp_stop_waiting:
+                if stopped:
+                    self._clear_esp_scan_state()
+                    self._esp_stop_ack = True
+                return
+            if stopped:
+                self._clear_esp_scan_state(cancel_pending=True)
+                self._airtag_count = self._smarttag_count = 0
+                if getattr(self, "_wardrive_selected", None):
+                    self._wardrive_pause("ESP32 stopped unexpectedly")
+        elif "sniffer start" in line or "packet sniffer" in line:
+            if getattr(self, "_wardrive_selected", None) and not self._esp_stop_waiting:
+                self._cancel_wardrive_plan()
+            self._clear_esp_scan_state()
+            self.sniffing = True
+        elif "handshake" in line and ("start" in line or "captur" in line):
+            if getattr(self, "_wardrive_selected", None) and not self._esp_stop_waiting:
+                self._cancel_wardrive_plan()
+            self._clear_esp_scan_state()
+            self.capturing_hs = True
 
     def _trigger_hs_event(self):
         """Trigger game event when handshake is captured."""
@@ -3546,7 +5738,17 @@ class WatchDogsGame:
     # ------------------------------------------------------------------
 
     def _poll_gps(self):
+        # UART NMEA can start after the one-time boot probe. Reopen only the
+        # configured UART while its power is enabled; never probe ESP32 USB.
+        if (not self.gps.available and getattr(self, "_gps_enabled", False)
+                and str(getattr(self.gps, "device", "")).startswith("/dev/ttyAMA")):
+            now = time.monotonic()
+            if now >= getattr(self, "_gps_uart_retry_at", -float("inf")):
+                self._gps_uart_retry_at = now + 5.0
+                if self.gps._try_open(self.gps.device):
+                    self._term_add("[GPS] UART connection restored; waiting for a fix", raw=True)
         if not self.gps.available:
+            self._poll_radio_profiles()
             return
         sentences = self.gps.read_available()
         if sentences:
@@ -3565,14 +5767,249 @@ class WatchDogsGame:
             self._manual_move = False
         else:
             self.gps_fix = False
+        self._poll_radio_profiles()
 
     # ------------------------------------------------------------------
     # LoRa / MeshCore polling + callbacks
     # ------------------------------------------------------------------
 
-    def _poll_lora(self):
-        if not self._lora.running:
+    def _assign_missing_mesh_gps(self):
+        """Use a fresh receiver fix for contacts awaiting the user's fallback."""
+        if not self.loot or time.monotonic() < getattr(self, "_mesh_gps_next", 0): return
+        self._mesh_gps_next = time.monotonic() + 2.0
+        try:
+            result = self.loot.assign_receiver_gps_to_unlocated_contacts()
+        except Exception as exc:
+            self._term_add(f"[LoRa] Receiver GPS assignment failed: {exc}", raw=True)
             return
+        for protocol, changed in result["contacts"].items():
+            if not changed: continue
+            nodes = self._mc_nodes if protocol == "meshcore" else self._mt_view["nodes"]
+            for contact in changed:
+                existing = next((n for n in nodes if n["id"] == contact["id"]), None)
+                if existing is not None:
+                    existing.clear(); existing.update(contact)
+                else: nodes.append(contact)
+                self._update_mesh_marker(protocol, contact)
+            if protocol == "meshtastic": self._mt.set_known_nodes(nodes)
+            self._term_add(f"[LoRa] {protocol}: receiver GPS assigned to {len(changed)} contact(s)", raw=True)
+        if any(result["contacts"].values()): self._load_loot_totals()
+
+    def _register_mesh_node(self, protocol, node_id, ntype, name, lat, lon, rssi, snr, pubkey=None,
+                            receiver_position=None, received_at=None):
+        nodes = self._mc_nodes if protocol == "meshcore" else self._mt_view["nodes"]
+        known_contact = any(n["id"] == node_id for n in nodes)
+        data = {"id": node_id, "protocol": protocol, "type": ntype, "name": name,
+                "lat": lat, "lon": lon, "rssi": rssi, "snr": snr or 0,
+                "last_seen": received_at if received_at is not None else time.time()}
+        if receiver_position is not None:
+            data["receiver_position"] = receiver_position
+        if pubkey:
+            data["pubkey"] = pubkey.hex()
+        if self.loot:
+            try:
+                result = self.loot.register_mesh_contact(protocol, node_id, data, current_xp=self.xp)
+            except Exception as exc:
+                self._term_add(f"[{protocol}] Contact persistence failed: {exc}", raw=True)
+                self.msg("[LoRa] Contact could not be saved; XP unchanged", C_ERROR)
+                return False
+            data = dict(result["contact"])
+            self.xp = result["xp_total"]
+            self._xp_dirty = False
+        else:
+            from .mesh_rules import MESH_NEW_CONTACT_XP
+            previous = next((n for n in nodes if n["id"] == node_id), None)
+            if previous is None:
+                self.gain_xp(MESH_NEW_CONTACT_XP)
+            else:
+                data = dict(previous, **{k: v for k, v in data.items() if v not in (None, "")})
+        existing = next((n for n in nodes if n["id"] == node_id), None)
+        if existing is None:
+            nodes.append(data)
+        else:
+            existing.clear()
+            existing.update(data)
+        self._update_mesh_marker(protocol, data)
+        self._load_loot_totals()
+        if protocol == "meshtastic":
+            self._mt.set_known_nodes(nodes)
+            self.state.mt_nodes = len(nodes)
+            if self.loot:
+                status = "known" if known_contact else "new"
+                rssi_text = f"{rssi:.0f}" if isinstance(rssi, (int, float)) else "?"
+                snr_text = f"{snr:.1f}" if isinstance(snr, (int, float)) else "?"
+                self._term_add(f"[MT] RX {status} {node_id} {data.get('name') or '?'} "
+                               f"RSSI:{rssi_text}dBm SNR:{snr_text}dB", raw=True)
+        else:
+            self.state.mc_nodes = len(nodes)
+
+    def _update_mesh_marker(self, protocol, data):
+        from watchdogs.mesh_position import mesh_position
+        position = mesh_position(data)
+        if position is None: return
+        lat, lon = position["lat"], position["lon"]
+        key = f"{protocol}:{data['id']}"
+        marker = next((m for m in self.markers if getattr(m, "mesh_key", None) == key), None)
+        label = data.get("name") or data["id"]
+        if position["source"] != "node": label += " [RX GPS]"
+        if marker is None:
+            marker = MapMarker(lat, lon, label, protocol)
+            marker.mesh_key = key
+            self.markers.append(marker)
+        else:
+            marker.lat, marker.lon, marker.label = lat, lon, label
+
+    def _on_mt_node(self, *values):
+        from watchdogs.mesh_position import receiver_observation
+        values = list(values)
+        if len(values) == 7: values.append(None)
+        self._mt_event_queue.put(("node", *values,
+            receiver_observation(getattr(self, "gps", None)), time.time()))
+
+    def _on_mt_text(self, node_id, name, text, rssi, hops=0):
+        # The UI can drain this after a manual profile change. Keep the
+        # channel that was active when this packet was received.
+        self._mt_event_queue.put(("text", node_id, name, text, rssi, hops,
+                                  self._mt.channel_name))
+
+    def _on_mt_status(self, state, error):
+        self._mt_event_queue.put(("status", state, error))
+
+    def _on_mt_tx(self, token, success, error):
+        self._mt_event_queue.put(("tx", token, success, error))
+
+    def _poll_meshtastic(self):
+        while not self._mt.queue.empty():
+            text, attr = self._mt.queue.get_nowait()
+            self._term_add(f"[MT] {text}", raw=True)
+        while not self._mt_event_queue.empty():
+            event = self._mt_event_queue.get_nowait()
+            if event[0] == "node":
+                self._register_mesh_node("meshtastic", *event[1:])
+            elif event[0] == "text":
+                _, node_id, name, text, rssi, hops, channel = event
+                message = f"{name or node_id}: {text}"
+                timestamp = time.strftime("%H:%M")
+                self._mt_view["log"].append((f"\x10 {message}", C_SUCCESS, f"{timestamp} {hops}hop"))
+                self._mc_bubbles.append((message[:40], pyxel.frame_count + 300))
+                if self.loot:
+                    try:
+                        self.loot.save_meshtastic_message(channel, message, rssi)
+                    except Exception as exc:
+                        self._term_add(f"[MT] Message persistence failed: {exc}", raw=True)
+                self.state.mt_messages += 1
+                self._load_loot_totals()
+                self._play_mc_notify()
+                self._earn_badge("meshcore")  # same existing mesh-message achievement
+            elif event[0] == "tx":
+                _, token, success, error = event
+                pending = self._mt_tx_pending.pop(token, None)
+                if pending is not None:
+                    index, text, channel = pending
+                    if index < len(self._mt_view["log"]):
+                        entry = self._mt_view["log"][index]
+                        self._mt_view["log"][index] = (entry[0], entry[1], "TX" if success else "FAILED")
+                    if self.loot:
+                        label = "TX" if success else "TX failed"
+                        try:
+                            self.loot.save_meshtastic_message(channel,
+                                f"{self._mt.node_name}: {text} [{label}]", 0, direction="tx")
+                        except Exception as exc:
+                            self._term_add(f"[MT] Message persistence failed: {exc}", raw=True)
+                if not success:
+                    self._mt_view["log"].append((f"\x11 TX failed: {error}", C_ERROR))
+            elif event[0] == "status":
+                _, state, error = event
+                current_ready = self._mt.running and self._mt.ready
+                if (state in ("stopped", "error") and not current_ready
+                        and self._radio_protocol == "meshtastic"):
+                    self._radio_protocol = ""
+                    self.state.lora_running = False
+                    self.state.lora_mode = ""
+                elif state == "ready" and current_ready:
+                    self._radio_protocol = "meshtastic"
+                    self.state.lora_running = True
+                    self.state.lora_mode = "meshtastic"
+                if error:
+                    self._mt_view["log"].append((f"\x11 {error}", C_ERROR))
+
+    @contextmanager
+    def _meshtastic_view(self):
+        """Reuse the original MeshCore renderer without mixing either history."""
+        self._mt_view["channels_list"] = [SimpleNamespace(name=self._mt.channel_name)]
+        self._mt_view["node_name"] = self._mt.node_name
+        saved = {key: getattr(self, "_mc_" + key) for key in self._mt_view}
+        previous = self._mesh_view_protocol
+        for key, value in self._mt_view.items():
+            setattr(self, "_mc_" + key, value)
+        self._mesh_view_protocol = "meshtastic"
+        try:
+            yield
+        finally:
+            for key in self._mt_view:
+                self._mt_view[key] = getattr(self, "_mc_" + key)
+                setattr(self, "_mc_" + key, saved[key])
+            self._mesh_view_protocol = previous
+
+    def _update_mt_screen(self):
+        with self._meshtastic_view():
+            ctrl = pyxel.btn(pyxel.KEY_LCTRL) or pyxel.btn(pyxel.KEY_RCTRL)
+            if ctrl and pyxel.btnp(pyxel.KEY_H):
+                self._mc_nodes_panel = not self._mc_nodes_panel
+                self._mc_node_action = self._mc_note_editing = False
+                return
+            if self._mc_nodes_panel:
+                self._update_mc_nodes_panel()
+                return
+            if pyxel.btnp(pyxel.KEY_ESCAPE):
+                self._mt_screen = False
+                self._esc_consumed_frame = pyxel.frame_count
+                return
+            if pyxel.btnp(pyxel.KEY_PAGEUP):
+                self._mc_scroll = min(self._mc_scroll + 5, max(0, len(self._mc_log) - 5))
+            if pyxel.btnp(pyxel.KEY_PAGEDOWN):
+                self._mc_scroll = max(0, self._mc_scroll - 5)
+            if ctrl:
+                if pyxel.btnp(pyxel.KEY_N):
+                    self.input_mode = True
+                    self.input_fields = [{"label": "Node Name", "value": self._mt.node_name}]
+                    self.input_field_idx = 0
+                    self._input_pending_cat = -9
+                    self._input_pending_item = -1
+                elif pyxel.btnp(pyxel.KEY_X):
+                    self._mc_log.clear()
+                    self._mc_scroll = 0
+                return
+            if pyxel.btnp(pyxel.KEY_RETURN):
+                text = self._mc_input.strip()
+                if text:
+                    channel = self._mt.channel_name
+                    token = self._mt.send_message(text)
+                    if token is None:
+                        self._mc_log.append((f"\x11 {self._mt.last_error or 'Meshtastic is OFF'}", C_ERROR))
+                    else:
+                        index = len(self._mc_log)
+                        self._mc_log.append((f"\x11 {self._mt.node_name}: {text}", C_WARNING, "QUEUED"))
+                        self._mt_tx_pending[token] = (index, text, channel)
+                        self._mc_input = ""
+                        self._mc_scroll = 0
+                return
+            if pyxel.btnp(pyxel.KEY_BACKSPACE):
+                self._mc_input = self._mc_input[:-1]
+                return
+            character = self._get_char_input()
+            if character and len(self._mc_input) < 120:
+                self._mc_input += character
+
+    def _draw_mt_screen(self):
+        with self._meshtastic_view():
+            self._draw_mc_screen()
+
+    def _poll_lora(self):
+        self._poll_meshtastic()
+        active = self._active_lora_protocol()
+        self.state.lora_running = bool(active)
+        self.state.lora_mode = active
         try:
             while not self._lora.queue.empty():
                 text, attr = self._lora.queue.get_nowait()
@@ -3626,32 +6063,9 @@ class WatchDogsGame:
                         self._mc_log[idx] = (entry[0], entry[1],
                                              f"{old_tag} \u221a")
                 elif evt[0] == "node":
-                    _, node_id, ntype, name, lat, lon, rssi, snr, pubkey = evt
-                    node_data = {
-                        "id": node_id, "type": ntype, "name": name or "?",
-                        "lat": lat, "lon": lon, "rssi": rssi,
-                        "snr": snr or 0, "last_seen": time.time()}
-                    if pubkey:
-                        node_data["pubkey"] = pubkey.hex()
-                    # Dedup by node_id
-                    existing = next((n for n in self._mc_nodes
-                                     if n["id"] == node_id), None)
-                    if existing:
-                        # Preserve persistent fields
-                        node_data["first_seen"] = existing.get("first_seen", time.time())
-                        node_data["note"] = existing.get("note", "")
-                        existing.update(node_data)
-                    else:
-                        node_data["first_seen"] = time.time()
-                        node_data["note"] = ""
-                        self._mc_nodes.append(node_data)
-                        self.gain_xp(20)  # XP for new contact
-                        if lat and lon and lat != 0 and lon != 0:
-                            self.markers.append(
-                                MapMarker(lat, lon, name or "MC", "meshcore"))
-                    # Persist contact to loot_db
-                    if self.loot:
-                        self.loot.save_contact(node_id, dict(node_data))
+                    _, node_id, ntype, name, lat, lon, rssi, snr, pubkey, rx_position, received_at = evt
+                    self._register_mesh_node("meshcore", node_id, ntype, name, lat, lon, rssi, snr, pubkey,
+                                             rx_position, received_at)
                     # Node adverts go to terminal only, not chat
                     _type_names = {0: "Client", 1: "Client",
                                    2: "Repeater", 3: "Room", 4: "Sensor"}
@@ -3664,22 +6078,110 @@ class WatchDogsGame:
         frame = pyxel.frame_count
         self._mc_bubbles = [(t, e) for t, e in self._mc_bubbles if e > frame]
 
-    def _on_mc_node(self, node_id, ntype, name, lat, lon, rssi, snr,
-                    pubkey=None):
-        """Callback from LoRaManager background thread — enqueue for main."""
-        self._mc_event_queue.put(
-            ("node", node_id, ntype, name, lat, lon, rssi, snr, pubkey))
+    def _poll_reticulum(self):
+        """Drain WDGWars LXMF events from the background thread."""
+        if self._wd is None:
+            return
+        try:
+            while not self._wd_event_queue.empty():
+                evt = self._wd_event_queue.get_nowait()
+                kind = evt[0]
+                if kind == "msg":
+                    _, nick, text = evt
+                    ts = time.strftime("%H:%M")
+                    self._wd_log.append((f"\x10 {nick}: {text}", C_SUCCESS, ts))
+                    self.msg(f"[WD] {nick}: {text[:28]}", C_SUCCESS)
+                    self._play_mc_notify()
+                elif kind in ("delivered", "failed"):
+                    _, token = evt
+                    idx = self._wd_tx_pending.pop(token, None)
+                    if idx is not None and idx < len(self._wd_log):
+                        entry = self._wd_log[idx]
+                        old_tag = entry[2] if len(entry) > 2 else ""
+                        mark = "√" if kind == "delivered" else "✗"
+                        self._wd_log[idx] = (entry[0], entry[1],
+                                             f"{old_tag} {mark}".strip())
+                elif kind == "status":
+                    _, text = evt
+                    self._wd_log.append((f"\x11 {text}", C_HACK_CYAN))
+        except Exception:
+            pass
+
+    def _on_wd_message(self, nick, text):
+        """Callback from Reticulum thread — enqueue inbound #general message."""
+        self._wd_event_queue.put(("msg", nick, text))
         if self.loot:
             try:
-                self.loot.save_meshcore_node(
-                    node_id, ntype, name or "", lat, lon, rssi, snr)
+                self.loot.save_wdgwars_message(nick, text)
             except Exception:
                 pass
 
+    def _on_wd_delivered(self, token):
+        self._wd_event_queue.put(("delivered", token))
+
+    def _on_wd_failed(self, token):
+        self._wd_event_queue.put(("failed", token))
+
+    def _on_wd_status(self, text):
+        self._wd_event_queue.put(("status", text))
+
+    def _wd_toggle_lora(self):
+        """Toggle the RNode-compatible LoRa transport for WDGWars (Ctrl+L).
+
+        One radio = one mode — enabling LoRa stops MeshCore."""
+        if self._wd is None:
+            return
+        if self._wd.lora_active:
+            self._wd.disable_lora()
+            protocol = getattr(self, "_before_rnode_protocol", "meshcore")
+            if self._lora_enabled:
+                resumed = self._switch_lora_protocol(protocol)
+            else:
+                resumed = False
+            self._wd_log.append(
+                (f"\x11 Switched to TCP — {protocol if resumed else 'LoRa OFF'}", C_HACK_CYAN))
+            return
+        if not self._lora_enabled:
+            self._wd_log.append(
+                ("\x10 Enable LoRa hardware first (SYSTEM > LoRa)", C_WARNING))
+            return
+        self._before_rnode_protocol = self._active_lora_protocol() or "meshcore"
+        if not self._stop_radio_owner():
+            return
+        self._wd_log.append(
+            ("\x11 Switching to LoRa-only (TCP off, stops mesh radio). "
+             "Needs gateway in range.", C_WARNING))
+        self._wd.enable_lora(self._lora)
+
+    def _on_mc_node(self, node_id, ntype, name, lat, lon, rssi, snr,
+                    pubkey=None):
+        """Callback from LoRaManager background thread — enqueue for main."""
+        from watchdogs.mesh_position import receiver_observation
+        self._mc_event_queue.put(
+            ("node", node_id, ntype, name, lat, lon, rssi, snr, pubkey,
+             receiver_observation(getattr(self, "gps", None)), time.time()))
+
     _mc_sound_loaded = False
+
+    def _play_subghz_beep(self):
+        """Subtle SubGHz beep - distinct from the mesh notify sound."""
+        if getattr(self, "_muted", False):
+            return
+        if not getattr(self, "_subghz_beep_loaded", False):
+            try:
+                pyxel.sounds[62].set("e3g3", "t", "3", "f", 22)
+                self._subghz_beep_loaded = True
+            except Exception:
+                return
+        try:
+            pyxel.play(3, 62, loop=False)
+        except Exception:
+            pass
 
     def _play_mc_notify(self):
         """Play MeshCore notification sound via pyxel audio."""
+        if getattr(self, "_muted", False):
+            return
         if not self._mc_sound_loaded:
             _project_root = Path(__file__).resolve().parent.parent
             wav = _project_root / "assets" / "meshcore_notify.wav"
@@ -3692,6 +6194,36 @@ class WatchDogsGame:
                 return
         try:
             pyxel.play(3, 63, loop=False)
+        except Exception:
+            pass
+
+    def _play_svc_sound(self, band):
+        """Play the per-service alert WAV (fire/ambulance/police, else warning)."""
+        if getattr(self, "_muted", False):
+            return
+        fname, slot = EMERGENCY_SND.get(band, EMERGENCY_SND_DEFAULT)
+        try:
+            if slot not in self._svc_snd_loaded:
+                wav = Path(__file__).resolve().parent.parent / "assets" / fname
+                if not wav.exists():
+                    return self._play_emergency_siren()   # fallback to synth
+                pyxel.sounds[slot].pcm(str(wav))
+                self._svc_snd_loaded.add(slot)
+            pyxel.play(3, slot, loop=False)
+        except Exception:
+            pass
+
+    def _play_emergency_siren(self):
+        """Distinctive two-tone 'nee-naw' police siren (pyxel synth) — fallback
+        if a per-service WAV is missing."""
+        if getattr(self, "_muted", False):
+            return
+        try:
+            if not getattr(self, "_emerg_snd_loaded", False):
+                # hi-lo alternation, pulse wave, slight vibrato -> siren feel
+                pyxel.sounds[62].set("a3a3a3a3d3d3d3d3", "p", "6", "v", 22)
+                self._emerg_snd_loaded = True
+            pyxel.play(3, 62, loop=False)
         except Exception:
             pass
 
@@ -3770,6 +6302,9 @@ class WatchDogsGame:
                 "et_captures": t.get("et_captures", 0),
                 "mc_nodes":    t.get("mc_nodes", 0),
                 "mc_msgs":     t.get("mc_messages", 0),
+                "mt_nodes":    t.get("mt_nodes", 0),
+                "mt_msgs":     t.get("mt_messages", 0),
+                "emergency":   t.get("emergency", 0),
             }
         except Exception:
             pass
@@ -3820,25 +6355,25 @@ class WatchDogsGame:
                                            "type": "handshake", "label": label[:20]})
                     except Exception:
                         pass
-            # meshcore_nodes.csv
-            mc = session_dir / "meshcore_nodes.csv"
-            if mc.is_file():
+            for protocol in ("meshcore", "meshtastic"):
+                nodes_file = session_dir / f"{protocol}_nodes.csv"
+                if not nodes_file.is_file():
+                    continue
                 try:
-                    with open(mc, encoding="utf-8") as fh:
-                        for i, line in enumerate(fh):
-                            if i == 0:
+                    with nodes_file.open(encoding="utf-8", newline="") as fh:
+                        for row in _csv.DictReader(fh):
+                            try:
+                                lat, lon = float(row["lat"]), float(row["lon"])
+                                if not math.isfinite(lat) or not math.isfinite(lon):
+                                    continue
+                                if not (-90 <= lat <= 90 and -180 <= lon <= 180):
+                                    continue
+                                if lat == lon == 0:
+                                    continue
+                                points.append({"lat": lat, "lon": lon, "type": protocol,
+                                               "label": row.get("name") or row.get("node_id", "")})
+                            except (KeyError, ValueError, TypeError):
                                 continue
-                            p = line.strip().split(",")
-                            if len(p) >= 6:
-                                try:
-                                    lat, lon = float(p[4]), float(p[5])
-                                    if lat == 0.0 and lon == 0.0:
-                                        continue
-                                    points.append({"lat": lat, "lon": lon,
-                                                   "type": "meshcore",
-                                                   "label": p[3] if len(p) > 3 else ""})
-                                except (ValueError, IndexError):
-                                    pass
                 except OSError:
                     pass
         return points
@@ -3884,32 +6419,111 @@ class WatchDogsGame:
     # ------------------------------------------------------------------
 
     def _cleanup(self):
-        """Send stop to ESP32, close serial and GPS."""
-        if self.serial and self.serial.is_open:
+        """Stop this game's producers, persist final data, then release its power."""
+        if getattr(self, "_cleanup_done", False) or getattr(self, "_cleanup_running", False):
+            return
+        self._cleanup_running = self._shutting_down = True
+        self._muted = True
+        self._map_download_cancel = True
+        self._gps_wait = self._gps_wait_dialog = False
+        self._pending_cmd = None
+        blocked = set()
+        flashing = getattr(self, "_flash_running", False)
+        power = getattr(self, "_aio_power", None)
+
+        def step(label, action):
             try:
-                self.serial.send_command("stop")
-                time.sleep(0.2)
-            except Exception:
-                pass
-            self.serial.close()
-        self.gps.close()
-        if self._lora.running:
-            self._lora.stop()
-        if self._sdr.running:
-            self._sdr.stop()
-        if self._watch.connected:
-            self._watch.disconnect()
-        for p in self._plugins:
-            try:
-                p.on_unload()
-            except Exception:
-                pass
-        if self.loot:
-            try:
-                self._save_xp_if_dirty()
-                self.loot.close()
-            except Exception:
-                pass
+                if action() is not False:
+                    return True
+                self._cleanup_errors.append(label)
+                logging.getLogger(__name__).warning("Shutdown %s did not release its resource", label)
+                return False
+            except Exception as exc:
+                self._cleanup_errors.append(label)
+                logging.getLogger(__name__).warning("Shutdown %s failed: %s", label, exc)
+                return False
+
+        def stop(name, method="stop"):
+            manager = getattr(self, name, None)
+            return manager is None or step(name, lambda: getattr(manager, method)())
+
+        try:
+            if (not getattr(self, "_gameupd_closed_for_install", False)
+                    and getattr(self, "_gameupd_plan", None) is not None):
+                step("staged update download", self._gameupd_discard_plan)
+            if power is not None and not flashing:
+                step("power quiesce", power.begin_shutdown)
+            if hasattr(self, "_wardrive_selected"):
+                step("wardrive cancellation", self._cancel_wardrive_plan)
+            # Never reconnect or schedule a new scan while flushing the current one.
+            serial = getattr(self, "serial", None)
+            if serial is not None and serial.is_open and not flashing:
+                self._esp_stop_ack = False
+                self._esp_stop_waiting = True
+                self._esp_stop_timed_out = False
+                self._esp_stop_requested_at = time.monotonic()
+                wrote_stop = step("ESP32 stop", serial.request_stop_for_shutdown)
+                deadline = time.monotonic() + 5.0
+                while wrote_stop and time.monotonic() < deadline:
+                    if not step("final serial data", self._poll_serial):
+                        break
+                    if getattr(self, "_esp_stop_ack", False):
+                        break
+                    time.sleep(0.02)
+                if wrote_stop and not self._esp_stop_ack:
+                    self._cleanup_errors.append("ESP32 stop acknowledgement")
+                    logging.getLogger(__name__).warning("ESP32 final STOP acknowledgement timed out; received data will be saved before owned USB power-off")
+
+            for name in ("_dragon_drain", "_mitm", "_blueducky", "_race"):
+                manager = getattr(self, name, None)
+                active = manager is not None and (getattr(manager, "running", False)
+                    or any(getattr(manager, key, None) is not None
+                           for key in ("_audio_proc", "_tcpdump_proc"))
+                    or any(thread is not None and thread.is_alive()
+                           for thread in (getattr(manager, key, None)
+                                          for key in ("_thread", "_spoof_thread", "_sniff_thread"))))
+                if active and not stop(name):
+                    blocked.add("usb")
+            # Reticulum shutdown must detach LoRa without restoring a TCP path.
+            if not stop("_wd"):
+                blocked.add("lora")
+            for name in ("_mt", "_lora"):
+                if not stop(name):
+                    blocked.add("lora")
+            if not stop("_sdr"):
+                blocked.update(("sdr", "usb"))
+            for name, method in (("_subghz", "shutdown"), ("_flipper", "close"),
+                                 ("_watch", "disconnect"), ("_prox", "shutdown")):
+                if not stop(name, method):
+                    blocked.add("usb")
+
+            # Producers are stopped; their last node/TX/data events still count.
+            if hasattr(self, "_mt_event_queue") and hasattr(self, "_mc_event_queue"):
+                step("final mesh data", self._poll_lora)
+            if hasattr(self, "_sdr"):
+                step("final SDR data", self._poll_sdr)
+            if serial is not None and not step("serial close", serial.close):
+                blocked.add("usb")
+            if not stop("gps", "close"):
+                blocked.add("gps")
+            for plugin in getattr(self, "_plugins", ()):
+                step("plugin unload", plugin.on_unload)
+            if getattr(self, "loot", None) is not None:
+                step("XP save", self._save_xp_if_dirty)
+                if not step("loot flush", self.loot.close):
+                    blocked.add("usb")
+            if flashing:
+                # A native window close/crash must not cut power to esptool.
+                logging.getLogger(__name__).warning("Shutdown leaves power on: firmware flashing is in progress")
+            elif power is not None:
+                results = power.shutdown(blocked_features=blocked)
+                for feature, released in results.items():
+                    if not released:
+                        self._cleanup_errors.append(feature + " power")
+            logging.getLogger(__name__).info("Shutdown complete; unreleased resources: %s", self._cleanup_errors)
+        finally:
+            self._cleanup_running = False
+            self._cleanup_done = True
 
     # ------------------------------------------------------------------
     # Draw
@@ -3923,9 +6537,14 @@ class WatchDogsGame:
 
     def draw(self):
         self._draw_inner()
-        self._draw_plugin_pin()
+        if not getattr(self, "_gameupd_closed_for_install", False):
+            self._draw_plugin_pin()
 
     def _draw_inner(self):
+        if getattr(self, "_gameupd_closed_for_install", False):
+            pyxel.cls(0)
+            self._draw_gameupd_screen()
+            return
         if self._boot_phase:
             self._draw_boot_screen()
             return
@@ -3950,11 +6569,27 @@ class WatchDogsGame:
                 self._draw_input_dialog()
             self._draw_mc_toast()
             return
+        if self._lora_protocol_picker:
+            self._draw_lora_protocol_picker()
+            return
+        if self._mt_profile_screen:
+            self._draw_mt_profile_picker()
+            return
+        if self._mt_screen:
+            self._draw_mt_screen()
+            return
         if self._mc_screen:
             self._draw_mc_screen()
             return
+        if self._wd_screen:
+            self._draw_wd_screen()
+            return
         if self._mc_region_screen:
             self._draw_mc_region_picker()
+            return
+        if self._prox_screen:
+            self._draw_prox_screen()
+            self._draw_mc_toast()
             return
         if self.loot_screen:
             self._draw_loot_screen()
@@ -3962,6 +6597,10 @@ class WatchDogsGame:
             return
         if self._flipper_screen:
             self._draw_flipper_screen()
+            self._draw_mc_toast()
+            return
+        if self._subghz_screen:
+            self._draw_subghz_screen()
             self._draw_mc_toast()
             return
         tiles_drawn = False
@@ -3974,6 +6613,7 @@ class WatchDogsGame:
         if not tiles_drawn:
             self._draw_coastlines()
         self._draw_grid()
+        self._draw_ambient_motes()
         self._draw_loot_points()
         self._draw_wifi()
         self._draw_ble()
@@ -3991,8 +6631,10 @@ class WatchDogsGame:
         self._draw_terminal()
         self._draw_hud_top()
         self._draw_hud_bottom()
+        self._draw_prox_icon()
         self._draw_messages()
         self._draw_radar()
+        self._draw_emergency_alert()
         self._draw_scanlines()
         if self._cluster_popup:
             self._draw_cluster_popup()
@@ -4017,12 +6659,16 @@ class WatchDogsGame:
             self._draw_captured_data()
         if getattr(self, '_flash_screen', False):
             self._draw_flash_screen()
+        if getattr(self, '_gameupd_screen', False):
+            self._draw_gameupd_screen()
         if self.input_mode:
             self._draw_input_dialog()
         if self.confirm_quit:
             self._draw_confirm_quit()
         if self._gps_wait_dialog:
             self._draw_gps_wait_dialog()
+        if getattr(self, "_game_update_notice", None) is not None:
+            self._draw_game_update_notice()
 
     def _draw_coastlines(self):
         vl = self.proj.center_lat - self.proj.lat_span
@@ -4181,6 +6827,14 @@ class WatchDogsGame:
                 # Center label — 5px per glyph halved
                 tx = cl["x"] - (len(txt) * 5) // 2
                 pyxel.text(tx, cl["y"] - 3, txt, 0)
+                # Ambient radiating pulse — a soft ring breathes out of each
+                # cluster so data nodes read as alive; staggered by index so
+                # they don't all beat in lockstep.
+                _cp = (pyxel.frame_count + idx * 13) % 64
+                if _cp < 21:
+                    _pr = r + 2 + _cp // 7
+                    _pc = c if _cp < 8 else (5 if _cp < 14 else 1)
+                    pyxel.circb(cl["x"], cl["y"], _pr, _pc)
                 # Selection ring for clusters
                 if selected:
                     pyxel.circb(cl["x"], cl["y"], r + 3, C_TEXT)
@@ -4387,7 +7041,7 @@ class WatchDogsGame:
             sx, sy = self.proj.geo_to_screen(m.lat, m.lon)
             if not self.proj.screen_visible(sx, sy):
                 continue
-            if m.type == "meshcore":
+            if m.type in ("meshcore", "meshtastic"):
                 # Cyan diamond + pulsing ring, always visible
                 c = C_HACK_CYAN
                 if pyxel.frame_count % 40 < 22:
@@ -4399,7 +7053,9 @@ class WatchDogsGame:
                 pyxel.pset(sx - 3, sy, c)
                 pyxel.pset(sx + 3, sy, c)
                 if zoom >= 4:
-                    pyxel.text(sx + 6, sy - 3, m.label, c)
+                    _lx = (sx + 6 if sx + 6 + len(m.label) * 5 < W
+                           else sx - 6 - len(m.label) * 5)
+                    pyxel.text(_lx, sy - 3, m.label, c)
             else:
                 # Handshake — red skull style
                 if pyxel.frame_count % 30 < 20:
@@ -4408,7 +7064,9 @@ class WatchDogsGame:
                 pyxel.rect(sx - 1, sy - 3, 3, 2, C_ERROR)
                 pyxel.pset(sx, sy, C_WARNING)
                 if zoom >= 5:
-                    pyxel.text(sx + 5, sy - 3, m.label, C_ERROR)
+                    _lx = (sx + 5 if sx + 5 + len(m.label) * 5 < W
+                           else sx - 5 - len(m.label) * 5)
+                    pyxel.text(_lx, sy - 3, m.label, C_ERROR)
 
     def _draw_wifi(self):
         for net in self.wifi_networks:
@@ -4482,7 +7140,11 @@ class WatchDogsGame:
             if zoom >= 4:
                 label = ac.callsign or ac.icao
                 alt_k = ac.altitude // 1000
-                pyxel.text(sx + 6, sy - 4, f"{label} {alt_k}k", c)
+                _lt = f"{label} {alt_k}k"
+                # Flip the label to the left of the plane near the right edge
+                # so callsigns don't get clipped off-screen.
+                _lx = sx + 6 if sx + 6 + len(_lt) * 5 < W else sx - 6 - len(_lt) * 5
+                pyxel.text(_lx, sy - 4, _lt, c)
 
     def _draw_sensors(self):
         """Draw 433 MHz sensors on the map."""
@@ -4501,7 +7163,9 @@ class WatchDogsGame:
             pyxel.rect(sx - 1, sy - 1, 3, 3, c)
             pyxel.pset(sx, sy - 2, c)  # antenna dot
             if self.proj.zoom >= 5:
-                pyxel.text(sx + 4, sy - 3, s.model[:12], 12)
+                _sm = s.model[:12]
+                _lx = sx + 4 if sx + 4 + len(_sm) * 5 < W else sx - 4 - len(_sm) * 5
+                pyxel.text(_lx, sy - 3, _sm, 12)
 
     def _draw_scan_fx(self):
         cx, cy = W // 2, HUD_TOP + MAP_H // 2
@@ -4512,10 +7176,30 @@ class WatchDogsGame:
             r = 25 + int(math.sin(pyxel.frame_count * 0.3) * 8)
             pyxel.circb(cx, cy, r, 12)
 
+    def _draw_ambient_motes(self):
+        """Subtle data motes drifting across the map — ambient cyberspace life,
+        most noticeable when the map is empty (no GPS/tiles yet)."""
+        fc = pyxel.frame_count
+        for i in range(10):
+            mx = int((i * 137 + fc * 0.35) % W)
+            my = HUD_TOP + int((i * 71 + 3 + fc * 0.18) % MAP_H)
+            pyxel.pset(mx, my, 5 if i % 3 else 1)
+
     def _draw_player(self):
         if self.menu_open:
             return
         cx, cy = W // 2, HUD_TOP + MAP_H // 2
+
+        # Sonar ping — an expanding ring sweeps out from the avatar across the
+        # map every ~4s, fading cyan -> dim. Clipped to the map so it never
+        # bleeds onto the HUD or terminal.
+        pyxel.clip(0, HUD_TOP, W, MAP_H)
+        _pg = pyxel.frame_count % 120
+        if _pg < 55:
+            _pr = _pg * 3 + 6
+            _pc = C_HACK_CYAN if _pg < 18 else (5 if _pg < 36 else 1)
+            pyxel.circb(cx, cy, _pr, _pc)
+        pyxel.clip()
 
         # Skull sprite (9x9 pixel art)
         # Subtle breathing bob
@@ -4547,9 +7231,26 @@ class WatchDogsGame:
         pyxel.line(cx - 4, sy + 7, cx + 4, sy + 9, 7)
         pyxel.line(cx + 4, sy + 7, cx - 4, sy + 9, 7)
 
-        # Scan ring (rotating, pulsing)
+        # Hologram scan line sweeping down through the skull (a dashed cyan line,
+        # every ~2s) — gives the avatar a live "projection" feel.
+        _hl = sy - 4 + (pyxel.frame_count % 60) // 5
+        if sy - 4 <= _hl <= sy + 6:
+            for _hx in range(cx - 4, cx + 5, 2):
+                pyxel.pset(_hx, _hl, C_HACK_CYAN)
+
+        # Scan ring (pulsing) + rotating radar sweep + orbiting data bits —
+        # a subtle "live hacker aura" around the avatar.
         ring_r = 10 + int(math.sin(self._breath * 0.03) * 2)
         pyxel.circb(cx, cy, ring_r, C_HACK_CYAN)
+        sweep = pyxel.frame_count * 0.08
+        pyxel.line(cx, cy,
+                   cx + int(math.cos(sweep) * ring_r),
+                   cy + int(math.sin(sweep) * ring_r), C_HACK_CYAN)
+        _orb_cols = (C_HACK_CYAN, C_SUCCESS, C_WARNING)
+        for _i in range(3):
+            _a = sweep * 0.6 + _i * 2.094          # 3 bits, 120 deg apart
+            pyxel.pset(cx + int(math.cos(_a) * (ring_r + 3)),
+                       cy + int(math.sin(_a) * (ring_r + 3)), _orb_cols[_i])
 
     def _draw_particles(self):
         for p in self.particles:
@@ -4560,11 +7261,24 @@ class WatchDogsGame:
         if not self.hacking or not self.hack_target: return
         sx, sy = self.proj.geo_to_screen(self.hack_target.lat, self.hack_target.lon)
         hy = sy - 14
-        fill = int(30 * self.hack_progress / 45)
+        pct = self.hack_progress / 45
+        fill = int(30 * pct)
+        # Pulsing lock-on reticle bracketing the target while it cracks.
+        _lr = 8 + int(math.sin(pyxel.frame_count * 0.2) * 2)
+        for _dx, _dy in ((-1, -1), (1, -1), (-1, 1), (1, 1)):
+            _rx, _ry = sx + _dx * _lr, sy + _dy * _lr
+            pyxel.line(_rx, _ry, _rx - _dx * 3, _ry, C_HACK_CYAN)
+            pyxel.line(_rx, _ry, _rx, _ry - _dy * 3, C_HACK_CYAN)
         pyxel.rect(sx-15, hy, 30, 4, 0)
         pyxel.rect(sx-15, hy, fill, 4, C_SUCCESS)
+        # Sweeping glint along the filled bar — active "cracking" feel.
+        if fill > 2:
+            _gx = sx - 15 + int((pyxel.frame_count * 3) % (fill + 6))
+            if sx - 15 <= _gx < sx - 15 + fill:
+                pyxel.line(_gx, hy, _gx, hy + 3, 7)
         pyxel.rectb(sx-15, hy, 30, 4, C_HACK_CYAN)
-        pyxel.text(sx-18, hy-8, f"HACKING {int(100*self.hack_progress/45)}%", C_HACK_CYAN)
+        _dots = "." * ((pyxel.frame_count // 6) % 4)
+        pyxel.text(sx-18, hy-8, f"HACKING {int(100*pct)}%{_dots}", C_HACK_CYAN)
 
     def _draw_glitch(self):
         if self.glitch_timer > 0:
@@ -4580,6 +7294,13 @@ class WatchDogsGame:
     def _draw_terminal(self):
         pyxel.rect(0, TERM_Y, W, TERM_H, 0)
         pyxel.line(0, TERM_Y, W - 1, TERM_Y, C_MENU_BORDER)
+        # Live data packet sweeping the top rail — the feed reads as flowing.
+        _dp = int((pyxel.frame_count * 2.5) % (W + 30))
+        for _o in range(6):
+            _x = _dp - _o
+            if 0 <= _x < W:
+                _c = C_HACK_CYAN if _o == 0 else (7 if _o < 2 else (5 if _o < 4 else 1))
+                pyxel.pset(_x, TERM_Y, _c)
         pyxel.text(3, TERM_Y + 1, "> OUTPUT", C_HACK_CYAN)
 
         tool_name = ""
@@ -4601,6 +7322,11 @@ class WatchDogsGame:
             tool_name = f"EVIL TWIN [{len(self.state.evil_twin_captured_data)}cap]"
         if tool_name:
             pyxel.text(54, TERM_Y + 1, tool_name, C_WARNING)
+        else:
+            # Idle "system ready" indicator — a slow green pulse dot.
+            if pyxel.frame_count % 50 < 30:
+                pyxel.circ(57, TERM_Y + 4, 1, C_SUCCESS)
+            pyxel.text(62, TERM_Y + 1, "READY", C_DIM)
 
         with self._term_lock:
             lines_snap = list(self.terminal_lines)
@@ -4663,7 +7389,9 @@ class WatchDogsGame:
         if tw > W - 20:
             tw = W - 20
         tx = (W - tw) // 2
-        ty = 20
+        # Slide-in from above when the toast first appears (dur = 300 frames).
+        _slide = max(0, remaining - 290) * 4
+        ty = 20 - _slide
         th = 32
         # Background with thick border
         pyxel.rect(tx, ty, tw, th, 0)
@@ -4678,6 +7406,9 @@ class WatchDogsGame:
         if pyxel.frame_count % 30 < 20:
             pyxel.circ(tx + tw - 10, ty + th // 2, 3, 2)
             pyxel.circ(tx + tw - 10, ty + th // 2, 1, C_SUCCESS)
+        # Countdown bar — shrinks as the toast's time runs out.
+        _frac = max(0.0, min(1.0, remaining / 300.0))
+        pyxel.rect(tx + 2, ty + th - 3, int((tw - 4) * _frac), 2, C_SUCCESS)
 
     def _get_hat_profile(self) -> tuple[str, int]:
         """Determine hacker hat color based on activity profile.
@@ -4717,6 +7448,80 @@ class WatchDogsGame:
             return "BLUE", 12
         return "WHITE", 7
 
+    def _draw_emergency_alert(self):
+        """Emergency scan HUD: flashing police lightbar (top-left, mirrors radar)
+        + status text. Lamps flash fast/red on a real vehicle keyup."""
+        if not (self._sdr.running and "emerg" in self._sdr.mode):
+            return
+        sigs = list(self._sdr.emergency.values())
+        active_sigs = [s for s in sigs if getattr(s, "active", False)]
+        live = bool(getattr(self._sdr, "emergency_active", False) and active_sigs)
+        # Latch a recent keyup so it stays on screen ~20s after the brief event
+        # (a pass-by keys up for only a sweep or two, easy to miss otherwise).
+        LATCH_S = 20.0
+        latch = getattr(self, "_emerg_latch", None)
+        latched = bool(latch and (time.time() - latch[3] < LATCH_S))
+        active = live or latched
+
+        # --- whole-screen colour flash on a detection (service colour) ---
+        if active:
+            _ab = (max(active_sigs, key=lambda s: s.rssi).band if live
+                   else latch[0])
+            fcol = EMERGENCY_SVC_COL.get(_ab, C_ERROR)
+            if (pyxel.frame_count // 4) % 2 == 0:          # pulse ~4 Hz
+                for _i in range(6):                        # thick edge flash
+                    pyxel.rectb(_i, _i, W - _i * 2, H - _i * 2, fcol)
+
+        # --- police lightbar (radiowoz koguty) — top-left, opposite the radar ---
+        lx, ly = 6, HUD_TOP + 4
+        W_BAR, H_BAR, LAMP = 34, 14, 14        # ~1.7x bigger than before
+        period = 3 if active else 14           # fast strobe on a real alert
+        phase = (pyxel.frame_count // period) % 2
+        C_BLUE = 12
+        blue_on = phase == 0
+        red_on = phase == 1
+        pyxel.rect(lx + 3, ly + H_BAR, W_BAR - 6, 2, C_DIM)                    # mount
+        pyxel.rect(lx, ly, W_BAR, H_BAR, 1)                                    # housing
+        pyxel.rect(lx + 2, ly + 2, LAMP, H_BAR - 4, C_BLUE if blue_on else 1)  # blue lamp
+        if blue_on:                                                           # glowing core
+            pyxel.rect(lx + 2 + LAMP // 2 - 1, ly + 3, 3, H_BAR - 6, 7)
+        pyxel.rect(lx + W_BAR - 2 - LAMP, ly + 2, LAMP, H_BAR - 4,
+                   C_ERROR if red_on else 1)                                   # red lamp
+        if red_on:                                                            # glowing core
+            pyxel.rect(lx + W_BAR - 2 - LAMP + LAMP // 2 - 1, ly + 3, 3, H_BAR - 6, 7)
+        if active:                                                            # halo on real alert
+            if blue_on:
+                pyxel.rectb(lx + 1, ly + 1, LAMP + 2, H_BAR - 2, C_BLUE)
+            else:
+                pyxel.rectb(lx + W_BAR - 3 - LAMP, ly + 1, LAMP + 2, H_BAR - 2, C_ERROR)
+        pyxel.rectb(lx, ly, W_BAR, H_BAR, C_DIM)
+
+        # --- status text next to the lightbar ---
+        net = getattr(self._sdr, "network_present", False)
+        if live:
+            sig = max(active_sigs, key=lambda s: s.rssi)
+            arrow = ">" if sig.trend == "up" else ""
+            svc = EMERGENCY_SVC.get(sig.band, sig.band)
+            txt = f"{svc}! {sig.rssi:.0f}dB{arrow}"
+            col = (EMERGENCY_SVC_COL.get(sig.band, C_ERROR)
+                   if phase == 0 else C_DIM)      # blink svc-colour <-> dim
+        elif latched:
+            band, rssi, _tr, ts = latch
+            svc = EMERGENCY_SVC.get(band, band)
+            ago = int(time.time() - ts)
+            txt = f"{svc} {rssi:.0f}dB ({ago}s temu)"
+            col = EMERGENCY_SVC_COL.get(band, C_ERROR) if phase == 0 else C_DIM
+        else:
+            veh = [s for s in sigs if getattr(s, "role", "") == "vehicle"]
+            vtxt = f" {max(veh, key=lambda s: s.rssi).rssi:+.0f}dB" if veh else ""
+            txt = f"SVC TETRA:{'ON' if net else '--'}{vtxt}"
+            # persistent memo of the last detection this session
+            if latch:
+                txt += (" | ost:" + EMERGENCY_SVC.get(latch[0], latch[0])
+                        + " " + time.strftime('%H:%M', time.localtime(latch[3])))
+            col = C_SUCCESS if net else C_DIM
+        pyxel.text(lx + W_BAR + 5, ly + 3, txt, col)
+
     def _draw_hud_top(self):
         # Spleen 5x8: each char = 5px wide, 8px tall. HUD is 16px tall so
         # text at y=4 sits with 4px margins. All horizontal jumps are
@@ -4734,7 +7539,11 @@ class WatchDogsGame:
         pyxel.text(x, TY, lv_txt, C_SUCCESS)
         x += len(lv_txt) * CW + 4
         lvl = self.level_title
-        pyxel.text(x, TY, lvl, C_SUCCESS)
+        # Rank title in its own accent colour + a pulsing underline, so the
+        # player's earned handle reads distinctly from the LV number.
+        pyxel.text(x, TY, lvl, C_HACK_CYAN)
+        _uc = C_HACK_CYAN if pyxel.frame_count % 40 < 24 else 1
+        pyxel.line(x, TY + 9, x + len(lvl) * CW - 2, TY + 9, _uc)
         x += len(lvl) * CW + 4
         # XP bar
         xw = 40
@@ -4743,15 +7552,29 @@ class WatchDogsGame:
         xf = int(xw * cur / nxt) if nxt > 0 else xw
         pyxel.rect(x, TY + 1, xw, 7, C_GRID)
         pyxel.rect(x, TY + 1, xf, 7, C_HACK_CYAN)
+        # Energy shimmer sweeping the filled XP — progress reads as "charging".
+        if xf > 3:
+            _period = xf + 45
+            _xs = int((pyxel.frame_count * 2) % _period)
+            if _xs < xf:
+                _px = x + _xs
+                pyxel.line(_px, TY + 2, _px, TY + 6, 7)
+                if _px + 1 < x + xf:
+                    pyxel.pset(_px + 1, TY + 4, 6)
         pyxel.rectb(x, TY + 1, xw, 7, C_COAST)
         x += xw + 3
         xp_txt = f"{self.xp}"
         pyxel.text(x, TY, xp_txt, C_DIM)
         x += len(xp_txt) * CW + 6
-        # Hat badge
+        # Hat badge — identity chip with a breathing halo so rank feels live.
         hat_name, hat_color = self._get_hat_profile()
-        pyxel.circ(x + 3, HUD_TOP // 2, 3, 7)
-        pyxel.circ(x + 3, HUD_TOP // 2, 2, hat_color)
+        _hy = HUD_TOP // 2
+        _halo = hat_color if hat_color != 0 else 6
+        _hb = pyxel.frame_count % 50
+        if _hb < 30:
+            pyxel.circb(x + 3, _hy, 4 + _hb // 20, _halo)
+        pyxel.circ(x + 3, _hy, 3, 7)
+        pyxel.circ(x + 3, _hy, 2, hat_color)
         x += 9
         pyxel.text(x, TY, hat_name, C_DIM)
         x += len(hat_name) * CW + 4
@@ -4765,7 +7588,9 @@ class WatchDogsGame:
             ("evil_twin",        "ET",  8),
             ("skywatch",         "ADB", C_HACK_CYAN),
             ("iot_hunter",       "433", 12),
+            ("emergency",        "SVC", C_ERROR),
         ]
+        _badge_x0 = x
         for badge_id, label, color in _BADGE_HUD:
             if badge_id in self._badges:
                 lw = len(label) * CW + 4
@@ -4774,15 +7599,36 @@ class WatchDogsGame:
                 pyxel.rectb(x, 2, lw, HUD_TOP - 4, color)
                 pyxel.text(x + 2, TY, label, color)
                 x += lw + 2
-        # Battery + Zoom — far right
+        # Trophy shine — a glint glides along the badge-row frame every ~6.6s,
+        # riding the top & bottom edges so it never smears the labels.
+        _badge_x1 = x - 2
+        if _badge_x1 > _badge_x0 + 4:
+            _t = pyxel.frame_count % 200
+            _span = _badge_x1 - _badge_x0
+            if _t <= _span:
+                _sx = _badge_x0 + _t
+                for _lx, _c in ((_sx, 7), (_sx - 1, 6)):
+                    if _badge_x0 <= _lx <= _badge_x1:
+                        pyxel.pset(_lx, 2, _c)
+                        pyxel.pset(_lx, HUD_TOP - 3, _c)
+        # Battery (icon + %) + Zoom — far right
         bat = self._battery_pct
         if bat >= 0:
             bc = C_SUCCESS if bat > 25 else (C_WARNING if bat > 10 else C_ERROR)
-            bat_txt = f"BAT:{bat}%"
-            bx = W - len(bat_txt) * CW - 4
-            pyxel.text(bx, TY, bat_txt, bc)
+            pct_txt = f"{bat}%"
+            icon_w = 12
+            px0 = W - len(pct_txt) * CW - 4 - icon_w - 2
+            # Low battery: urgent blink of the whole indicator.
+            _low = bat <= 10 and (pyxel.frame_count % 30 < 15)
+            _ic = C_ERROR if _low else bc
+            pyxel.rectb(px0, TY, 10, 7, _ic)            # body
+            pyxel.rect(px0 + 10, TY + 2, 2, 3, _ic)     # terminal nub
+            _fw = max(0, min(8, int(8 * bat / 100)))
+            if _fw > 0:
+                pyxel.rect(px0 + 1, TY + 1, _fw, 5, _ic)  # charge fill
+            pyxel.text(px0 + icon_w + 2, TY, pct_txt, _ic)
             zoom_txt = f"Z:{self.proj.label}"
-            pyxel.text(bx - len(zoom_txt) * CW - 6, TY, zoom_txt, C_DIM)
+            pyxel.text(px0 - len(zoom_txt) * CW - 6, TY, zoom_txt, C_DIM)
         else:
             zoom_txt = f"Z:{self.proj.label}"
             pyxel.text(W - len(zoom_txt) * CW - 4, TY, zoom_txt, C_DIM)
@@ -4804,11 +7650,29 @@ class WatchDogsGame:
                   + self.state.submitted_forms
                   + len(self.state.evil_twin_captured_data))
         # Columns sized for Spleen 5x8 + 4-digit counts (e.g. "BLE:9999"=40px).
-        pyxel.text(4,   y, f"BLE:{t_bt}",    C_HACK_CYAN)
-        pyxel.text(60,  y, f"WiFi:{t_wifi}", C_WARNING)
-        pyxel.text(125, y, f"HS:{t_hs}",    C_ERROR)
-        pyxel.text(170, y, f"PWD:{t_pwd}",  12)  # blue
-        pyxel.text(220, y, f"PWN:{n_pwn}",  C_SUCCESS)
+        # Each counter "pops" (white flash + rising +tick) the moment it grows,
+        # so finding a device/handshake/pwn gives instant visual feedback.
+        _counters = [
+            ("BLE",  4,   t_bt,   C_HACK_CYAN),
+            ("WiFi", 60,  t_wifi, C_WARNING),
+            ("HS",   125, t_hs,   C_ERROR),
+            ("PWD",  170, t_pwd,  12),
+            ("PWN",  220, n_pwn,  C_SUCCESS),
+        ]
+        _prev = self.__dict__.setdefault("_hud_counts", {})
+        _flash = self.__dict__.setdefault("_hud_flash", {})
+        _fc = pyxel.frame_count
+        for _k, _cx, _val, _col in _counters:
+            if _k in _prev and _val > _prev[_k]:
+                _flash[_k] = _fc
+            _prev[_k] = _val
+            _txt = f"{_k}:{_val}"
+            _age = _fc - _flash.get(_k, -999)
+            if 0 <= _age < 12:
+                pyxel.text(_cx, y, _txt, 7)            # white pop
+                pyxel.text(_cx + len(_txt) * 5 + 1, y - _age // 3, "+", _col)
+            else:
+                pyxel.text(_cx, y, _txt, _col)
 
         tools = []
         if self.wifi_scanning: tools.append("WiFi")
@@ -4823,41 +7687,198 @@ class WatchDogsGame:
             tools.append(f"ADS-B:{n_pos}/{n_all}")
         if self._sdr.running and "433" in self._sdr.mode:
             tools.append(f"433:{self._sdr.total_sensors_seen}")
+        if self._sdr.running and "emerg" in self._sdr.mode:
+            tools.append("SVC!" if self._sdr.emergency_active else "SVC")
+        if getattr(self, "_muted", False):
+            tools.append("MUTE")
         if tools:
             dots = "." * ((pyxel.frame_count // 10) % 4)
             pyxel.text(270, y, " ".join(tools) + dots, 12)
         elif not self.menu_open:
-            pyxel.text(270, y, "[TAB]Menu [`]Loot [S]Stop", C_COAST)
+            # Keybind legend — keys highlighted, labels dim (matches menu style).
+            _kx = 270
+            for _seg, _sc in (("[TAB]", C_HACK_CYAN), ("Menu ", C_COAST),
+                              ("[`]", C_HACK_CYAN), ("Loot ", C_COAST),
+                              ("[S]", C_WARNING), ("Stop", C_COAST)):
+                pyxel.text(_kx, y, _seg, _sc)
+                _kx += len(_seg) * 5
 
-        # GPS status — "DD.DDDDDS DDD.DDDDDW" = 20 chars × 5 = 100px
+        # GPS status — lock-reticle icon reflects state (locked/searching/off).
         if self.gps_fix:
             lat_c = "N" if self.player_lat >= 0 else "S"
             lon_c = "E" if self.player_lon >= 0 else "W"
-            gps_txt = (f"{abs(self.player_lat):.5f}{lat_c} "
-                       f"{abs(self.player_lon):.5f}{lon_c}")
-            pyxel.text(W - 108, y, gps_txt, C_SUCCESS)
+            g_txt = (f"{abs(self.player_lat):.5f}{lat_c} "
+                     f"{abs(self.player_lon):.5f}{lon_c}")
+            g_x, g_col, g_state = W - 108, C_SUCCESS, "fix"
         elif self.gps.available:
             if self.gps_sats_vis > 0:
-                pyxel.text(W - 120, y,
-                           f"Waiting fix Vis:{self.gps_sats_vis}", C_WARNING)
+                g_txt = f"Waiting fix Vis:{self.gps_sats_vis}"
+                g_x, g_col, g_state = W - 120, C_WARNING, "search"
             else:
-                pyxel.text(W - 100, y, "Waiting for GPS fix", C_ERROR)
+                g_txt = "Waiting for GPS fix"
+                g_x, g_col, g_state = W - 100, C_ERROR, "search"
         else:
-            pyxel.text(W - 60, y, "GPS offline", C_DIM)
+            g_txt = "GPS offline"
+            g_x, g_col, g_state = W - 60, C_DIM, "off"
+        _ix, _iy = g_x - 10, y + 3
+        if g_state == "search":
+            pyxel.circb(_ix, _iy, 2 + (pyxel.frame_count // 10) % 2, g_col)
+            pyxel.pset(_ix, _iy, g_col)
+        elif g_state == "fix":
+            pyxel.circb(_ix, _iy, 3, g_col)
+            pyxel.circ(_ix, _iy, 1, g_col)
+        else:
+            pyxel.circb(_ix, _iy, 3, g_col)
+        pyxel.text(g_x, y, g_txt, g_col)
 
-        # LoRa status (left of GPS, same line). "LoRa:ON pkt:9999" = 16×5 = 80
-        if self._lora.running:
-            pkts = self._lora.packets_received
-            pyxel.text(W - 200, y, f"LoRa:ON pkt:{pkts}", C_SUCCESS)
-        elif self._lora_enabled:
-            pyxel.text(W - 200, y, "LoRa:IDLE", C_WARNING)
+        # The label reflects a ready radio, not merely GPIO power or a thread.
+        protocol = self._active_lora_protocol()
+        label = {"meshcore": "MeshCore", "meshtastic": "Meshtastic", "rnode": "RNode"}.get(protocol, "OFF")
+        pyxel.text(W - 200, y, f"LoRa:{label}", C_SUCCESS if protocol else C_DIM)
 
+
+    def _draw_prox_icon(self):
+        """Little pager/badge icon in the map's top-left. Blinks when a WDGWars
+        node is in range; brighter and faster when mutual or very close."""
+        if not self._prox.enabled:
+            return
+        # Left edge, mid-map: clear of the emergency/TETRA lightbar (top-left)
+        # and the message log (bottom-left).
+        x, y = 6, HUD_TOP + 100
+        fc = pyxel.frame_count
+        rows = self._prox.rows()
+        inrange = bool(rows)
+        mutual = any(r.get("mutual") for r in rows)
+        veryclose = any((r.get("state") or 0) >= 4 for r in rows)
+        meeting = self._prox.meeting() is not None
+
+        # Colour = relationship, blink speed = closeness. Mutual is the loud one.
+        if self._prox.paused or not self._prox.fresh() or not inrange:
+            col, rate, ring = C_DIM, 0, False           # idle / held: calm, dim
+        elif meeting:
+            col, rate, ring = C_SUCCESS, 5, True        # met! green, fastest, ring
+        elif mutual:
+            col, rate, ring = C_SUCCESS, 10, veryclose  # mutual: green blink (+ring if very close)
+        else:
+            col = C_HACK_CYAN                            # seen one-way: calm cyan
+            rate = 12 if veryclose else 22
+            ring = False
+        lit = True if rate == 0 else ((fc // rate) % 2 == 0)
+        scr = col if (inrange and lit) else 1
+
+        # antenna
+        pyxel.line(x + 2, y, x + 2, y - 3, col)
+        pyxel.pset(x + 2, y - 4, col if lit else 1)
+        # pager body + screen + buttons
+        pyxel.rectb(x, y, 12, 15, col)
+        pyxel.rect(x + 2, y + 2, 8, 5, scr)
+        pyxel.rect(x + 2, y + 9, 8, 1, col)
+        pyxel.pset(x + 3, y + 12, col)
+        pyxel.pset(x + 6, y + 12, col)
+        pyxel.pset(x + 9, y + 12, col)
+        # a single emanating ring only on a real (mutual) contact
+        if ring and lit:
+            rr = 8 + (fc // 3) % 3
+            pyxel.circb(x + 6, y + 4, rr, col)
+        # count / hold hint to the right of the icon
+        if self._prox.paused:
+            pyxel.text(x + 15, y + 5, "II", C_DIM)
+        elif inrange:
+            n_m = sum(1 for r in rows if r.get("mutual"))
+            pyxel.text(x + 15, y + 5, "%d/%d" % (n_m, len(rows)), col)
+
+    def _draw_prox_screen(self):
+        pyxel.cls(0)
+        pyxel.rect(0, 0, W, HUD_TOP, C_HUD_BG)
+        pyxel.line(0, HUD_TOP, W - 1, HUD_TOP, C_HUD_LINE)
+        pyxel.text(6, 5, "WDGWARS // PROXIMITY RADAR", C_HACK_CYAN)
+        my = self._prox.my_ident()
+        pyxel.text(W - 168, 5, "YOU WDG-%s" % (my or "------"), C_SUCCESS)
+        if self._prox.paused:
+            st_txt, st_col = "HOLD (BT busy)", C_WARNING
+        elif not self._prox.enabled:
+            st_txt, st_col = "OFF", C_DIM
+        elif not self._prox.fresh():
+            st_txt, st_col = "starting", C_WARNING
+        else:
+            st_txt, st_col = "ON", C_SUCCESS
+        pyxel.text(W - 60, 5, st_txt, st_col)
+
+        if not self._prox.enabled:
+            pyxel.text(W // 2 - 88, 150, "Proximity radar is OFF", C_DIM)
+            pyxel.text(W // 2 - 84, 166, "press [O] to turn it ON", C_TEXT)
+            pyxel.text(8, H - 12, "[O] on/off    [TAB/ESC/Q] back", C_DIM)
+            return
+
+        hy = HUD_TOP + 8
+        pyxel.text(12, hy, "PLAYER", C_DIM)
+        pyxel.text(120, hy, "STATE", C_DIM)
+        pyxel.text(210, hy, "TREND", C_DIM)
+        pyxel.text(330, hy, "SIGNAL", C_DIM)
+        pyxel.text(474, hy, "dBm", C_DIM)
+        pyxel.text(540, hy, "MUTUAL", C_DIM)
+        pyxel.line(8, hy + 10, W - 8, hy + 10, C_HUD_LINE)
+
+        rows = self._prox.rows()
+        if not self._prox.fresh():
+            pyxel.text(W // 2 - 56, 170, "radio starting...", C_WARNING)
+        elif not rows:
+            pyxel.text(W // 2 - 44, 158, "LISTENING", C_HACK_CYAN)
+            pyxel.text(W // 2 - 116, 174, "no WDGWars nodes in range yet", C_DIM)
+        else:
+            seen = set()
+            i = 0
+            for r in rows:
+                lbl = str(r.get("label", "?"))
+                if lbl in seen:
+                    continue
+                seen.add(lbl)
+                yy = HUD_TOP + 28 + i * 30
+                i += 1
+                if i > 8:
+                    break
+                mut = r.get("mutual")
+                stt = r.get("state") or 0
+                ncol = C_SUCCESS if mut else C_HACK_CYAN
+                pyxel.text(12, yy, lbl[:16], ncol)
+                pyxel.text(120, yy, PROX_STATE_NAMES[stt], C_TEXT)
+                pyxel.text(210, yy, PROX_TREND_WORDS.get(r.get("trend") or 0, ""),
+                           C_HACK_CYAN)
+                # signal bar (0..20)
+                pyxel.rectb(330, yy - 1, 130, 8, C_DIM)
+                bar = max(0, min(20, r.get("bar") or 0))
+                pyxel.rect(331, yy, int(128 * bar / 20), 6,
+                           C_SUCCESS if mut else C_HACK_CYAN)
+                ema = r.get("ema")
+                pyxel.text(474, yy, "%d" % int(ema) if ema is not None else "--",
+                           C_TEXT)
+                if mut:
+                    pyxel.rect(540, yy - 1, 30, 8, C_SUCCESS)
+                    pyxel.text(545, yy, "YES", 0)
+                else:
+                    pyxel.text(548, yy, "--", C_DIM)
+
+        unk = self._prox.unknown()
+        pyxel.text(12, H - 26, "unknown nodes nearby: %d" % unk, C_DIM)
+        meet = self._prox.meeting()
+        if meet:
+            pyxel.rect(0, H - 44, W, 16, C_SUCCESS)
+            rssi = meet.get("rssi")
+            pyxel.text(W // 2 - 110, H - 40, "*** SPOTKANIE z %s   %s dBm ***"
+                       % (meet.get("label", "?"),
+                          int(rssi) if rssi is not None else "?"), 0)
+        pyxel.text(8, H - 12, "[O] on/off    [TAB/ESC/Q] back", C_DIM)
 
     def _draw_messages(self):
         y = TERM_Y - 12
         for text, timer, col in reversed(self.msgs):
-            c = col if min(timer, 30) / 30 > 0.5 else C_COAST
-            pyxel.text(4, y, text[:80], c)
+            fade = min(timer, 30) / 30
+            c = col if fade > 0.5 else C_COAST
+            x_off = max(0, timer - 168) * 4   # fresh msgs slide in from the left
+            bx = 4 + x_off
+            # Colored accent tab makes each event read as a distinct notification.
+            pyxel.rect(bx, y, 2, 8, col if fade > 0.3 else C_COAST)
+            pyxel.text(bx + 5, y, text[:78], c)
             y -= 10
             if y < HUD_TOP + 10: break
 
@@ -4868,6 +7889,11 @@ class WatchDogsGame:
         pyxel.line(rx, ry-rr, rx, ry+rr, C_GRID)
         pyxel.line(rx-rr, ry, rx+rr, ry, C_GRID)
         sa = pyxel.frame_count * 0.04
+        # Phosphor sweep: dim trailing radii fade behind the bright leading edge.
+        for _k, _tc in ((0.12, 5), (0.24, 5), (0.38, 1), (0.54, 1)):
+            _ta = sa - _k
+            pyxel.line(rx, ry, rx+int(math.cos(_ta)*rr),
+                       ry+int(math.sin(_ta)*rr), _tc)
         pyxel.line(rx, ry, rx+int(math.cos(sa)*rr), ry+int(math.sin(sa)*rr), C_HACK_CYAN)
         scale = rr / max(self.proj.lon_span * 0.5, 0.001)
         for d in self.ble_devices:
@@ -4886,7 +7912,8 @@ class WatchDogsGame:
             if abs(dx) < rr and abs(dy) < rr:
                 pyxel.pset(rx+int(dx), ry+int(dy), C_ERROR)
         loot_colors = {"wifi": C_SUCCESS, "bt": C_HACK_CYAN,
-                       "handshake": C_ERROR, "meshcore": C_WARNING}
+                       "handshake": C_ERROR, "meshcore": C_WARNING,
+                       "meshtastic": C_WARNING}
         step = max(1, len(self.loot_points) // 100)
         for i in range(0, len(self.loot_points), step):
             pt = self.loot_points[i]
@@ -4907,10 +7934,18 @@ class WatchDogsGame:
         except Exception:
             pass
 
-        pyxel.pset(rx, ry, C_TEXT)
+        # Player marker at radar center — a small pulsing cross ("you are here"),
+        # distinct from the single-pixel contact blips around it.
+        _pc = 7 if pyxel.frame_count % 30 < 15 else C_HACK_CYAN
+        pyxel.pset(rx, ry, _pc)
+        pyxel.pset(rx - 1, ry, _pc)
+        pyxel.pset(rx + 1, ry, _pc)
+        pyxel.pset(rx, ry - 1, _pc)
+        pyxel.pset(rx, ry + 1, _pc)
 
-        # MeshCore: CB radio sprite + message bubbles (under radar)
-        if self._lora.running:
+        # The same CB radio sprite represents the actual ready LoRa owner.
+        radio_active = bool(self._active_lora_protocol())
+        if radio_active:
             # Radio sprite centered under radar
             rw = getattr(self, '_radio_w', 32)
             rh = getattr(self, '_radio_h', 48)
@@ -4943,9 +7978,11 @@ class WatchDogsGame:
                     pyxel.text(bx + 3, by + 2, disp, C_SUCCESS)
                     by += 12
 
-        # SDR indicator (under LoRa radio, or under radar if no LoRa)
-        if self._sdr.running:
-            if self._lora.running:
+        # SDR dish indicator (under LoRa radio, or under radar if no LoRa).
+        # Only for ADS-B / 433 — Emergency has its own police-lightbar indicator
+        # (top-left), so no dish here (a bare dish reads as "ADS-B is on").
+        if self._sdr.running and ("adsb" in self._sdr.mode or "433" in self._sdr.mode):
+            if radio_active:
                 rw = getattr(self, '_radio_w', 32)
                 rh = getattr(self, '_radio_h', 48)
                 sy = ry + rr + 4 + rh + 4  # below radio sprite
@@ -4994,6 +8031,15 @@ class WatchDogsGame:
                 pyxel.rectb(tx, TAB_Y - 1, cat_w - 1, TAB_H, C_COAST)
                 pyxel.text(tx + 3, TAB_Y + 2, cat_name[:6], C_DIM)
 
+        # Active-tab affordance: a lit (gently breathing) top edge + a downward
+        # connector notch tying the open tab to the item list below it.
+        _atx = PX + self.menu_cat * cat_w
+        _edge = 7 if pyxel.frame_count % 44 < 22 else C_HACK_CYAN
+        pyxel.line(_atx, TAB_Y - 1, _atx + cat_w - 2, TAB_Y - 1, _edge)
+        _ncx = _atx + cat_w // 2
+        _nty = TAB_Y - 1 + TAB_H
+        pyxel.tri(_ncx - 3, _nty, _ncx + 3, _nty, _ncx, _nty + 3, C_HACK_CYAN)
+
         # Item list — 13px tall rows
         _, items = MENU_CATS[self.menu_cat]
         IY = TAB_Y + TAB_H + 3
@@ -5009,18 +8055,30 @@ class WatchDogsGame:
             is_na = cmd.startswith("_") and state_key not in (
                 "_stop_all", "_reboot", "_dl_map", "_gps_toggle",
                 "_lora_toggle", "_sdr_toggle", "_usb_toggle",
-                "_wl_screen", "_wpasec_up", "_wpasec_dl", "_flash_esp",
-                "_bt_hid_wip", "_bd_wip", "_race_wip"
+                "_wl_screen", "_wpasec_up", "_wpasec_dl", "_flash_esp", "_gameupd",
+                "_bt_hid_wip", "_bd_wip", "_race_wip",
+                "_srv_wiki", "_srv_ctos", "_srv_nav", "_srv_status"
             ) and not state_key.startswith("_p_")
             if sel:
                 bg = C_ERROR if is_stop else C_HACK_CYAN
                 pyxel.rect(PX, ty - 1, PW, IH, bg)
+                # Live selection glint — a soft highlight sweeping across the
+                # active row, so the cursor reads as "alive" not just painted.
+                if not is_stop:
+                    _sw = int((pyxel.frame_count * 4) % (PW + 24)) - 12
+                    for _dx, _sc in ((0, 7), (-1, 6), (1, 6)):
+                        _sx = PX + _sw + _dx
+                        if PX < _sx < PX + PW - 1:
+                            pyxel.line(_sx, ty, _sx, ty + IH - 3, _sc)
                 pyxel.rectb(PX, ty - 1, PW, IH, C_TEXT)
                 tc = 0
             else:
                 bc = C_ERROR if is_stop else (C_COAST if is_na else C_MENU_BORDER)
                 pyxel.rectb(PX, ty - 1, PW, IH, bc)
                 tc = C_ERROR if is_stop else (C_DIM if is_na else C_TEXT)
+            if state_key == "_gameupd":
+                if not sel:
+                    tc = C_TEXT if self._game_update_available else C_DIM
             pyxel.text(PX + 4, ty + 2, f"[{hotkey}] {label}", tc)
             needs_wifi = state_key in _NEEDS_EXT_WIFI
             if needs_wifi:
@@ -5043,15 +8101,29 @@ class WatchDogsGame:
                 pyxel.text(PX + 3, TERM_Y - 22,
                            "\x17 Requires external WiFi adapter", C_WARNING)
 
-        # Navigation hint
-        pyxel.text(PX + 1, TERM_Y - 10,
-                   "\x1c/\x1d cat  \x1e/\x1f sel  ENTER  TAB", C_DIM)
+        # Navigation hint — keys highlighted, labels dim (reads as a key legend).
+        _hx, _hy = PX + 1, TERM_Y - 10
+        for _seg, _sc in (("\x1c/\x1d", C_HACK_CYAN), (" cat  ", C_DIM),
+                          ("\x1e/\x1f", C_HACK_CYAN), (" sel  ", C_DIM),
+                          ("ENTER", C_SUCCESS), ("  ", C_DIM),
+                          ("TAB", C_WARNING)):
+            pyxel.text(_hx, _hy, _seg, _sc)
+            _hx += len(_seg) * 5
 
         # ─ ESP32 status + category (top-left of right panel) ─
         sx2 = PX + 310 + 8
         esp_c = C_SUCCESS if self._esp32 else C_ERROR
         pyxel.text(sx2, HUD_TOP + 4,  "ESP32:", C_DIM)
-        pyxel.text(sx2, HUD_TOP + 16, "OK" if self._esp32 else "OFFLINE", esp_c)
+        _est = "OK" if self._esp32 else "OFFLINE"
+        pyxel.text(sx2, HUD_TOP + 16, _est, esp_c)
+        # Live-link heartbeat — a pulsing dot beside the status when connected.
+        _ld = sx2 + len(_est) * 5 + 5
+        if self._esp32:
+            pyxel.circb(_ld, HUD_TOP + 19, 3, C_SUCCESS)
+            if pyxel.frame_count % 40 < 24:
+                pyxel.circ(_ld, HUD_TOP + 19, 1, C_SUCCESS)
+        else:
+            pyxel.circb(_ld, HUD_TOP + 19, 2, C_ERROR)
         cat_name = MENU_CATS[self.menu_cat][0]
         pyxel.text(sx2, HUD_TOP + 30, f"// {cat_name}", C_HACK_CYAN)
 
@@ -5086,11 +8158,14 @@ class WatchDogsGame:
         feet_y = TERM_Y + 60  # legs extend below terminal line
 
         if self._hacker_sprite_ok and self._hacker_w > 0:
+            # Breathing idle bob (+/-1px) so the character reads as alive.
+            _bob = int(math.sin(pyxel.frame_count * 0.05) * 1.5)
             sx = rpx - self._hacker_w // 2
-            sy = feet_y - self._hacker_h
-            # BLACK rect covers dim overlay scanlines in sprite area
-            bg_top = max(sy, HUD_TOP)
-            pyxel.rect(sx, bg_top, self._hacker_w, feet_y - bg_top, 0)
+            sy = feet_y - self._hacker_h + _bob
+            # BLACK rect covers dim overlay scanlines — padded so the bob never
+            # exposes the blue scanlines above/below the sprite.
+            bg_top = max(sy - 2, HUD_TOP)
+            pyxel.rect(sx, bg_top, self._hacker_w, feet_y + 2 - bg_top, 0)
             # Sprite on top — colkey=0 transparent pixels show black beneath
             pyxel.blt(sx, sy, 1, 0, 0, self._hacker_w, self._hacker_h, 0)
             bubble_cx = sx + self._hacker_w // 2
@@ -5135,10 +8210,14 @@ class WatchDogsGame:
         tail_y = qy + qh // 2
         pyxel.line(tail_x, tail_y - 2, tail_x + 6, tail_y, C_HACK_CYAN)
         pyxel.line(tail_x, tail_y + 2, tail_x + 6, tail_y, C_HACK_CYAN)
-        # Text — Spleen 5x8 centered in bubble
+        # Text — Spleen 5x8, typewriter reveal + blinking caret (live chatter).
         text_x = qx + (qw - len(quip_upper) * 5) // 2
         text_y = qy + (qh - 8) // 2
-        pyxel.text(text_x, text_y, quip_upper, C_HACK_CYAN)
+        _wpos = pyxel.frame_count % 90
+        _shown = quip_upper[:min(len(quip_upper), 2 + _wpos // 2)]
+        pyxel.text(text_x, text_y, _shown, C_HACK_CYAN)
+        if _wpos % 12 < 7:
+            pyxel.text(text_x + len(_shown) * 5, text_y, "_", C_HACK_CYAN)
 
     # ------------------------------------------------------------------
     # Picker overlays (network / portal selection)
@@ -5185,6 +8264,12 @@ class WatchDogsGame:
             checked = (i in picked)
             if cursor:
                 pyxel.rect(dx + 2, y - 1, dw - 4, ROW_H - 1, C_HACK_CYAN)
+                # Live selection glint — matches the game's other pickers.
+                _ng = int((pyxel.frame_count * 4) % (dw - 4 + 24)) - 12
+                for _dx2, _sc in ((0, 7), (-1, 6), (1, 6)):
+                    _nx = dx + 2 + _ng + _dx2
+                    if dx + 2 < _nx < dx + dw - 3:
+                        pyxel.line(_nx, y - 1, _nx, y + ROW_H - 4, _sc)
             # Checkbox: [X] or [ ]
             mark = "X" if checked else " "
             pyxel.text(dx + 4, y + 2, f"[{mark}]",
@@ -5291,6 +8376,9 @@ class WatchDogsGame:
 
     def _update_mc_region_picker(self):
         """UP/DOWN/ENTER/ESC for the MeshCore regional preset picker."""
+        if getattr(self, "_rf_profiles", None) is not None:
+            self._update_radio_profile_picker("meshcore")
+            return
         import pyxel as px
         from .lora_manager import MESHCORE_PRESETS, save_meshcore_config
         keys = list(MESHCORE_PRESETS.keys())
@@ -5304,6 +8392,19 @@ class WatchDogsGame:
         elif px.btnp(px.KEY_RETURN):
             new_region = keys[self._mc_region_sel]
             old_region = self._mc_region
+            # This picker controls MeshCore only. RNode and Meshtastic keep
+            # their current RF profile until explicitly switched by the user.
+            if (self._lora_enabled and self._lora.running
+                    and self._lora.mode == "meshcore" and new_region != old_region):
+                if not self._lora.stop():
+                    self.msg("[MC] Stop pending; region unchanged", C_ERROR)
+                    return
+                if not self._lora.start_meshcore(new_region):
+                    self.state.lora_running = False
+                    self.state.lora_mode = ""
+                    self._radio_protocol = ""
+                    self.msg(f"[MC] Retune failed: {self._lora.last_error}", C_ERROR)
+                    return
             self._mc_region = new_region
             # Persist to ~/.watchdogs_meshcore.json
             try:
@@ -5314,18 +8415,6 @@ class WatchDogsGame:
                 self._term_add(f"[MC] config save failed: {exc}", raw=True)
             label = MESHCORE_PRESETS[new_region][4]
             self.msg(f"[MC] Region: {label}", C_SUCCESS)
-            # Re-tune the radio right away if LoRa is currently sniffing
-            if self._lora_enabled and self._lora.running and \
-                    new_region != old_region:
-                try:
-                    self._lora.stop()
-                except Exception:
-                    pass
-                try:
-                    self._lora.start_meshcore(new_region)
-                    self._term_add(f"[MC] Retuned to {label}", raw=True)
-                except Exception as exc:
-                    self._term_add(f"[MC] retune failed: {exc}", raw=True)
             self._mc_region_screen = False
         elif px.btnp(px.KEY_ESCAPE):
             self._mc_region_screen = False
@@ -5333,6 +8422,9 @@ class WatchDogsGame:
 
     def _draw_mc_region_picker(self):
         """Draw MeshCore regional preset picker overlay."""
+        if getattr(self, "_rf_profiles", None) is not None:
+            self._draw_radio_profile_picker("meshcore")
+            return
         from .lora_manager import MESHCORE_PRESETS
         keys = list(MESHCORE_PRESETS.keys())
         # Solid dim background
@@ -5698,6 +8790,12 @@ class WatchDogsGame:
                     sel = (i == self._flipper_sel)
                     if sel:
                         pyxel.rect(mx - 2, y - 1, 200, ROW_H - 1, C_WARNING)
+                        # Live selection glint — matches the game's other menus.
+                        _fg = int((pyxel.frame_count * 4) % (200 + 24)) - 12
+                        for _dx, _sc in ((0, 7), (-1, 6), (1, 6)):
+                            _fx = mx - 2 + _fg + _dx
+                            if mx - 2 < _fx < mx + 197:
+                                pyxel.line(_fx, y - 1, _fx, y + ROW_H - 4, _sc)
                     c = 0 if sel else C_TEXT
                     pyxel.text(mx + 2, y + 2, label, c)
                     y += ROW_H
@@ -5838,6 +8936,437 @@ class WatchDogsGame:
             pyxel.text(dx + 4, dy + dh - 14,
                        "UP/DOWN  ENTER flash  ESC cancel", C_DIM)
 
+    # ------------------------------------------------------------------
+    # Update Game: own-fork releases, persistent notices and code-only upgrades.
+    # ------------------------------------------------------------------
+
+    def _init_game_updates(self):
+        self._game_updates = GameUpdates(root=Path(__file__).resolve().parent.parent)
+        self._game_update_events = Queue()
+        self._game_check_started = False
+        self._game_update_checking = False
+        self._game_update_status = "idle"
+        self._game_update_message = "Press R to check for updates."
+        self._game_update_release = None
+        self._game_update_notice = None
+        self._game_update_notice_queued = None
+        self._game_update_seen_in_session = set()
+        self._game_remote_version = ""
+        self._game_update_available = False
+        self._gameupd_screen = False
+        self._gameupd_running = False
+        self._gameupd_done = False
+        self._gameupd_ok = False
+        self._gameupd_log = []
+        self._gameupd_scroll = 0
+        self._gameupd_confirm = False
+        self._gameupd_plan = None
+        self._gameupd_open_frame = -1
+        self._gameupd_install_frame = -1
+        self._gameupd_closed_for_install = False
+        self._gameupd_source_opening = False
+        self._gameupd_avatar = None
+        try:
+            from . import __version__
+            self._game_installed_version = __version__
+        except ImportError:
+            self._game_installed_version = "?"
+        try:
+            asset = Path(__file__).resolve().parent.parent / "assets" / "kilogramowy-avatar-32.png"
+            self._gameupd_avatar = pyxel.Image.from_image(str(asset))
+        except Exception:
+            # A missing optional portrait cannot prevent game startup.
+            pass
+
+    def _request_game_update_check(self):
+        if self._game_update_checking or self._gameupd_running or getattr(self, "_shutting_down", False):
+            return
+        self._game_update_checking = True
+        self._game_update_status = "checking"
+        self._game_update_message = "Checking GitHub..."
+        threading.Thread(target=self._check_game_update, daemon=True).start()
+
+    def _poll_game_update_events(self):
+        while not self._game_update_events.empty():
+            event, value = self._game_update_events.get_nowait()
+            if event == "check":
+                self._game_update_checking = False
+                self._game_update_status = value.status
+                self._game_update_message = value.message
+                self._game_installed_version = value.installed_version
+                if value.status in ("available", "current", "unpublished"):
+                    self._game_update_release = value.release
+                    self._game_update_available = value.status == "available"
+                    self._game_remote_version = value.release.version if value.release else ""
+                    self._gameupd_scroll = 0
+                if value.status == "available":
+                    self._game_update_notice_queued = value.release
+                elif value.status != "error":
+                    self._game_update_notice_queued = None
+            elif event == "check_error":
+                self._game_update_checking = False
+                self._game_update_status = "error"
+                self._game_update_message = value
+            elif event == "prepared":
+                self._gameupd_plan = value
+                self._gameupd_running = False
+                self._gameupd_confirm = True
+                self._gameupd_open_frame = pyxel.frame_count
+            elif event == "prepare_error":
+                self._gameupd_running = False
+                self._gameupd_log_add("[UPD] " + value)
+            elif event == "source_opened":
+                self._gameupd_source_opening = False
+                self._gameupd_log_add("[UPD] GitHub opened in your browser.")
+            elif event == "source_open_error":
+                self._gameupd_source_opening = False
+                self._gameupd_log_add("[UPD] " + value)
+
+    def _game_update_notice_allowed(self):
+        flags = ("_boot_phase", "menu_open", "input_mode", "confirm_quit", "loot_screen",
+                 "_gps_wait_dialog", "_cluster_popup", "_et_net_screen", "_portal_select_screen",
+                 "_portal_data_screen", "_mitm_screen", "_flipper_screen", "_subghz_screen",
+                 "_flash_screen", "_gameupd_screen", "_watch_screen", "_wl_screen",
+                 "_lora_protocol_picker", "_mt_profile_screen", "_mt_screen", "_mc_screen",
+                 "_wd_screen", "_mc_region_screen", "_prox_screen", "_shutting_down")
+        if any(getattr(self, name, False) for name in flags):
+            return False
+        for plugin in getattr(self, "_plugins", ()):
+            if getattr(plugin, "overlay_active", False):
+                return False
+            if hasattr(plugin, "_auth_pin_active") and plugin._auth_pin_active():
+                return False
+        return True
+
+    def _maybe_show_game_update_notice(self):
+        release = self._game_update_notice_queued
+        if release is None or self._game_update_notice is not None or not self._game_update_notice_allowed():
+            return
+        identity = self._game_updates.notice_key(release)
+        if identity in self._game_update_seen_in_session:
+            self._game_update_notice_queued = None
+            return
+        self._game_update_seen_in_session.add(identity)
+        self._game_update_notice_queued = None
+        try:
+            if not self._game_updates.notice_pending(release):
+                return
+            if self._game_updates.acknowledge(release) is False:
+                raise OSError("Notification history was not saved")
+        except Exception:
+            logging.getLogger(__name__).exception("Could not save game update notification history")
+            self._term_add("[UPD] Update available; could not save notification history.", raw=True)
+            return
+        # Persist only when the main screen is ready to actually show this release.
+        self._game_update_notice = release
+        self._gameupd_open_frame = pyxel.frame_count
+        self._term_add(f"[UPD] New game v{release.version}: SYSTEM > Update Game", raw=True)
+
+    def _update_game_update_notice(self):
+        if pyxel.frame_count == self._gameupd_open_frame:
+            return
+        if pyxel.btnp(pyxel.KEY_RETURN) or pyxel.btnp(pyxel.KEY_Y):
+            self._game_update_notice = None
+            self._start_game_update()
+        elif pyxel.btnp(pyxel.KEY_N) or pyxel.btnp(pyxel.KEY_ESCAPE):
+            self._game_update_notice = None
+            self._esc_consumed_frame = pyxel.frame_count
+
+    def _draw_game_update_notice(self):
+        release = self._game_update_notice
+        if release is None:
+            return
+        dx, dy, dw, dh = 120, 70, 400, 100
+        pyxel.rect(dx, dy, dw, dh, 0)
+        pyxel.rectb(dx, dy, dw, dh, C_WARNING)
+        pyxel.rectb(dx + 1, dy + 1, dw - 2, dh - 2, C_COAST)
+        pyxel.text(dx + 10, dy + 10, "UPDATE AVAILABLE", C_WARNING)
+        pyxel.text(dx + 10, dy + 24, f"WatchDogsGo v{release.version}", C_TEXT)
+        pyxel.text(dx + 10, dy + 46, "Open Update Game to see what's new?", C_TEXT)
+        pyxel.text(dx + 10, dy + 62, "You can update later from SYSTEM.", C_DIM)
+        pyxel.text(dx + 10, dy + 83, "[ENTER/Y] OK    [N/ESC] No", C_DIM)
+
+    def _start_game_update(self):
+        self._gameupd_screen = True
+        self._gameupd_running = False
+        self._gameupd_done = False
+        self._gameupd_ok = False
+        self._gameupd_log = []
+        self._gameupd_scroll = 0
+        self._gameupd_confirm = False
+        self._gameupd_plan = None
+        self._gameupd_open_frame = pyxel.frame_count
+        self.menu_open = False
+        # Keep navigation anchored to the existing SYSTEM item.
+        for category, (label, items) in enumerate(MENU_CATS):
+            if label == "SYSTEM":
+                self.menu_cat = category
+                self.menu_sel = next(i for i, item in enumerate(items) if item[3] == "_gameupd")
+                break
+
+    def _gameupd_note_lines(self):
+        import textwrap
+        release = self._game_update_release
+        if release is not None:
+            content = release.notes
+        else:
+            try:
+                content = (Path(__file__).resolve().parent.parent / "docs" / "UPDATE_PREVIEW.txt").read_text(encoding="utf-8")
+            except OSError:
+                content = "Release notes are unavailable."
+        lines = []
+        for paragraph in content.splitlines():
+            lines.extend(textwrap.wrap(paragraph.expandtabs(4), width=83,
+                         break_long_words=True, break_on_hyphens=False) or [""])
+        return lines or ["No release notes provided."]
+
+    def _gameupd_source_info(self):
+        """Read cached, verified source metadata without starting network I/O."""
+        fallback = dict(repository="--", url="", verified=False)
+        try:
+            info = self._game_updates.source_info()
+            repository = info.get("repository", "")
+            if (not isinstance(repository, str) or
+                    re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9-]{0,38}/[A-Za-z0-9_.-]{1,100}", repository) is None or
+                    repository.rsplit("/", 1)[-1] in (".", "..")):
+                return fallback
+            url = "https://github.com/" + repository
+            if info.get("url") != url:
+                return fallback
+            return dict(repository=repository, url=url,
+                        verified=info.get("verified") is True)
+        except Exception:
+            return fallback
+
+    def _gameupd_open_source(self):
+        """The optional O shortcut never prepares or installs an update."""
+        if self._gameupd_source_opening or getattr(self, "_shutting_down", False):
+            return
+        info = self._gameupd_source_info()
+        if self._game_update_checking or not info["verified"]:
+            self._request_game_update_check()
+            self._gameupd_log_add("[UPD] Checking the source; press O again when ready.")
+            return
+        self._gameupd_source_opening = True
+        threading.Thread(target=self._gameupd_open_source_worker,
+                         args=(info["url"],), daemon=True).start()
+
+    def _gameupd_open_source_worker(self, url):
+        """Hand the own-source URL to the desktop user's browser, not root's."""
+        import os
+        import subprocess
+        try:
+            info = self._gameupd_source_info()
+            if not info["verified"] or info["url"] != url:
+                raise RuntimeError("Check the source again before opening GitHub.")
+            environment = dict(os.environ)
+            if not environment.get("DISPLAY") and not environment.get("WAYLAND_DISPLAY"):
+                raise RuntimeError("No desktop browser session is available.")
+            command = ["xdg-open", url]
+            if getattr(os, "geteuid", lambda: 1)() == 0:
+                import pwd
+                username = os.environ.get("SUDO_USER", "")
+                if username and username != "root":
+                    owner = pwd.getpwnam(username)
+                else:
+                    uid = Path(__file__).resolve().parent.parent.stat().st_uid
+                    if uid == 0:
+                        raise RuntimeError("A desktop user is required to open GitHub.")
+                    owner = pwd.getpwuid(uid)
+                if owner.pw_uid == 0:
+                    raise RuntimeError("A desktop user is required to open GitHub.")
+                user_environment = dict(DISPLAY=environment.get("DISPLAY", ""),
+                    XAUTHORITY=environment.get("XAUTHORITY") or str(Path(owner.pw_dir) / ".Xauthority"),
+                    XDG_RUNTIME_DIR=f"/run/user/{owner.pw_uid}",
+                    DBUS_SESSION_BUS_ADDRESS=f"unix:path=/run/user/{owner.pw_uid}/bus")
+                if environment.get("WAYLAND_DISPLAY"):
+                    user_environment["WAYLAND_DISPLAY"] = environment["WAYLAND_DISPLAY"]
+                command = ["sudo", "-n", "-H", "-u", owner.pw_name, "--", "env"]
+                command += [key + "=" + value for key, value in user_environment.items()]
+                command += ["xdg-open", url]
+            result = subprocess.run(command, stdin=subprocess.DEVNULL,
+                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                timeout=15, env=environment, check=False)
+            if result.returncode:
+                raise RuntimeError("Could not open the desktop browser. See the source above.")
+            self._game_update_events.put(("source_opened", None))
+        except RuntimeError as exc:
+            self._game_update_events.put(("source_open_error", str(exc)))
+        except Exception:
+            # Do not expose command lines, environment or browser diagnostics.
+            self._game_update_events.put(("source_open_error",
+                "Browser launch was not confirmed. See the source above."))
+
+    def _update_gameupd_screen(self):
+        if pyxel.frame_count == self._gameupd_open_frame:
+            return
+        if self._gameupd_install_frame >= 0:
+            if pyxel.frame_count > self._gameupd_install_frame:
+                self._gameupd_install_frame = -1
+                self._gameupd_do()
+            return
+        if self._gameupd_running:
+            return
+        if self._gameupd_done and self._gameupd_closed_for_install:
+            if pyxel.btnp(pyxel.KEY_ESCAPE) or pyxel.btnp(pyxel.KEY_RETURN) or pyxel.btnp(pyxel.KEY_Q):
+                pyxel.quit()
+            return
+        if self._gameupd_confirm:
+            if pyxel.btnp(pyxel.KEY_Y):
+                self._gameupd_confirm = False
+                self._gameupd_closed_for_install = True
+                self._gameupd_running = True
+                self._gameupd_log_add("[UPD] Stopping devices and saving progress...")
+                self._cleanup()
+                if getattr(self, "_cleanup_errors", ()):
+                    self._gameupd_running = False
+                    self._gameupd_done = True
+                    self._gameupd_discard_plan()
+                    self._gameupd_log_add("[UPD] Devices did not stop cleanly. Update cancelled.")
+                    self._gameupd_log_add("[UPD] Close and relaunch the game.")
+                else:
+                    self._gameupd_log_add("[UPD] Installing verified code. Please wait...")
+                    # Draw one Installing frame before the short, synchronous
+                    # transaction. A window-close event cannot kill its worker.
+                    self._gameupd_install_frame = pyxel.frame_count
+            elif pyxel.btnp(pyxel.KEY_N) or pyxel.btnp(pyxel.KEY_ESCAPE):
+                self._gameupd_confirm = False
+                self._gameupd_discard_plan()
+                self._esc_consumed_frame = pyxel.frame_count
+            return
+        if pyxel.btnp(pyxel.KEY_ESCAPE):
+            self._gameupd_screen = False
+            self._esc_consumed_frame = pyxel.frame_count
+            return
+        if pyxel.btnp(pyxel.KEY_R):
+            self._request_game_update_check()
+        if pyxel.btnp(pyxel.KEY_O):
+            self._gameupd_open_source()
+            return
+        lines = self._gameupd_note_lines()
+        maximum = max(0, len(lines) - 9)
+        if pyxel.btnp(pyxel.KEY_UP, 15, 3):
+            self._gameupd_scroll = max(0, self._gameupd_scroll - 1)
+        if pyxel.btnp(pyxel.KEY_DOWN, 15, 3):
+            self._gameupd_scroll = min(maximum, self._gameupd_scroll + 1)
+        if pyxel.btnp(pyxel.KEY_PAGEUP):
+            self._gameupd_scroll = max(0, self._gameupd_scroll - 9)
+        if pyxel.btnp(pyxel.KEY_PAGEDOWN):
+            self._gameupd_scroll = min(maximum, self._gameupd_scroll + 9)
+        if pyxel.btnp(pyxel.KEY_HOME):
+            self._gameupd_scroll = 0
+        if pyxel.btnp(pyxel.KEY_END):
+            self._gameupd_scroll = maximum
+        if ((pyxel.btnp(pyxel.KEY_RETURN) or pyxel.btnp(pyxel.KEY_I))
+                and self._game_update_available and not self._game_update_checking):
+            self._gameupd_running = True
+            self._gameupd_log = []
+            self._gameupd_log_add("[UPD] Preparing a verified code update...")
+            threading.Thread(target=self._gameupd_prepare, args=(self._game_update_release,), daemon=True).start()
+
+    def _gameupd_prepare(self, release):
+        try:
+            self._game_update_events.put(("prepared", self._game_updates.prepare(release)))
+        except Exception as exc:
+            logging.getLogger(__name__).exception("Game update preparation failed")
+            self._game_update_events.put(("prepare_error", str(exc)[:200] or "Could not prepare this update."))
+
+    def _gameupd_log_add(self, line: str):
+        self._gameupd_log.append(line)
+        self._term_add(line, raw=True)
+
+    def _gameupd_discard_plan(self):
+        plan, self._gameupd_plan = self._gameupd_plan, None
+        if plan is not None:
+            try:
+                self._game_updates.discard(plan)
+            except Exception:
+                # The verified backup is independent of this staging directory.
+                # Never remove an unverified path just to tidy a cancelled update.
+                logging.getLogger(__name__).exception("Could not remove staged game update")
+                self._gameupd_log_add("[UPD] Could not remove the staged download; see game log.")
+
+    def _gameupd_do(self):
+        try:
+            if not self._gameupd_closed_for_install or not getattr(self, "_cleanup_done", False) or self._cleanup_errors:
+                raise RuntimeError("Devices must stop cleanly before updating.")
+            receipt = self._game_updates.install(self._gameupd_plan, quiescent=True)
+            self._gameupd_ok = True
+            self._game_update_available = False
+            self._gameupd_log_add(f"[UPD] Updated to v{receipt.version}. Backup saved.")
+            self._gameupd_log_add("[UPD] Settings and progress kept. Relaunch to apply.")
+        except Exception as exc:
+            logging.getLogger(__name__).exception("Game update installation failed")
+            self._gameupd_ok = False
+            self._gameupd_log_add("[UPD] Update failed: " + (str(exc)[:200] or "see game log"))
+            self._gameupd_log_add("[UPD] Close and relaunch the game.")
+        finally:
+            self._gameupd_discard_plan()
+            self._gameupd_running = False
+            self._gameupd_done = True
+
+    def _draw_gameupd_screen(self):
+        import textwrap
+        dx, dy, dw, dh = 100, 22, 440, 206
+        pyxel.rect(dx, dy, dw, dh, 0)
+        pyxel.rectb(dx, dy, dw, dh, C_WARNING)
+        pyxel.rectb(dx + 1, dy + 1, dw - 2, dh - 2, C_COAST)
+        if self._gameupd_avatar is not None:
+            pyxel.blt(dx + 10, dy + 6, self._gameupd_avatar, 0, 0, 32, 32)
+        pyxel.text(dx + 52, dy + 8, "UPDATE GAME", C_WARNING)
+        pyxel.text(dx + 52, dy + 22, "Modified by KiloGramowy", C_DIM)
+        source = self._gameupd_source_info()
+        source_label = "Source: " + source["repository"]
+        if not source["verified"]:
+            source_label += " (check required)"
+        if len(source_label) > 75:
+            source_label = source_label[:72] + "..."
+        pyxel.text(dx + 52, dy + 34, source_label,
+                   C_HACK_CYAN if source["verified"] else C_DIM)
+        version = "Current: v" + self._game_installed_version
+        if self._game_update_release is not None:
+            version += "   Latest: v" + self._game_update_release.version
+        pyxel.text(dx + 10, dy + 44, version, C_DIM)
+        status = self._game_update_message
+        if self._game_update_checking:
+            status = "Checking GitHub..."
+        status_lines = textwrap.wrap(status, width=83)[:2] or [""]
+        for i, line in enumerate(status_lines):
+            pyxel.text(dx + 10, dy + 56 + i * 9, line, C_WARNING if self._game_update_status == "error" else C_DIM)
+        pyxel.line(dx + 6, dy + 76, dx + dw - 7, dy + 76, C_COAST)
+        title = self._game_update_release.title if self._game_update_release else "INSTALLED RELEASE NOTES"
+        pyxel.text(dx + 10, dy + 80, title[:83], C_TEXT)
+        lines = self._gameupd_note_lines()
+        maximum = max(0, len(lines) - 9)
+        self._gameupd_scroll = min(maximum, max(0, self._gameupd_scroll))
+        for i, line in enumerate(lines[self._gameupd_scroll:self._gameupd_scroll + 9]):
+            pyxel.text(dx + 10, dy + 94 + i * 9, line, C_TEXT)
+        if maximum:
+            count = f"{self._gameupd_scroll + 1}-{min(len(lines), self._gameupd_scroll + 9)}/{len(lines)}"
+            pyxel.text(dx + dw - len(count) * 5 - 10, dy + 175, count, C_DIM)
+        if self._gameupd_log:
+            log_lines = textwrap.wrap(self._gameupd_log[-1], width=83) or [""]
+            pyxel.rect(dx + 6, dy + 183, dw - 12, 10, 0)
+            pyxel.text(dx + 10, dy + 184, log_lines[0], C_SUCCESS if self._gameupd_ok else C_WARNING)
+        if self._gameupd_confirm:
+            # A separate confirmation prevents OK/Enter on the notice from
+            # installing, and it remains above the OUTPUT panel.
+            pyxel.rect(dx + 4, dy + 149, dw - 8, 52, 0)
+            pyxel.rectb(dx + 4, dy + 149, dw - 8, 52, C_WARNING)
+            pyxel.text(dx + 12, dy + 155, "Install this update and close the game?", C_WARNING)
+            pyxel.text(dx + 12, dy + 169, "Settings and progress will be kept. Backup first.", C_TEXT)
+            pyxel.text(dx + 12, dy + 186, "[Y] Update    [N/ESC] Cancel", C_DIM)
+            return
+        if self._gameupd_running:
+            hint = "Please wait..."
+        elif self._gameupd_closed_for_install:
+            hint = "ENTER/ESC close - relaunch the game"
+        elif self._game_update_available:
+            hint = "UP/DOWN scroll  R check  O GitHub  ENTER update  ESC back"
+        else:
+            hint = "UP/DOWN scroll  R check  O GitHub  ESC back"
+        pyxel.text(dx + 10, dy + dh - 12, hint, C_DIM)
+
     def _draw_captured_data(self):
         """Draw overlay showing captured credentials from portal/evil twin."""
         # Collect captured lines from terminal
@@ -5919,6 +9448,7 @@ class WatchDogsGame:
             -5: "MeshCore",
             -6: "WPA-sec Token",
             -7: "Evil Portal",
+            -9: "Meshtastic",
         }
         if self._input_pending_cat < 0:
             name = _SPECIAL_TITLES.get(self._input_pending_cat, "Input")
@@ -6251,6 +9781,11 @@ class WatchDogsGame:
                 ty = CY + 24 + i * ROW_H
                 if i == self._mitm_sel:
                     pyxel.rect(18, ty - 2, W - 36, ROW_H, C_HACK_CYAN)
+                    _mg = int((pyxel.frame_count * 4) % (W - 36 + 24)) - 12
+                    for _dx2, _sc in ((0, 7), (-1, 6), (1, 6)):
+                        _mx = 18 + _mg + _dx2
+                        if 18 < _mx < W - 19:
+                            pyxel.line(_mx, ty - 2, _mx, ty + ROW_H - 5, _sc)
                     pyxel.text(22, ty, f"{iface} ({ip})", 0)
                 else:
                     pyxel.text(22, ty, f"{iface} ({ip})", C_TEXT)
@@ -6266,6 +9801,11 @@ class WatchDogsGame:
                 ty = CY + 26 + i * (ROW_H + 2)
                 if i == self._mitm_sel:
                     pyxel.rect(18, ty - 2, W - 36, ROW_H + 2, C_HACK_CYAN)
+                    _mg = int((pyxel.frame_count * 4) % (W - 36 + 24)) - 12
+                    for _dx2, _sc in ((0, 7), (-1, 6), (1, 6)):
+                        _mx = 18 + _mg + _dx2
+                        if 18 < _mx < W - 19:
+                            pyxel.line(_mx, ty - 2, _mx, ty + ROW_H - 3, _sc)
                     pyxel.text(22, ty, opt, 0)
                 else:
                     pyxel.text(22, ty, opt, C_TEXT)
@@ -6860,6 +10400,144 @@ class WatchDogsGame:
     # MeshCore Messenger screen
     # ------------------------------------------------------------------
 
+    def _update_wd_screen(self):
+        """Input for the WDGWars #general chat overlay."""
+        # ESC — close overlay
+        if pyxel.btnp(pyxel.KEY_ESCAPE):
+            self._wd_screen = False
+            self._esc_consumed_frame = pyxel.frame_count
+            return
+
+        # Scroll
+        if pyxel.btnp(pyxel.KEY_PAGEUP):
+            self._wd_scroll = min(self._wd_scroll + 5,
+                                  max(0, len(self._wd_log) - 5))
+        if pyxel.btnp(pyxel.KEY_PAGEDOWN):
+            self._wd_scroll = max(0, self._wd_scroll - 5)
+
+        # ENTER — send to #general
+        if pyxel.btnp(pyxel.KEY_RETURN):
+            text = self._wd_input.strip()
+            if text and self._wd is not None:
+                ts = time.strftime("%H:%M")
+                token = self._wd.send(text)
+                idx = len(self._wd_log)
+                self._wd_log.append(
+                    (f"\x11 {self._wd.nick}: {text}", C_WARNING, ts))
+                self._wd_tx_pending[token] = idx
+                self._wd_input = ""
+                self._wd_scroll = 0
+            return
+
+        # Backspace
+        if pyxel.btnp(pyxel.KEY_BACKSPACE):
+            self._wd_input = self._wd_input[:-1]
+            return
+
+        # Ctrl shortcuts (don't pass to typing)
+        ctrl = pyxel.btn(pyxel.KEY_LCTRL) or pyxel.btn(pyxel.KEY_RCTRL)
+        if ctrl:
+            if pyxel.btnp(pyxel.KEY_X):
+                self._wd_log.clear()
+                self._wd_scroll = 0
+            elif pyxel.btnp(pyxel.KEY_E):
+                # Toggle dev echo-beacon target (no #general spam)
+                self._wd.dev_echo = not self._wd.dev_echo
+                tgt = "ECHO beacon (dev)" if self._wd.dev_echo else "#general"
+                self._wd_log.append((f"\x11 Target: {tgt}", C_HACK_CYAN))
+            elif pyxel.btnp(pyxel.KEY_L):
+                self._wd_toggle_lora()
+            return
+
+        # Typing
+        c = self._get_char_input()
+        if c and len(self._wd_input) < 120:
+            self._wd_input += c
+
+    def _draw_wd_screen(self):
+        pyxel.cls(0)
+        BAR_H = 14
+        pyxel.rect(0, 0, W, BAR_H, 1)
+        if self._wd is not None and self._wd.running:
+            status = "ECHO" if self._wd.dev_echo else "ACTIVE"
+        else:
+            status = "CONNECTING"
+        if self._wd and self._wd.lora_active:
+            transport = f"LoRa rx:{self._lora.packets_received}"
+        else:
+            transport = "TCP"
+        pyxel.text(4, 4, f"WDGWARS #general [{status}] [{transport}] "
+                   f"you:{self._wd.nick if self._wd else '?'}  "
+                   f"(Ctrl+L LoRa  Ctrl+E echo  Ctrl+X clear)", C_HACK_CYAN)
+
+        _PL = str.maketrans(
+            "ąćęłńóśźżĄĆĘŁŃÓŚŹŻ", "acelnoszzACELNOSZZ")
+
+        log = self._wd_log
+        total = len(log)
+        line_h = 10
+        char_w = 5
+        chat_top = BAR_H + 2
+        chat_bot = H - 24
+        msg_bot = chat_bot - (line_h if self._wd_input else 0)
+        max_vis = (msg_bot - chat_top) // line_h
+
+        if self._wd_scroll == 0:
+            start = max(0, total - max_vis)
+            end = total
+        else:
+            end = max(0, total - self._wd_scroll)
+            start = max(0, end - max_vis)
+
+        y = chat_top
+        for i in range(start, end):
+            entry = log[i]
+            text, color = entry[0], entry[1]
+            tag = entry[2] if len(entry) > 2 else None
+            full = text.translate(_PL)
+            tag_chars = len(tag) + 1 if tag else 0
+            first_max = (W - 8) // char_w - tag_chars
+            wrap_max = (W - 8) // char_w
+            pyxel.text(4, y, full[:first_max], color)
+            if tag:
+                tx = W - len(tag) * char_w - 4
+                pyxel.text(tx, y, tag, C_DIM)
+            y += line_h
+            pos = first_max
+            while pos < len(full) and y < msg_bot:
+                pyxel.text(4, y, full[pos:pos + wrap_max], color)
+                pos += wrap_max
+                y += line_h
+            if y >= msg_bot:
+                break
+
+        if total == 0:
+            pyxel.text(20, chat_top + 40, "No messages yet.", C_DIM)
+            pyxel.text(20, chat_top + 54,
+                       "Type a message and press ENTER to send.", C_DIM)
+
+        if self._wd_scroll > 0:
+            pyxel.text(W - 120, chat_top, f"SCROLL +{self._wd_scroll}", C_DIM)
+
+        # Input bar
+        cursor = "_" if pyxel.frame_count % 30 < 20 else ""
+        prefix = "> "
+        pyxel.rect(0, chat_bot, W, 14, 1)
+        visible_w = (W - 8) // char_w - len(prefix)
+        inp = self._wd_input
+        if len(inp) > visible_w:
+            inp = inp[len(inp) - visible_w:]
+        pyxel.text(4, chat_bot + 3, f"{prefix}{inp}{cursor}", C_TEXT)
+
+        inp_len = len(self._wd_input)
+        if inp_len > 0:
+            at_max = inp_len >= 120
+            cnt_c = C_ERROR if at_max else (
+                C_WARNING if inp_len > 100 else C_DIM)
+            cnt_txt = f"{inp_len}/120"
+            pyxel.text(W - len(cnt_txt) * char_w - 4, chat_bot - line_h,
+                       cnt_txt, cnt_c)
+
     def _update_mc_screen(self):
         # Ctrl+H toggles contacts panel (always, even when panel is open)
         ctrl = pyxel.btn(pyxel.KEY_LCTRL) or pyxel.btn(pyxel.KEY_RCTRL)
@@ -7014,6 +10692,10 @@ class WatchDogsGame:
 
     def _update_mc_nodes_panel(self):
         """Handle input for the contacts panel overlay."""
+        if not self._mc_nodes:
+            if pyxel.btnp(pyxel.KEY_ESCAPE):
+                self._mc_nodes_panel = False
+            return
         # Note editing mode
         if self._mc_note_editing:
             if pyxel.btnp(pyxel.KEY_ESCAPE):
@@ -7022,7 +10704,10 @@ class WatchDogsGame:
                 nd = self._mc_nodes[self._mc_node_sel]
                 nd["note"] = self._mc_note_buf
                 if self.loot:
-                    self.loot.save_contact_note(nd["id"], self._mc_note_buf)
+                    if self._mesh_view_protocol == "meshtastic":
+                        self.loot.save_meshtastic_contact_note(nd["id"], self._mc_note_buf)
+                    else:
+                        self.loot.save_contact_note(nd["id"], self._mc_note_buf)
                 self._mc_note_editing = False
             elif pyxel.btnp(pyxel.KEY_BACKSPACE):
                 self._mc_note_buf = self._mc_note_buf[:-1]
@@ -7034,7 +10719,7 @@ class WatchDogsGame:
 
         # Action menu
         if self._mc_node_action:
-            _actions = ["DM", "Note", "Info", "Delete", "Close"]
+            _actions = self._mesh_contact_actions()
             if pyxel.btnp(pyxel.KEY_UP):
                 self._mc_node_action_sel = max(0, self._mc_node_action_sel - 1)
             elif pyxel.btnp(pyxel.KEY_DOWN):
@@ -7083,9 +10768,12 @@ class WatchDogsGame:
                     if note:
                         self._mc_log.append(
                             (f"  Note: {note}", C_DIM))
-                    if nd.get("lat") and nd.get("lon"):
+                    from watchdogs.mesh_position import mesh_position
+                    position = mesh_position(nd)
+                    if position is not None:
+                        source = "Node GPS" if position["source"] == "node" else "Receiver GPS"
                         self._mc_log.append(
-                            (f"  GPS: {nd['lat']:.5f}, {nd['lon']:.5f}",
+                            (f"  {source}: {position['lat']:.5f}, {position['lon']:.5f}",
                              C_DIM))
                     self._mc_node_action = False
                 elif act == "Delete":
@@ -7093,9 +10781,15 @@ class WatchDogsGame:
                     nid = nd["id"]
                     self._mc_nodes.remove(nd)
                     if self.loot:
-                        self.loot.delete_contact(nid)
+                        if self._mesh_view_protocol == "meshtastic":
+                            self.loot.delete_meshtastic_contact(nid)
+                        else:
+                            self.loot.delete_contact(nid)
                     # Remove from LoRa known pubkeys
-                    self._lora._known_pubkeys.pop(nid, None)
+                    if self._mesh_view_protocol != "meshtastic":
+                        self._lora._known_pubkeys.pop(nid, None)
+                    key = f"{self._mesh_view_protocol}:{nid}"
+                    self.markers[:] = [m for m in self.markers if getattr(m, "mesh_key", None) != key]
                     self._mc_log.append(
                         (f"\x10 Deleted contact: {name}", C_WARNING))
                     self._mc_node_action = False
@@ -7117,22 +10811,32 @@ class WatchDogsGame:
         elif pyxel.btnp(pyxel.KEY_ESCAPE):
             self._mc_nodes_panel = False
 
+    def _mesh_contact_actions(self):
+        return (["Note", "Info", "Delete", "Close"] if self._mesh_view_protocol == "meshtastic"
+                else ["DM", "Note", "Info", "Delete", "Close"])
+
     def _draw_mc_screen(self):
         pyxel.cls(0)
         # Title bar — 14px tall for 5x8 font + padding
         BAR_H = 14
         pyxel.rect(0, 0, W, BAR_H, 1)
-        status = "ACTIVE" if self._lora.running else "OFF"
-        pkts = self._lora.packets_received
+        is_mt = self._mesh_view_protocol == "meshtastic"
+        manager = self._mt if is_mt else self._lora
+        active = manager.running and manager.ready and (is_mt or manager.mode == "meshcore")
+        status = "ACTIVE" if active else ("WATCH" if not is_mt and self._watch.connected else "OFF")
+        pkts = manager.packets_received
+        title = "MESHTASTIC" if is_mt else "MESHCORE"
         ch_name = "?"
         if self._mc_channels_list and self._mc_active_ch < len(self._mc_channels_list):
             ch_name = self._mc_channels_list[self._mc_active_ch].name
+        if is_mt:
+            ch_name = f"PUBLIC/{ch_name}"
         if self._mc_dm_target:
             dm_name = self._mc_dm_target.get("name", "?")
-            pyxel.text(4, 4, f"MESHCORE [DM: {dm_name}] [{status}] "
+            pyxel.text(4, 4, f"{title} [DM: {dm_name}] [{status}] "
                        f"pkts:{pkts} node:{self._mc_node_name}", 12)
         else:
-            pyxel.text(4, 4, f"MESHCORE [{ch_name}] [{status}] "
+            pyxel.text(4, 4, f"{title} [{ch_name}] [{status}] "
                        f"pkts:{pkts} node:{self._mc_node_name} "
                        f"nodes:{len(self._mc_nodes)}", C_HACK_CYAN)
 
@@ -7234,7 +10938,7 @@ class WatchDogsGame:
             pyxel.line(px_x + 2, panel_top + 14,
                        px_x + pw - 3, panel_top + 14, 1)
             _type_icons = {0: "C", 1: "C", 2: "R", 3: "M", 4: "S",
-                           "Client": "C", "Repeater": "R",
+                           "Client": "C", "Repeater": "R", "Router": "R",
                            "Room": "M", "Sensor": "S"}
             # Clamp selection
             self._mc_node_sel = max(0, min(
@@ -7287,7 +10991,7 @@ class WatchDogsGame:
 
             # Action menu popup
             if self._mc_node_action and self._mc_node_sel < len(self._mc_nodes):
-                _actions = ["DM", "Note", "Info", "Delete", "Close"]
+                _actions = self._mesh_contact_actions()
                 aw = 80
                 ah = len(_actions) * 12 + 8
                 ax = px_x + 40
@@ -7340,8 +11044,11 @@ class WatchDogsGame:
         # Bottom hints
         pyxel.rect(0, H - 10, W, 10, 0)
         pyxel.text(4, H - 8,
-                   "C-A Advert  C-N Name  C-H Nodes  C-C Chan  [/]Switch  C-X Clear  ESC Back",
+                   ("C-N Name  C-H Nodes  C-X Clear  ENTER Send  ESC Back" if is_mt else
+                    "C-A Advert  C-N Name  C-H Nodes  C-C Chan  [/]Switch  C-X Clear  ESC Back"),
                    C_DIM)
+        if getattr(self, "input_mode", False):
+            self._draw_input_dialog()
 
     # ------------------------------------------------------------------
     # Loot screen search
@@ -7475,6 +11182,11 @@ class WatchDogsGame:
         y = 22
         pyxel.text(col1, y, "ALL-TIME TOTALS", C_HACK_CYAN)
         pyxel.line(col1, y + 10, col1 + 100, y + 10, 1)
+        _ua = int((pyxel.frame_count * 2) % 150)
+        if _ua < 100:
+            pyxel.pset(col1 + _ua, y + 10, C_HACK_CYAN)
+            if _ua > 0:
+                pyxel.pset(col1 + _ua - 1, y + 10, 5)
         y += 14
         pyxel.text(col1, y, f"Sessions", C_DIM)
         pyxel.text(col1 + 80, y, f"{t.get('sessions', 0)}", C_TEXT)
@@ -7501,7 +11213,16 @@ class WatchDogsGame:
         pyxel.text(col1, y, f"MC Msgs", C_DIM)
         pyxel.text(col1 + 80, y, f"{t.get('mc_msgs', 0)}", C_WARNING)
         y += ROW_H
-        n_contacts = len(self.loot.load_contacts()) if self.loot else 0
+        pyxel.text(col1, y, "MT Nodes", C_DIM)
+        pyxel.text(col1 + 80, y, str(t.get("mt_nodes", 0)), C_WARNING)
+        y += ROW_H
+        pyxel.text(col1, y, "MT Msgs", C_DIM)
+        pyxel.text(col1 + 80, y, str(t.get("mt_msgs", 0)), C_WARNING)
+        y += ROW_H
+        pyxel.text(col1, y, f"SVC alerts", C_DIM)
+        pyxel.text(col1 + 80, y, f"{t.get('emergency', 0)}", C_ERROR)
+        y += ROW_H
+        n_contacts = (len(self.loot.load_contacts()) + len(self.loot.load_meshtastic_contacts())) if self.loot else 0
         pyxel.text(col1, y, f"Contacts", C_DIM)
         pyxel.text(col1 + 80, y, f"{n_contacts}", C_HACK_CYAN)
         y += ROW_H
@@ -7512,6 +11233,11 @@ class WatchDogsGame:
         y = 22
         pyxel.text(col2, y, "THIS SESSION", C_HACK_CYAN)
         pyxel.line(col2, y + 10, col2 + 100, y + 10, 1)
+        _ua = int((pyxel.frame_count * 2 + 50) % 150)
+        if _ua < 100:
+            pyxel.pset(col2 + _ua, y + 10, C_HACK_CYAN)
+            if _ua > 0:
+                pyxel.pset(col2 + _ua - 1, y + 10, 5)
         y += 14
         n_hs_ses = sum(1 for m in self.markers if m.type == "handshake")
         n_pwn = (sum(1 for d in self.ble_devices if d.hacked)
@@ -7545,6 +11271,12 @@ class WatchDogsGame:
         xf = int(xw * cur / nxt) if nxt > 0 else xw
         pyxel.rect(col2 + 24, y, xw, 8, 1)
         pyxel.rect(col2 + 24, y, xf, 8, C_HACK_CYAN)
+        # Energy shimmer — mirrors the HUD XP bar so progress reads consistent.
+        if xf > 3:
+            _period = xf + 45
+            _xs = int((pyxel.frame_count * 2) % _period)
+            if _xs < xf:
+                pyxel.line(col2 + 24 + _xs, y + 1, col2 + 24 + _xs, y + 6, 7)
         pyxel.rectb(col2 + 24, y, xw, 8, C_COAST)
         pyxel.text(col2 + 90, y, f"{self.xp}", C_DIM)
         y += 16
@@ -7587,45 +11319,49 @@ class WatchDogsGame:
             lw = len(label) * 5 + 6
             pyxel.rectb(bx, by, lw, 12, color)
             pyxel.text(bx + 2, by + 2, label, color)
+            # Trophy shine gliding along this badge's frame, staggered by slot.
+            _bt = (pyxel.frame_count + i * 22) % 210
+            if _bt < lw:
+                pyxel.pset(bx + _bt, by, 7)
+                pyxel.pset(bx + _bt, by + 11, 7)
 
         # ─── COLUMN 3: STATUS ───
         y = 22
         pyxel.text(col3, y, "STATUS", C_HACK_CYAN)
         pyxel.line(col3, y + 10, col3 + 80, y + 10, 1)
+        _ua = int((pyxel.frame_count * 2 + 100) % 130)
+        if _ua < 80:
+            pyxel.pset(col3 + _ua, y + 10, C_HACK_CYAN)
+            if _ua > 0:
+                pyxel.pset(col3 + _ua - 1, y + 10, 5)
         y += 14
-        # ESP32
+        # ESP32 — LED dot + label for at-a-glance status.
         pyxel.text(col3, y, "ESP32", C_DIM)
-        if self._esp32:
-            pyxel.text(col3 + 60, y, "ONLINE", C_SUCCESS)
-        else:
-            pyxel.text(col3 + 60, y, "OFFLINE", C_ERROR)
+        _lc = C_SUCCESS if self._esp32 else C_ERROR
+        pyxel.circ(col3 + 52, y + 3, 2, _lc)
+        pyxel.text(col3 + 60, y, "ONLINE" if self._esp32 else "OFFLINE", _lc)
         y += ROW_H
         # GPS
         pyxel.text(col3, y, "GPS", C_DIM)
         if self.gps_fix:
-            pyxel.text(col3 + 60, y, "FIX", C_SUCCESS)
+            _lc, _lt = C_SUCCESS, "FIX"
         elif self.gps.available:
-            pyxel.text(col3 + 60, y, f"Vis:{self.gps_sats_vis}", C_WARNING)
+            _lc, _lt = C_WARNING, f"Vis:{self.gps_sats_vis}"
         else:
-            pyxel.text(col3 + 60, y, "N/A", C_ERROR)
+            _lc, _lt = C_ERROR, "N/A"
+        pyxel.circ(col3 + 52, y + 3, 2, _lc)
+        pyxel.text(col3 + 60, y, _lt, _lc)
         y += ROW_H
         # AIO modules
         if self._aio_available:
-            pyxel.text(col3, y, "LoRa", C_DIM)
-            pyxel.text(col3 + 60, y,
-                       "ON" if self._lora_enabled else "OFF",
-                       C_SUCCESS if self._lora_enabled else C_ERROR)
-            y += ROW_H
-            pyxel.text(col3, y, "SDR", C_DIM)
-            pyxel.text(col3 + 60, y,
-                       "ON" if self._sdr_enabled else "OFF",
-                       C_SUCCESS if self._sdr_enabled else C_ERROR)
-            y += ROW_H
-            pyxel.text(col3, y, "USB", C_DIM)
-            pyxel.text(col3 + 60, y,
-                       "ON" if self._usb_enabled else "OFF",
-                       C_SUCCESS if self._usb_enabled else C_ERROR)
-            y += ROW_H
+            for _lbl, _on in (("LoRa", self._lora_enabled),
+                              ("SDR", self._sdr_enabled),
+                              ("USB", self._usb_enabled)):
+                _lc = C_SUCCESS if _on else C_ERROR
+                pyxel.text(col3, y, _lbl, C_DIM)
+                pyxel.circ(col3 + 52, y + 3, 2, _lc)
+                pyxel.text(col3 + 60, y, "ON" if _on else "OFF", _lc)
+                y += ROW_H
         # Active operations
         pyxel.text(col3, y, "Active", C_DIM)
         ops = []
@@ -7636,8 +11372,12 @@ class WatchDogsGame:
         if self.state.portal_running: ops.append("EP")
         if self.state.evil_twin_running: ops.append("ET")
         if self._gps_wait: ops.append("GPS wait")
-        pyxel.text(col3 + 60, y, " ".join(ops) if ops else "idle",
-                   C_HACK_CYAN if ops else C_DIM)
+        _ac = C_HACK_CYAN if ops else C_DIM
+        if ops and pyxel.frame_count % 30 < 18:
+            pyxel.circ(col3 + 52, y + 3, 2, C_HACK_CYAN)
+        elif not ops:
+            pyxel.circb(col3 + 52, y + 3, 2, C_DIM)
+        pyxel.text(col3 + 60, y, " ".join(ops) if ops else "idle", _ac)
 
         # ─── BOTTOM: Last discovered devices ───
         # Divider line
@@ -7666,6 +11406,12 @@ class WatchDogsGame:
             if n.hacked:
                 pyxel.text(6 + 150, y, "PWN", C_SUCCESS)
             y += LIST_H
+        if not recent_wifi:
+            _t1 = "- no WiFi this session -"
+            _lc = C_COAST if pyxel.frame_count % 44 < 22 else 5
+            pyxel.text(4 + (mid_x - 4 - len(_t1) * 5) // 2, div_y + 66, _t1, 1)
+            _e = "listening" + "." * ((pyxel.frame_count // 12) % 4)
+            pyxel.text(4 + (mid_x - 4 - 12 * 5) // 2, div_y + 78, _e, _lc)
 
         # BLE list (last N)
         y = div_y + 17
@@ -7682,6 +11428,14 @@ class WatchDogsGame:
             if d.hacked:
                 pyxel.text(bx + 150, y, "PWN", C_SUCCESS)
             y += LIST_H
+        if not recent_ble:
+            _bx0 = mid_x + 6
+            _bw = (W - 5) - _bx0
+            _t1 = "- no BLE this session -"
+            _lc = C_COAST if pyxel.frame_count % 44 < 22 else 5
+            pyxel.text(_bx0 + (_bw - len(_t1) * 5) // 2, div_y + 66, _t1, 1)
+            _e = "listening" + "." * ((pyxel.frame_count // 12) % 4)
+            pyxel.text(_bx0 + (_bw - 12 * 5) // 2, div_y + 78, _e, _lc)
 
         # GPS + controls bar
         y = H - 18
@@ -7694,12 +11448,24 @@ class WatchDogsGame:
                        f"{abs(self.player_lon):.5f}{lon_c}", C_SUCCESS)
         else:
             pyxel.text(6, y, "GPS: no fix", C_ERROR)
+        # Controls — key-legend styling (keys highlighted, labels dim), matching
+        # the menu / HUD. Start nudged left so [S] stop no longer clips the edge.
+        def _legend(x0, segs):
+            _kx = x0
+            for _seg, _sc in segs:
+                pyxel.text(_kx, y, _seg, _sc)
+                _kx += len(_seg) * 5
+        _K, _L, _S = C_HACK_CYAN, C_DIM, C_WARNING
         if not self._loot_search_active and not self._loot_search_results:
-            pyxel.text(W - 280, y,
-                       "[/] search  [D] passwords  [`] close  [ESC] back  [S] stop",
-                       C_DIM)
+            _legend(W - 292, [("[/]", _K), (" search  ", _L),
+                              ("[D]", _K), (" passwords  ", _L),
+                              ("[`]", _K), (" close  ", _L),
+                              ("[ESC]", _K), (" back  ", _L),
+                              ("[S]", _S), (" stop", _L)])
         else:
-            pyxel.text(W - 160, y, "[`] close  [ESC] back  [S] stop", C_DIM)
+            _legend(W - 164, [("[`]", _K), (" close  ", _L),
+                              ("[ESC]", _K), (" back  ", _L),
+                              ("[S]", _S), (" stop", _L)])
 
         # ─── OVERLAYS ───
         if self._loot_pwd_screen:
@@ -7740,12 +11506,12 @@ class WatchDogsGame:
                          max(0, len(captures) - max_vis))
             self._loot_pwd_scroll = scroll
             y = dy + 26
-            for i in range(scroll, min(len(captures), scroll + max_vis)):
-                line = captures[i]
-                # Truncate long lines to fit
-                max_chars = (dw - 16) // 4  # approx 4px per char
-                display = line[:max_chars]
-                pyxel.text(dx + 6, y, display, 12)  # blue
+            max_chars = (dw - 16) // 5  # Spleen is 5px/char (was 4 -> overflowed)
+            for idx, i in enumerate(range(scroll,
+                                          min(len(captures), scroll + max_vis))):
+                if idx % 2:                       # zebra striping for readability
+                    pyxel.rect(dx + 3, y - 1, dw - 8, 10, 1)
+                pyxel.text(dx + 6, y, captures[i][:max_chars], 12)  # blue
                 y += 10
             # Scrollbar
             if len(captures) > max_vis:
@@ -7772,7 +11538,7 @@ class WatchDogsGame:
         pyxel.text(sx + 4, sy + 5, f"SEARCH: {self._loot_search}{cursor}",
                    C_TEXT if self._loot_search else C_DIM)
         if not self._loot_search and self._loot_search_active:
-            pyxel.text(sx + 36, sy + 5, "type SSID, name or MAC...", C_DIM)
+            pyxel.text(sx + 52, sy + 5, "type SSID, name or MAC...", C_DIM)
 
         # Results area
         ry = sy + 20
@@ -7808,7 +11574,10 @@ class WatchDogsGame:
                      max(0, len(results) - max_rows))
         self._loot_search_scroll = scroll
 
-        for i in range(scroll, min(scroll + max_rows, len(results))):
+        for idx, i in enumerate(range(scroll,
+                                      min(scroll + max_rows, len(results)))):
+            if idx % 2:                       # zebra striping for readability
+                pyxel.rect(sx + 2, ry - 1, sw - 4, 9, 1)
             pt = results[i]
             ptype = pt.get("type", "?")
             label = (pt.get("label") or "<hidden>")[:18]

@@ -4,6 +4,7 @@ import os
 import sys
 import time
 import logging
+import math
 from typing import List, Optional, Callable, Tuple
 
 import serial
@@ -28,20 +29,21 @@ _ESP32_VID_PIDS: List[Tuple[int, int]] = [
 def detect_esp32_port() -> Optional[str]:
     """Auto-detect ESP32 serial port by scanning USB VID/PID.
 
-    Checks /dev/ttyUSB0-3 and /dev/ttyACM0-3 for known ESP32 USB-UART
-    bridge chips. Returns the first matching port, or None.
+    Only known Espressif devices and USB-UART bridges are candidates.
+    Unknown ACM devices can be the uConsole keyboard/controller, including
+    while the ESP32 is still enumerating after a cold boot. Return None
+    until a known candidate appears; never select a port by its name alone.
+    Explicitly supplied ports are handled separately by SerialManager.
     """
     candidates = list_usb_serial_devices()
     esp = [c for c in candidates if c[2]]  # is_esp32 == True
     if esp:
-        return esp[0][0]
-    # Fallback: check if any ttyUSB/ttyACM devices exist
-    for pattern in ["/dev/ttyUSB", "/dev/ttyACM"]:
-        for i in range(4):
-            dev = f"{pattern}{i}"
-            if os.path.exists(dev):
-                log.info("ESP32 fallback candidate: %s (no VID/PID)", dev)
-                return dev
+        # Two ESP32-C5s can be present: the pentest XIAO (native USB -> ttyACM*)
+        # and the Monster RF sub-GHz board (CH340 -> ttyUSB*, claimed by
+        # SubGhzManager). Prefer the native-USB ttyACM so the game's WiFi/BLE
+        # firmware talks to the pentest board, not the Monster.
+        acm = [c for c in esp if "/dev/ttyACM" in c[0]]
+        return (acm[0][0] if acm else esp[0][0])
     return None
 
 
@@ -211,8 +213,20 @@ class SerialManager:
             return False
 
     def close(self) -> None:
-        if self.serial_conn:
-            self.serial_conn.close()
+        connection = self.serial_conn
+        if connection is None:
+            return
+        try:
+            # A nonresponsive ACM device can leave output queued, making the
+            # kernel wait for it indefinitely during close. Cancel unsent TX
+            # first; normal command sends have already flushed successfully.
+            try:
+                connection.reset_output_buffer()
+            except Exception as exc:
+                log.warning("Could not discard serial output on %s: %s",
+                            self.device, exc)
+            connection.close()
+        finally:
             self.serial_conn = None
 
     @property
@@ -230,17 +244,70 @@ class SerialManager:
     # I/O
     # ------------------------------------------------------------------
 
-    def send_command(self, command: str) -> None:
-        if not self.serial_conn:
-            log.error("Serial not connected — cannot send %r", command)
-            return
+    def request_stop_for_shutdown(self, timeout: float = 1.0) -> bool:
+        """Queue one complete STOP on the existing port, without draining it.
+
+        This is transport success only; the caller must read the firmware's
+        final acknowledgement separately. Never flush, probe, or reconnect:
+        tcdrain can block indefinitely on an unresponsive ACM device.
+        """
+        if (type(timeout) not in (int, float) or not math.isfinite(timeout)
+                or timeout < 0):
+            log.error("Invalid shutdown STOP write timeout: %r", timeout)
+            return False
+        connection = self.serial_conn
+        if connection is None:
+            return False
+        previous_timeout = None
+        restore_timeout = False
+        written_completely = False
         try:
-            self.serial_conn.write((command + "\r\n").encode("utf-8"))
+            if not connection.is_open:
+                return False
+            previous_timeout = connection.write_timeout
+            restore_timeout = True
+            connection.write_timeout = timeout
+            payload = b"stop\r\n"
+            written = connection.write(payload)
+            written_completely = written == len(payload)
+            if not written_completely:
+                log.error("Short shutdown STOP write on %s: %r of %d bytes",
+                          self.device, written, len(payload))
+        except Exception as exc:
+            log.error("Shutdown STOP write failed on %s: %s", self.device, exc)
+        finally:
+            if restore_timeout:
+                try:
+                    connection.write_timeout = previous_timeout
+                except Exception as exc:
+                    written_completely = False
+                    log.warning("Could not restore serial write timeout on %s: %s",
+                                self.device, exc)
+        return written_completely
+
+    def send_command(self, command: str) -> bool:
+        """Return whether the complete command reached the serial transport.
+
+        This reports transport success, not a firmware acknowledgement.
+        Callers must not show a successful start when the write fails.
+        """
+        if not self.is_open:
+            log.error("Serial not connected — cannot send %r", command)
+            return False
+        try:
+            payload = (command + "\r\n").encode("utf-8")
+            written = self.serial_conn.write(payload)
+            if written != len(payload):
+                log.error("Short serial write on %s: %r of %d bytes",
+                          self.device, written, len(payload))
+                return False
             self.serial_conn.flush()
             time.sleep(0.1)
             log.debug("TX: %s", command)
+            return True
         except Exception as exc:
-            log.error("Send error: %s", exc)
+            log.error("Send error on %s: %s", self.device, exc)
+            return False
 
     def read_available(self) -> List[str]:
         """Non-blocking read: grab whatever bytes are waiting and return
