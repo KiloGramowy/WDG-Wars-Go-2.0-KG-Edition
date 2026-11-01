@@ -1,0 +1,323 @@
+{
+  "schema_version": 4,
+  "source": {
+    "name": "UConsole_WDG_Cyberpunk_v2.mp4",
+    "sha256": "cbb14b91b977e3fd780701d8429f38681bade16ee048b0fbf69974e66ccf228f",
+    "recording_date": "2026-10-29",
+    "unchanged": true
+  },
+  "output_video": {
+    "path": "demo.mp4",
+    "duration_seconds": 100,
+    "dimensions": [
+      1280,
+      720
+    ],
+    "fps": 30,
+    "frames": 3000,
+    "video_codec": "H.264",
+    "crf": 22,
+    "audio_codec": "AAC",
+    "audio_bitrate_kbps": 192,
+    "faststart": true,
+    "source_metadata_and_chapters_removed": true
+  },
+  "edits": {
+    "privacy_decision": "Owner explicitly requested public conversations and public nodes retained; hide GPS and authentication keys only.",
+    "public_chat_and_node_content_retained": true,
+    "chat_header_contact_map_identity_masks": false,
+    "pixels": "Approved recorded pixels only; nearest-neighbor resize; GPS/startup-coordinate privacy masks. No invented messages/counters/UI states.",
+    "privacy_mask_source_dimensions": [
+      1920,
+      1080
+    ],
+    "privacy_masks": [
+      {
+        "name": "Static startup coordinate artwork",
+        "rect": [
+          330,
+          456,
+          240,
+          96
+        ],
+        "ranges": [
+          [
+            0,
+            10
+          ]
+        ]
+      },
+      {
+        "name": "Location footer",
+        "rect": [
+          1584,
+          1047,
+          336,
+          33
+        ],
+        "ranges": [
+          [
+            14,
+            84.4
+          ]
+        ]
+      }
+    ],
+    "footer_label": "LOCATION HIDDEN",
+    "credentials": "No visible API key/prefix or login PIN identified in inspected scenes; no credential settings dialog shown. This is not an exhaustive OCR certification.",
+    "original_editorial_captions": "Preserved historical Polish captions.",
+    "upload_proof": "Original dated screenshot counters retained; no new upload depicted."
+  },
+  "credits": {
+    "game": "Watch Dogs Go by LOCOSP; copyright2025-2026 LOCOSP; preserve repository MIT LICENSE",
+    "fork_and_montage": "KiloGramowy",
+    "music": "Infraction - Venom (Rave), Instrumental",
+    "music_track_url": "https://inaudio.org/track/venom-rave/",
+    "music_terms_url": "https://inaudio.org/license-terms/",
+    "music_basis": "Official free-track video terms with track-link attribution; separate from repository MIT. No standalone audio included."
+  },
+  "validation": {
+    "full_audio_video_decode_errors": 0,
+    "decoded_video_frames": 3000,
+    "mask_roi_checks": 2412,
+    "mask_roi_failures": 0,
+    "startup_coordinate_mask_frames": 300,
+    "maximum_mask_interior_codec_difference": 9,
+    "scope": "All3000frames decoded; all active GPS/startup-coordinate matte-mask interiors checked at640x360. Known English footer text excluded. Mask-render coverage, not OCR clearance of every possible credential.",
+    "visual_samples": "Private24-frame final montage includes public conversations, normal frames, glitch bursts and transitions."
+  },
+  "files": [
+    {
+      "path": "auto-save-preview.png",
+      "bytes": 4039,
+      "sha256": "90e72df3c281fd6a445ff5a78ab44f68aa45c2e3c9007c1ce0c7086898ab62dc",
+      "dimensions": [
+        884,
+        372
+      ],
+      "source_kind": "native current WDG UI renderer on uConsole"
+    },
+    {
+      "path": "background-rx.png",
+      "bytes": 151631,
+      "sha256": "cff8c0fe901ea3c601723c5a750ef1cc267697cc2d1e414645a9980cfc3697c7",
+      "dimensions": [
+        1280,
+        720
+      ],
+      "source_movie_seconds": 80
+    },
+    {
+      "path": "demo-poster.png",
+      "bytes": 319677,
+      "sha256": "b389994dca993789edcc6bb0156eb4435746ad9d03921e776953e31002163bba",
+      "dimensions": [
+        1280,
+        720
+      ],
+      "source_movie_seconds": 29
+    },
+    {
+      "path": "demo.mp4",
+      "bytes": 24986997,
+      "sha256": "bd6dc5f7558a32e054ad671a70d3ef7ab2d2aa83472b6ad37b3fd308764ccd37"
+    },
+    {
+      "path": "meshcore-chat.png",
+      "bytes": 161208,
+      "sha256": "195a419dbc091ad4a309d60bbeab81ca18f4fb1842c7afa8158eb221859fbc3c",
+      "dimensions": [
+        1280,
+        720
+      ],
+      "source_movie_seconds": 44
+    },
+    {
+      "path": "meshtastic-chat.png",
+      "bytes": 98916,
+      "sha256": "2430c1969c37ab5581b0c5d3ddf6e5331d0bd78d635071cfbb7899f73e7661f2",
+      "dimensions": [
+        1280,
+        720
+      ],
+      "source_movie_seconds": 63
+    },
+    {
+      "path": "meshtastic-nodes.png",
+      "bytes": 123889,
+      "sha256": "2ea4cc86451529dc43b9aae9c47de5d747c7a70b78ae5eb5033718e508965d68",
+      "dimensions": [
+        1280,
+        720
+      ],
+      "source_movie_seconds": 74
+    },
+    {
+      "path": "protocol-preview.gif",
+      "bytes": 210945,
+      "sha256": "cdd3ca0bdc1c6d3d2bef6bc1abce9b8656fdfcb72abbb7c8969f06fea4a15045",
+      "dimensions": [
+        640,
+        360
+      ],
+      "frames": 48,
+      "silent": true,
+      "source_movie_range_seconds": [
+        33,
+        39
+      ],
+      "encoded_duration_seconds": 6.01
+    },
+    {
+      "path": "protocol-selector-detail.png",
+      "bytes": 1847,
+      "sha256": "808d635319d382094df7c5121052aa207a4c951b327ec84a1a379355dd40563e",
+      "dimensions": [
+        884,
+        184
+      ],
+      "source_kind": "native current WDG UI renderer on uConsole"
+    },
+    {
+      "path": "protocol-selector.png",
+      "bytes": 109417,
+      "sha256": "552cedcb21ccc712cda32d8c2a6035464608d3c9d4694438d31543c03d7b3794",
+      "dimensions": [
+        1280,
+        720
+      ],
+      "source_movie_seconds": 35.5
+    },
+    {
+      "path": "README.md",
+      "bytes": 6369,
+      "sha256": "ba75f76a695c9c2bb10f85f9920432f2520471873af8064a7dcf90a2318d15a7"
+    },
+    {
+      "path": "rf-meshcore.png",
+      "bytes": 7250,
+      "sha256": "fb45bba0a3b47dd49e8e60464a03880f868353315ad3013b7951cfe33cbcf086",
+      "dimensions": [
+        884,
+        428
+      ],
+      "source_kind": "native current WDG UI renderer on uConsole"
+    },
+    {
+      "path": "rf-meshtastic.png",
+      "bytes": 6059,
+      "sha256": "2090cdb791d2badfabe6a18e77ca37869660bde0723fb7b5a8bcfccaed190c4b",
+      "dimensions": [
+        884,
+        372
+      ],
+      "source_kind": "native current WDG UI renderer on uConsole"
+    },
+    {
+      "path": "supplementary-menu-manifest.json",
+      "bytes": 3516,
+      "sha256": "524cd87803f70478c03a07fbb6c0e85eb6d5b7fdc7a79feb80c18cfa40b164e9"
+    },
+    {
+      "path": "system-lora.png",
+      "bytes": 319677,
+      "sha256": "b389994dca993789edcc6bb0156eb4435746ad9d03921e776953e31002163bba",
+      "dimensions": [
+        1280,
+        720
+      ],
+      "source_movie_seconds": 29
+    },
+    {
+      "path": "update-game.png",
+      "bytes": 6700,
+      "sha256": "18e4855563acc29a5a2a18736a7fac2a1d4f8c3f9b1aeb8aa79da9d49eff67fd",
+      "dimensions": [
+        884,
+        416
+      ],
+      "source_kind": "normal deployed Update Game window on uConsole"
+    },
+    {
+      "path": "upload-confirmation.png",
+      "bytes": 263821,
+      "sha256": "330f7711d8caea8712d8bc77eecb8a68bc5acca88193ec566dc5326dc0afdba8",
+      "dimensions": [
+        1280,
+        720
+      ],
+      "source_movie_seconds": 89
+    },
+    {
+      "path": "wdg-loading.png",
+      "bytes": 7436,
+      "sha256": "ad47e94264984e28042df722410d99c49d2fba2546d88773afffaf10c2385875",
+      "dimensions": [
+        1280,
+        720
+      ],
+      "source_kind": "normal deployed WDG startup on uConsole"
+    },
+    {
+      "path": "wdg-startup.png",
+      "bytes": 3260,
+      "sha256": "b79c4a02f8ad2f5e0b48de5507cba556a2099da24564c92d116a39bba10f5054",
+      "dimensions": [
+        960,
+        210
+      ],
+      "source_kind": "normal deployed WDG startup on uConsole"
+    },
+    {
+      "path": "wifi-ble-menu.png",
+      "bytes": 4426,
+      "sha256": "0c4cc746d523e1091b4cd3dad2daeb0f8947e90137a007f89dd2a400293211cb",
+      "dimensions": [
+        960,
+        300
+      ],
+      "source_kind": "actual uConsole application capture"
+    }
+  ],
+  "supplementary_menu_sources": "supplementary-menu-manifest.json",
+  "presentation_update": {
+    "approved_feature_wording_preserved": true,
+    "current_ui_sources": "supplementary-menu-manifest.json",
+    "new_update_window": "update-game.png",
+    "startup_credit": "by LOCOSP / Modified by KiloGramowy",
+    "version_format": "unchanged numeric format"
+  },
+  "native_readme_video": {
+    "file": "wdg-uconsole-demo-github.mp4",
+    "bytes": 9190468,
+    "sha256": "a049ccb0aba8ce863a134e4c47a70c73f28059ab14c8f7918683c7939c593d1a",
+    "duration_seconds": 100,
+    "frames": 3000,
+    "dimensions": [
+      1280,
+      720
+    ],
+    "fps": 30,
+    "video_bitrate_target_kbps": 620,
+    "audio_bitrate_target_kbps": 96,
+    "audio_present": true,
+    "full_decode_errors": 0,
+    "faststart": true,
+    "gps_mask_checks": 2412,
+    "gps_mask_failure_count": 0,
+    "maximum_gps_matte_channel_difference": 10,
+    "matte_tolerance": 64,
+    "source_privacy_masks_inherited": true,
+    "public_chats_and_node_ids_retained": true,
+    "source": "docs/media/demo.mp4",
+    "source_sha256": "bd6dc5f7558a32e054ad671a70d3ef7ab2d2aa83472b6ad37b3fd308764ccd37",
+    "edits": "Two-pass H.264620kbps +AAC96kbps; full100seconds/full frame/audio retained. No added cropping, redaction or fictional UI.",
+    "repository_original_retained": true,
+    "distribution": "GitHub native attachment in this private repository README; original demo.mp4 remains tracked",
+    "permanent_attachment_url": "https://github.com/user-attachments/assets/0e1d7fcc-075b-49be-beab-96c91457e4db",
+    "anonymous_access_http_status": 404,
+    "preview_verified_duration_seconds": 100,
+    "preview_ready_state": 4,
+    "autoplay": "Not promised; GitHub/browser controls determine playback. User can press Play."
+  }
+}

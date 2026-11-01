@@ -1,0 +1,112 @@
+[
+  {
+    "file": "rf-meshtastic.png",
+    "source": "native current WDG UI renderer on uConsole",
+    "source_code_commit": "76fc2986c5d9b6cccc11db1776dbe885535dbe82",
+    "source_sha256": "5b66a52c6f41fb8573938c493d1103d98620d36dbcd6c3a5c3d907ab5cb1d186",
+    "crop": [
+      198,
+      64,
+      1082,
+      436
+    ],
+    "isolated_display_fixture": true,
+    "radio_running": false,
+    "gps_used": false,
+    "user_approvals_created": 0,
+    "note": "Current UI preview. Confirmation illustrations use zero sample coordinates."
+  },
+  {
+    "file": "rf-meshcore.png",
+    "source": "native current WDG UI renderer on uConsole",
+    "source_code_commit": "76fc2986c5d9b6cccc11db1776dbe885535dbe82",
+    "source_sha256": "f17429ed5b7d41d9d5272f6128eeb2d49949f078d8ec6d9a30b2bd2e7bcd97a7",
+    "crop": [
+      198,
+      36,
+      1082,
+      464
+    ],
+    "isolated_display_fixture": true,
+    "radio_running": false,
+    "gps_used": false,
+    "user_approvals_created": 0,
+    "note": "Current UI preview. Confirmation illustrations use zero sample coordinates."
+  },
+  {
+    "file": "auto-save-preview.png",
+    "source": "native current WDG UI renderer on uConsole",
+    "source_code_commit": "76fc2986c5d9b6cccc11db1776dbe885535dbe82",
+    "source_sha256": "95a9a6a3fe1559b91125880a122852c0e69d3492445950ffd65a50298fd2c3e1",
+    "crop": [
+      198,
+      64,
+      1082,
+      436
+    ],
+    "isolated_display_fixture": true,
+    "radio_running": false,
+    "gps_used": false,
+    "user_approvals_created": 0,
+    "note": "Current UI preview. Confirmation illustrations use zero sample coordinates."
+  },
+  {
+    "file": "wdg-loading.png",
+    "source": "normal deployed WDG startup on uConsole",
+    "source_code_commit": "76fc2986c5d9b6cccc11db1776dbe885535dbe82",
+    "source_sha256": "2d54bbead339af6d34e8e74c4fbcfff57b13fc5df74139cd7d7189ad3431bcae",
+    "crop": null
+  },
+  {
+    "file": "wdg-startup.png",
+    "source": "normal deployed WDG startup on uConsole",
+    "source_code_commit": "76fc2986c5d9b6cccc11db1776dbe885535dbe82",
+    "source_sha256": "2d54bbead339af6d34e8e74c4fbcfff57b13fc5df74139cd7d7189ad3431bcae",
+    "crop": [
+      160,
+      35,
+      1120,
+      245
+    ]
+  },
+  {
+    "file": "update-game.png",
+    "source": "normal deployed Update Game window on uConsole",
+    "source_code_commit": "76fc2986c5d9b6cccc11db1776dbe885535dbe82",
+    "source_sha256": "68de3c11f77cc3f3b6f6c6c2df531e94cef200f1c0116d5351608b6e4594f80c",
+    "crop": [
+      198,
+      42,
+      1082,
+      458
+    ],
+    "note": "Crop excludes the location footer; original UI pixels retained."
+  },
+  {
+    "file": "wifi-ble-menu.png",
+    "source_basename": "capture_wifi-menu.png",
+    "source_sha256": "2a399be2a2a861c3384069e770088fc39595c64b4f387132ab7436527044e0f5",
+    "source_commit": "4fd571c",
+    "captured_date": "2026-10-30",
+    "crop": null,
+    "nearest_integer_scale": 3,
+    "source": "actual uConsole application capture",
+    "note": "Menu crop excludes surrounding HUD/OUTPUT. No counter or RF state was fabricated."
+  },
+  {
+    "file": "protocol-selector-detail.png",
+    "source": "native current WDG UI renderer on uConsole",
+    "source_code_commit": "76fc2986c5d9b6cccc11db1776dbe885535dbe82",
+    "source_sha256": "e19434cbaa23ad7940ce12b02661ab495f046307caeb1b6671e87711f998e690",
+    "crop": [
+      198,
+      238,
+      1082,
+      422
+    ],
+    "isolated_display_fixture": true,
+    "radio_running": false,
+    "gps_used": false,
+    "user_approvals_created": 0
+  }
+]

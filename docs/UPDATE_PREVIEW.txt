@@ -1,0 +1,47 @@
+This screen previews the new updater. No update has been published yet.
+The version number keeps its original format.
+
+WHAT'S NEW
+
+Startup credits
+Original authorship by LOCOSP stays visible. Modified by KiloGramowy
+appears directly underneath it.
+
+Update Game
+SYSTEM > Update Game keeps its original menu row and keyboard style.
+A larger GitHub avatar appears only inside the update window, with the
+version and full release notes below it.
+
+Quiet update checks
+At each launch, the game checks this fork for an approved release in the
+background. Ordinary development commits do not trigger update alerts.
+
+One notice per release
+A new release gets one main-screen notice. OK opens its full release
+notes; No or Esc closes the notice. The choice survives game restarts.
+Another release can show another notice. Scans keep running in the
+background while you read.
+
+Available when you want it
+Update Game stays white while a confirmed update is available, even if
+you dismiss its notice. You can return to it from SYSTEM later.
+
+Read before updating
+The update screen shows the current version, the new version and full,
+scrollable release notes. Opening the screen never installs anything.
+Installation needs a separate confirmation.
+
+Your progress comes with you
+Updates replace reviewed game code. Player progress, XP, achievements,
+settings, keys, channels, contacts and pending logs must be preserved.
+Game-owned operations stop and final data is saved before installation.
+A code backup provides a rollback without restoring older player data.
+
+No internet? No invented result
+A failed check is reported as a failed check, not as proof that the game
+is up to date. You can retry from this screen.
+
+Preview scope
+This is a private UI and updater preview. It is not a new confirmation
+of RF reception, GPS AUTO operation or chat delivery. Public publication
+and the first approved release remain separate steps.
