@@ -72,8 +72,8 @@
   {
     "file": "update-game.png",
     "source": "deployed Update Game window on uConsole",
-    "source_code_commit": "aef9e2ef9792249049fba2d30e7d105d64073e61",
-    "source_sha256": "e67554ccb26fd44d269a87171ae16bcfde607199dd5a8523e39102b68eab160c",
+    "source_code_commit": "774f636e22a29d344f7e90d590f0f831eb4b7031",
+    "source_sha256": "84a5648ffde45ac3bcc468e1256c1d9b3a182381df5c88fd6869bbbf939a418d",
     "crop": [
       198,
       42,
@@ -81,12 +81,13 @@
       458
     ],
     "note": "Actual deployed game with isolated player state; crop excludes OUTPUT and location footer. No radio started.",
-    "real_private_source_check": true,
     "installed_version": "0.9.17",
-    "source_repository_id": 1441947361,
+    "source_repository_id": 1442123109,
     "isolated_player_state": true,
     "actual_game_initialization": true,
-    "radio_started": false
+    "radio_started": false,
+    "source_repository": "KiloGramowy/WatchDogsGo-KG-Edition",
+    "real_public_source_check": true
   },
   {
     "file": "wifi-ble-menu.png",

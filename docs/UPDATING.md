@@ -46,7 +46,7 @@ No rename, repository deletion or visibility change is performed by an update ch
 
 Earlier standalone builds from `KiloGramowy/WatchDogsGo` pinned repository ID `1441947361`. Those installations require a manual source migration to `KiloGramowy/WatchDogsGo-KG-Edition`, even though the displayed game version remains 0.9.17. There is no retained handoff repository or promise that the deleted ID will continue serving updates. Do not treat an error from that old source as proof that the game is current.
 
-The maintained uConsole needs a controlled, one-time **0.9.17 → 0.9.17** code deployment: back up current changed files and the deployment manifest, verify the complete installed runtime against the approved formal-fork source, then record its source commit and repository ID `1442123109`. Preserve current player data, settings, identities, keys, contacts, pairing and pending logs. Do not disable ancestry or local-edit checks, and do not import private commits to bypass them. Future releases on the approved formal-fork ancestry can use the normal in-game update flow.
+The maintained uConsole completed a controlled, one-time **0.9.17 → 0.9.17** code deployment with verified backups, a complete runtime manifest and repository ID `1442123109`. Other standalone installations need the same controlled migration, preserving current player data, settings, identities, keys, contacts, pairing and pending logs. Do not disable ancestry or local-edit checks, and do not import private commits to bypass them. Future releases on the approved formal-fork ancestry can use the normal in-game update flow.
 
 ## Preservation and recovery
 

@@ -209,7 +209,7 @@ The game checks this fork in the background at each launch. A published release 
 
 Opening the notes never installs an update. Installation needs a separate confirmation, stops game-owned operations, saves final data and creates a code backup. Local edits and dependency changes are checked before applying code; settings, keys, contacts, logs and player progress are preserved. A failed network check is shown as a failed check.
 
-🔗 **Know your update source:** the window shows the verified repository; press **O** to open it on GitHub. The updater follows its permanent repository ID when the review suffix is removed. Installed release notes remain available offline. See [Updating](docs/UPDATING.md) for the release and recovery contract.
+🔗 **Know your update source:** the window shows the verified repository; press **O** to open it on GitHub. The updater follows its permanent repository ID across repository renames. Installed release notes remain available offline. See [Updating](docs/UPDATING.md) for the release and recovery contract.
 
 ## 🎮 What is WatchDogsGo?
 
@@ -251,7 +251,7 @@ Future work will be documented as it is implemented and checked. More field test
 | 🔁 WiFi / BLE | Seven complete WiFi and seven BLE phases on XIAO ESP32-C5 / JanOS 1.7.0, with GPS and CSV output. |
 | 📤 Upload repair | Complete live accounting and persisted receipts; zero pending after restart in that check. Later captures can requeue. |
 | 🔋 Shutdown on uConsole | Three isolated real-device exit cases; final ESP32 STOP acknowledged, radio workers/serial closed, all managed AIO power OFF. |
-| 🧰 Software checks | Release 0.9.17: uConsole **566 PASS / 0 SKIP**. Windows: 566 cases, OK with 14 platform/fixture skips. Update and rollback flow checked separately. Earlier receiver/SPI baseline: **49 PASS**. |
+| 🧰 Software checks | Release 0.9.17: uConsole **578 PASS / 0 SKIP**, plus **12 PASS** for source migration and rollback. Earlier Windows run: 566 cases, OK with 14 platform/fixture skips. Earlier receiver/SPI baseline: **49 PASS**. |
 
 The release includes the tested shutdown fix and updater. Screenshots show UI states; they do not independently prove RF reception, approved AUTO operation or chat delivery. Not every preset, region or US RF/antenna configuration has been physically validated.
 
@@ -269,7 +269,7 @@ The release includes the tested shutdown fix and updater. Screenshots show UI st
 
 ### 📥 Install a separate checkout
 
-📥 These commands use the final release address. During private review, use the current clone URL from GitHub's **Code** button; repository access and Git authentication are required. These commands select this fork; an upstream installer installs the original project instead.
+📥 These commands use the public release address. They select this fork; an upstream installer installs the original project instead.
 
 ```bash
 mkdir -p ~/python

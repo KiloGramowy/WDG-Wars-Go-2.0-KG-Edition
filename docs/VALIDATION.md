@@ -6,19 +6,20 @@ This page separates recorded software checks from real hardware evidence. Prepar
 
 The formal release fork is `KiloGramowy/WatchDogsGo-KG-Edition`, repository ID `1442123109`. Its public parent and source are `LOCOSP/WatchDogsGo`, ID `1208909098`. The canonical name is already set; no further rename is planned. The private development repository and its five branches remain separate.
 
-Preparation merge `be199c2ced736192399949bbf2b68098a4b5ae57` joins public LOCOSP commit `6412603d6fa7c8f2e6fe76873531d83c61adc63d` with the reviewed published snapshot `29412dccbfe9aff4c798252a7510d4b0314d7168`. That merge retains the reviewed snapshot while establishing public ancestry; it does not import the private development branches. Subsequent source-binding and feed changes require their own recorded verification.
+Preparation merge `be199c2ced736192399949bbf2b68098a4b5ae57` joins public LOCOSP commit `6412603d6fa7c8f2e6fe76873531d83c61adc63d` with the reviewed published snapshot `29412dccbfe9aff4c798252a7510d4b0314d7168`. That merge retains the reviewed snapshot while establishing public ancestry; it does not import the private development branches. The final runtime source is `774f636e22a29d344f7e90d590f0f831eb4b7031`; its source-binding change updates only the repository name and numeric ID in the updater.
 
-The game version remains **0.9.17**. Existing standalone builds from `KiloGramowy/WatchDogsGo` pin the former repository ID `1441947361`, so the maintained uConsole requires a controlled code-only 0.9.17 → 0.9.17 migration to the new fork with a full verified source manifest. The new name alone does not retarget those installations. The old standalone is removed after the authorized checks; no legacy update or handoff service is retained.
+The game version remains **0.9.17**. Existing standalone builds from `KiloGramowy/WatchDogsGo` pin the former repository ID `1441947361`. The maintained uConsole completed a controlled code-only 0.9.17 → 0.9.17 migration to the new fork with a full verified source manifest. The new name alone does not retarget other installations. The old standalone is removed after the authorized checks; no legacy update or handoff service is retained.
 
-| Final verification area | Required record |
+| Final verification area | Result |
 | --- | --- |
-| GitHub fork relationship | Verify `KiloGramowy/WatchDogsGo-KG-Edition`, ID `1442123109`, `fork: true`, public LOCOSP parent/source ID `1208909098` and one `main` branch. |
-| Source and feed | Record the approved formal-fork code commit, schema-2 feed, version 0.9.17 and matching repository ID. |
-| Software checks | Record fresh commands, totals and any skips for the final candidate; the earlier standalone totals below are not new results for this source transition. |
-| Maintained uConsole | Verify the code-only migration, complete runtime manifest, current player/configuration fingerprint, Proximity pairing and code-only rollback. |
+| GitHub fork relationship | **PASS:** public fork ID `1442123109`, public LOCOSP parent and source ID `1208909098`, one `main` branch. It appears in the upstream fork list. |
+| Source and feed | **PASS:** schema-2 feed, version 0.9.17, repository ID `1442123109` and runtime source `774f636e22a29d344f7e90d590f0f831eb4b7031` agree. All 87 runtime files match that source. |
+| uConsole full software suite as root | **578/578 PASS, no skips**, including LoRaRF 1.4.0 and the existing private recorded-frame fixture supplied outside Git. Replay remains a software check. |
+| Code-only migration regressions | **12/12 PASS** as root, including edited-source/data refusal, interruption and rollback preservation. These use isolated fixtures. |
+| Maintained uConsole | **PASS:** installed source and full manifest verified; current player/configuration fingerprint, Proximity pairing and legacy recovery record preserved. Full game startup, ESP32 serial initialization and Update Game check passed; 0.9.17 reports current, avatar loaded, and cleanup completed without errors. No radio was started. |
 | Public access after cutover | Recheck anonymous source, feed, images and native film after removal of the old standalone, without relying on the removed ID or prior attachment permissions. |
 
-These are verification requirements, not additional passing test totals. No new RF, approved AUTO, chat-delivery or server-credit result is established by changing repository ancestry or update identity.
+The full suite used `python3 -B -m unittest discover -s tests -v` with `WDG_MESHTASTIC_REPLAY_LOG` pointing to the preserved private capture. The separate migration suite used the same approved candidate with temporary installations. Operational logs, backups and private player fingerprints stay outside this public repository. No new RF, approved AUTO, chat-delivery or server-credit result is established by changing repository ancestry or update identity.
 
 ## Earlier standalone 0.9.17 validation
 

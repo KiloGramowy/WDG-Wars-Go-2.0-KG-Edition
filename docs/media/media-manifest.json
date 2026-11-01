@@ -215,8 +215,8 @@
     },
     {
       "path": "supplementary-menu-manifest.json",
-      "bytes": 3771,
-      "sha256": "8def73c586799a0a4643c4f113a58f0f8e7ae358dfbb9ed890d8bafa6a13939d"
+      "bytes": 3833,
+      "sha256": "ffdd398a22a563aa719ec06fa757aba34e4e5d63705b7a75dfbb88b03059872d"
     },
     {
       "path": "system-lora.png",
@@ -230,8 +230,8 @@
     },
     {
       "path": "update-game.png",
-      "bytes": 8121,
-      "sha256": "5e1adeac045a182f640e7f7000ec373c2feb4f4f775cdeeeaa28f8fa87f65f8d",
+      "bytes": 8564,
+      "sha256": "01ab8b5d5005a88667fc48a2f55eed2a6fdb1ad1faea14f4e2151721a1a99275",
       "dimensions": [
         884,
         416
@@ -318,9 +318,12 @@
     "preview_verified_duration_seconds": 100,
     "preview_ready_state": 4,
     "autoplay": "Not promised; GitHub/browser controls determine playback. User can press Play.",
-    "anonymous_rendered_video_verified": false,
+    "anonymous_rendered_video_verified": true,
     "public_access_note": "The public README supplies an expiring signed video URL. A direct attachment-route 404 does not mean the rendered video is private.",
     "attachment_repository_id": 1442123109,
-    "verification_status": "Pending final anonymous check of this fork after the standalone repository is removed."
+    "verification_status": "Anonymous access verified for the formal public fork. Final recheck after removal of the standalone repository is pending GitHub account confirmation.",
+    "anonymous_http_status": 200,
+    "anonymous_bytes_verified": 9190468,
+    "anonymous_sha256_verified": "a049ccb0aba8ce863a134e4c47a70c73f28059ab14c8f7918683c7939c593d1a"
   }
 }
