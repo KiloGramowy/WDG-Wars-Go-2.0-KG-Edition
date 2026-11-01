@@ -13,6 +13,7 @@ import subprocess
 import tempfile
 import unittest
 from unittest.mock import patch
+from urllib.error import HTTPError
 
 
 TOOL=Path(__file__).resolve().parents[1]/"tools/public_release.py"
@@ -75,6 +76,12 @@ class FakeGitHub:
 
 
 class UrlPolicyTests(unittest.TestCase):
+    def test_packaging_exception_is_limited_to_the_publication_helper_and_its_tests(self):
+        self.assertTrue(publication.only_documentation_changes(
+            ["tools/public_release.py", "tests/test_public_release.py", "docs/media/README.md"]))
+        for name in ("tools/release_package.py", "tests/test_game_updates.py", "docs/UPDATE_PREVIEW.txt"):
+            self.assertFalse(publication.only_documentation_changes([name]), name)
+
     def test_only_approved_https_hosts_are_allowed(self):
         for url in ("https://github.com/a/b","https://raw.githubusercontent.com/a/b/main/README.md",
                     "https://private-user-images.githubusercontent.com/file",
@@ -109,6 +116,72 @@ class UrlPolicyTests(unittest.TestCase):
                 with self.assertRaisesRegex(publication.PublicationError,"did not complete") as error:
                     client.get("repos/owner/new",missing_ok=True)
                 self.assertNotIn("sensitive-value",str(error.exception))
+
+
+class VideoFallbackTests(unittest.TestCase):
+    def setUp(self):
+        self.commit = "a" * 40
+        self.rendered = ("https://github.com/" + publication.OWNER + "/" + publication.PUBLIC_NAME +
+                         "/blob/" + self.commit + "/README.md")
+        self.source = ("https://private-user-images.githubusercontent.com/" +
+                       str(publication.EXPECTED_OWNER_ID) + "/12345-" + FILM.rsplit("/", 1)[-1] +
+                       ".mp4?jwt=synthetic-query&download=1")
+        self.page = ('<video controls><source src="' + self.source.replace("&", "&amp;") + '"></video>').encode()
+        self.calls = []
+        self.operation = publication.Publication(TOOL.parent.parent, probe=self.probe)
+
+    def probe(self, url, video=False):
+        self.calls.append((url, video))
+        if url == FILM:
+            raise publication.PublicationError("Attachment unavailable.") from HTTPError(
+                FILM, 404, "Not Found", None, None)
+        if url == self.rendered:
+            self.assertFalse(video)
+            return self.page
+        if url == self.source:
+            self.assertTrue(video)
+            return b"\x00\x00\x00\x18ftypmp42"
+        raise AssertionError("Unexpected anonymous request")
+
+    def test_public_rendered_readme_resolves_video_after_standalone_attachment_404(self):
+        self.assertEqual(self.operation._video_header(FILM, self.commit)[4:8], b"ftyp")
+        self.assertEqual(self.calls, [(FILM, True), (self.rendered, False), (self.source, True)])
+
+    def test_foreign_uuid_owner_and_unsafe_sources_are_not_requested(self):
+        for source in (self.source.replace("11111111-1111", "22222222-2222"),
+                       self.source.replace("/315514197/", "/999/"),
+                       self.source.replace("https://", "http://"),
+                       self.source.replace("private-user-images.githubusercontent.com", "attacker.invalid"),
+                       self.source.replace("https://", "https://user:password@")):
+            with self.subTest(source=source.partition("?")[0]):
+                self.calls.clear()
+                self.page = ('<video src="' + source + '"></video>').encode()
+                with self.assertRaises(publication.PublicationError) as error:
+                    self.operation._video_header(FILM, self.commit)
+                self.assertNotIn("synthetic-query", str(error.exception))
+                self.assertEqual(self.calls, [(FILM, True), (self.rendered, False)])
+
+    def test_login_page_or_unavailable_public_html_does_not_pass(self):
+        self.page = b"<html>Sign in to view this private resource.</html>"
+        with self.assertRaises(publication.PublicationError):
+            self.operation._video_header(FILM, self.commit)
+        original = self.operation.probe
+        def private_page(url, video=False):
+            if url == self.rendered:
+                raise publication.PublicationError("Not available.") from HTTPError(url, 404, "Not Found", None, None)
+            return original(url, video)
+        self.operation.probe = private_page
+        with self.assertRaises(publication.PublicationError):
+            self.operation._video_header(FILM, self.commit)
+
+    def test_non_404_transport_failure_does_not_trigger_fallback(self):
+        def failed(url, video=False):
+            self.calls.append((url, video))
+            raise publication.PublicationError("Network failed.") from HTTPError(url, 403, "Forbidden", None, None)
+        self.operation.probe = failed
+        with self.assertRaises(publication.PublicationError):
+            self.operation._video_header(FILM, self.commit)
+        self.assertEqual(self.calls, [(FILM, True)])
 
 
 @unittest.skipUnless(shutil.which("git"),"Git required for isolated release checkout tests")
@@ -273,6 +346,32 @@ class PublicationTests(unittest.TestCase):
         (self.repo/"watchdogs/app.py").write_text("NEW_RUNTIME=True\n");self.commit()
         with self.assertRaises(publication.PublicationError):self.operation.check()
         self.assertEqual(self.github.patches,[])
+
+    def test_publication_tool_and_its_regression_can_follow_unchanged_runtime(self):
+        for name in ("tools/public_release.py", "tests/test_public_release.py"):
+            path = self.repo / name
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text("# Reviewed packaging-only correction.\n")
+        self.commit()
+        result, _ = self.operation.check()
+        self.assertTrue(result["ok"])
+        self.assertEqual(publication.runtime_entries(self.repo, self.root),
+                         publication.runtime_entries(self.repo, self.head))
+
+    def test_packaging_path_cannot_hide_a_runtime_file_change(self):
+        (self.repo / "CHANGELOG.md").write_text("Changed runtime release file.\n")
+        self.commit()
+        with self.assertRaisesRegex(publication.PublicationError, "runtime differs"):
+            self.operation.check()
+
+    def test_runtime_equality_includes_git_executable_mode(self):
+        (self.repo / "LICENSE").chmod(0o755)
+        git(self.repo, "update-index", "--chmod=+x", "LICENSE")
+        git(self.repo, "commit", "-qm", "Changed runtime mode")
+        self.head = git(self.repo, "rev-parse", "HEAD")
+        self.github.head = self.head
+        with self.assertRaisesRegex(publication.PublicationError, "runtime differs"):
+            self.operation.check()
 
     def test_installed_release_notes_after_baseline_require_an_updated_source(self):
         (self.repo/"docs/UPDATE_PREVIEW.txt").write_text("Changed in-game offline release notes.\n")

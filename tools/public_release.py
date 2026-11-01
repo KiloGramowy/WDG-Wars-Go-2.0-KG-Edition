@@ -13,6 +13,7 @@ https://docs.github.com/en/get-started/writing-on-github/working-with-advanced-f
 """
 import argparse
 import ast
+from html.parser import HTMLParser
 import importlib.util
 import json
 from pathlib import Path, PurePosixPath
@@ -164,10 +165,53 @@ def metadata(client):
 
 
 def only_documentation_changes(names):
+    """Allow packaging-only changes after the approved game runtime."""
     roots = {"README.md", "CHANGELOG.md", "CONTRIBUTING.md", "LICENSE", "THIRD_PARTY_NOTICES.md",
              ".gitignore", ".gitattributes"}
-    return all(name != "docs/UPDATE_PREVIEW.txt" and (name in roots or name.startswith(
-        ("docs/", "tests/", "tools/", "updates/"))) for name in names)
+    tools = {"tools/public_release.py", "tests/test_public_release.py"}
+    return all(name != "docs/UPDATE_PREVIEW.txt" and (name in roots or name in tools or
+        name.startswith(("docs/", "updates/"))) for name in names)
+
+
+def runtime_entries(repo, ref):
+    """Compare Git modes/blobs without executing code from either snapshot."""
+    roots = {"meshtastic_rx_probe.py", "requirements.txt", "run.sh", "setup.sh",
+             "watchdogs-launcher", "watchdogs.desktop", "LICENSE", "THIRD_PARTY_NOTICES.md",
+             "CHANGELOG.md", "docs/UPDATE_PREVIEW.txt"}
+    asset_extensions = {".png", ".wav", ".mp3", ".bdf", ".svg"}
+    entries = {}
+    for row in git(repo, "ls-tree", "-r", "-z", ref).split("\0"):
+        if not row:
+            continue
+        header, name = row.split("\t", 1)
+        path = PurePosixPath(name)
+        if any(part.startswith(".") for part in path.parts):
+            continue
+        if (name in roots or (path.parts[0] in ("watchdogs", "plugins") and
+                (path.suffix == ".py" or name == "watchdogs/radio_countries.json"))
+                or (path.parts[0] == "assets" and path.suffix.lower() in asset_extensions)):
+            entries[name] = tuple(header.split())
+    return entries
+
+
+class VideoSources(HTMLParser):
+    def __init__(self):
+        super().__init__(convert_charrefs=True)
+        self.sources = []
+
+    def handle_starttag(self, tag, attrs):
+        source = dict(attrs).get("src")
+        if tag in ("video", "source") and source:
+            self.sources.append(source)
+
+
+def public_video_source(source, film_id):
+    if not allowed_https(source) or any(ord(char) < 32 for char in source):
+        return False
+    parsed = urlsplit(source)
+    return (parsed.hostname == "private-user-images.githubusercontent.com" and
+            re.fullmatch("/" + str(EXPECTED_OWNER_ID) + r"/[0-9]+-" + re.escape(film_id) + r"\.mp4",
+                         parsed.path) is not None)
 
 
 def source_checks(repo, package, expected_head=None):
@@ -228,7 +272,9 @@ def source_checks(repo, package, expected_head=None):
     ancestors = set(commits)
     if source not in ancestors or not only_documentation_changes(
             git(repo, "diff", "--name-only", source, commit).splitlines()):
-        raise PublicationError("The baseline feed must identify this runtime; only documentation/feed changes may follow it.")
+        raise PublicationError("The baseline feed must identify this runtime; only reviewed packaging changes may follow it.")
+    if runtime_entries(repo, source) != runtime_entries(repo, commit):
+        raise PublicationError("The game runtime differs from the approved baseline source.")
     return dict(files=files, commit=commit, tree=tree, version=version, feed=feed,
                 validation=validation, checked_history_commits=len(commits))
 
@@ -239,6 +285,28 @@ class Publication:
         self.client = client or GitHub()
         self.probe = probe or anonymous_get
         self.package = package or package_module()
+
+    def _video_header(self, film, commit):
+        try:
+            return self.probe(film, video=True)
+        except PublicationError as error:
+            # GitHub can serve a public README video through a signed src while
+            # its standalone attachment route returns 404. No login is needed.
+            if not isinstance(error.__cause__, HTTPError) or error.__cause__.code != 404:
+                raise
+        rendered = self.probe("https://github.com/" + OWNER + "/" + PUBLIC_NAME +
+                              "/blob/" + commit + "/README.md")
+        parser = VideoSources()
+        try:
+            parser.feed(rendered.decode("utf-8"))
+        except (UnicodeError, ValueError):
+            raise PublicationError("The public README video cannot be verified.") from None
+        film_id = film.rsplit("/", 1)[-1]
+        for source in parser.sources:
+            if public_video_source(source, film_id):
+                # Signed URLs are used only in memory, never in diagnostics.
+                return self.probe(source, video=True)
+        raise PublicationError("The public README has no matching anonymous video source.")
 
     def _remote_head(self, info):
         branches = self.client.get("repos/" + info["full_name"] + "/branches?per_page=100")
@@ -307,7 +375,7 @@ class Publication:
         if not films:
             raise PublicationError("The approved README has no native video attachment.")
         for film in films:
-            header = self.probe(film, video=True)
+            header = self._video_header(film, checked["commit"])
             if len(header)<12 or header[4:8] != b"ftyp":
                 raise PublicationError("The native video attachment is not accessible anonymously as video.")
         # Old README/clone links remain useful after the rename while the old name is not reused.

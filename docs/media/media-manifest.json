@@ -313,11 +313,17 @@
     "source_sha256": "bd6dc5f7558a32e054ad671a70d3ef7ab2d2aa83472b6ad37b3fd308764ccd37",
     "edits": "Two-pass H.264620kbps +AAC96kbps; full100seconds/full frame/audio retained. No added cropping, redaction or fictional UI.",
     "repository_original_retained": true,
-    "distribution": "GitHub native attachment in this private repository README; original demo.mp4 remains tracked",
-    "permanent_attachment_url": "https://github.com/user-attachments/assets/0e1d7fcc-075b-49be-beab-96c91457e4db",
-    "anonymous_access_http_status": 404,
+    "distribution": "GitHub native video rendered in the public repository README; original demo.mp4 remains tracked",
+    "permanent_attachment_url": "https://github.com/user-attachments/assets/047f3c2f-ffb4-4a24-8871-52a9a8577e9c",
     "preview_verified_duration_seconds": 100,
     "preview_ready_state": 4,
-    "autoplay": "Not promised; GitHub/browser controls determine playback. User can press Play."
+    "autoplay": "Not promised; GitHub/browser controls determine playback. User can press Play.",
+    "anonymous_direct_attachment_http_status": 404,
+    "anonymous_rendered_readme_http_status": 200,
+    "anonymous_rendered_video_http_status": 200,
+    "anonymous_rendered_video_bytes": 9190468,
+    "anonymous_rendered_video_sha256": "a049ccb0aba8ce863a134e4c47a70c73f28059ab14c8f7918683c7939c593d1a",
+    "anonymous_rendered_video_verified": true,
+    "public_access_note": "The public README supplies an expiring signed video URL. A direct attachment-route 404 does not mean the rendered video is private."
   }
 }
