@@ -190,8 +190,8 @@
     },
     {
       "path": "README.md",
-      "bytes": 6369,
-      "sha256": "ba75f76a695c9c2bb10f85f9920432f2520471873af8064a7dcf90a2318d15a7"
+      "bytes": 6442,
+      "sha256": "155faa2b5af78d80c163be45864af246cbb32e4cce9624093f7bc03856dfcc12"
     },
     {
       "path": "rf-meshcore.png",
@@ -215,8 +215,8 @@
     },
     {
       "path": "supplementary-menu-manifest.json",
-      "bytes": 3516,
-      "sha256": "524cd87803f70478c03a07fbb6c0e85eb6d5b7fdc7a79feb80c18cfa40b164e9"
+      "bytes": 3771,
+      "sha256": "8def73c586799a0a4643c4f113a58f0f8e7ae358dfbb9ed890d8bafa6a13939d"
     },
     {
       "path": "system-lora.png",
@@ -230,13 +230,13 @@
     },
     {
       "path": "update-game.png",
-      "bytes": 6700,
-      "sha256": "18e4855563acc29a5a2a18736a7fac2a1d4f8c3f9b1aeb8aa79da9d49eff67fd",
+      "bytes": 8121,
+      "sha256": "5e1adeac045a182f640e7f7000ec373c2feb4f4f775cdeeeaa28f8fa87f65f8d",
       "dimensions": [
         884,
         416
       ],
-      "source_kind": "normal deployed Update Game window on uConsole"
+      "source_kind": "deployed Update Game window on uConsole with isolated player state"
     },
     {
       "path": "upload-confirmation.png",

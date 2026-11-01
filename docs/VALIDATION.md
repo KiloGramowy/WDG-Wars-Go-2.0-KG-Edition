@@ -2,6 +2,24 @@
 
 This page separates recorded software checks from real hardware evidence. Preparing documentation or a release branch does not itself repeat any radio, GPS, chat-delivery or server test.
 
+## 0.9.17 release readiness
+
+Approved runtime source: `aef9e2ef9792249049fba2d30e7d105d64073e61`. The private stable feed identifies that code; later feed/media/documentation commits preserve the same runtime. The review repository remains private with its `-1` suffix.
+
+| Check | Result |
+| --- | --- |
+| uConsole full software suite as root | **566/566 PASS, no skips**, with LoRaRF 1.4.0 and the private recorded-frame fixture supplied outside Git. |
+| Windows full software suite | 566 cases; OK with 14 reported platform/private-fixture skips, no failures/errors. |
+| Update UI and publication guards | 35 UI cases and 27 publication-helper cases are included in the full suite. Rename, identity, network failure and lost-response cases use isolated fixtures; no real publication was executed. |
+| Real private update transport | Numeric-ID lookup and authenticated fetch passed. A fresh clone reports 0.9.17 current; an isolated 0.9.16 checkout prepares and installs it, then reports current. All 87 runtime files match the approved code, including executable bits and offline notes. |
+| Code-only rollback | The isolated installation returns to 0.9.16 and its earlier notes while preserving newer synthetic progress, settings, pairing and pending logs. Eight additional private migration regressions cover interruption, write failure and refusal of edited source/data. |
+| Installed uConsole | Controlled code-only deployment, full 87-file source manifest, native Update Game display and full game startup passed. The check reports current from the clean review repository; ESP32 serial opened and cleanup completed without errors. |
+| Preservation | Current player data, keys, contacts, configuration, Proximity pairing and legacy recovery reference were unchanged. Fresh code/data backups and the rollback journal were hash-verified on the device and the owner's computer. |
+
+The new Update Game capture shows the deployed 0.9.17 drawing code with isolated player state. Its source line and O shortcut fit inside the existing window above OUTPUT. The accepted feature descriptions and other unchanged-interface captures are retained. No local AUTO approvals were created, no radio was started and no test chat messages were sent in these checks.
+
+The private authenticated source and film preview are available. Anonymous source, feed, images, video and redirect checks remain pending until an explicitly authorized visibility change; the publication helper performs them after that switch. These checks do not repeat or extend the recorded RF, AUTO, chat-delivery or WDGWars evidence below.
+
 ## Private updater preview — 2026-11-01
 
 The preview retains numeric version **0.9.16** and the original SYSTEM menu row. Its startup adds **Modified by KiloGramowy** under LOCOSP; a 32 px avatar appears only inside Update Game. No approved release feed, new version or public repository has been published.

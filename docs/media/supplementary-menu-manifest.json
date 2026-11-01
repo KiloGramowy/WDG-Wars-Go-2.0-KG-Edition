@@ -71,16 +71,22 @@
   },
   {
     "file": "update-game.png",
-    "source": "normal deployed Update Game window on uConsole",
-    "source_code_commit": "76fc2986c5d9b6cccc11db1776dbe885535dbe82",
-    "source_sha256": "68de3c11f77cc3f3b6f6c6c2df531e94cef200f1c0116d5351608b6e4594f80c",
+    "source": "deployed Update Game window on uConsole",
+    "source_code_commit": "aef9e2ef9792249049fba2d30e7d105d64073e61",
+    "source_sha256": "e67554ccb26fd44d269a87171ae16bcfde607199dd5a8523e39102b68eab160c",
     "crop": [
       198,
       42,
       1082,
       458
     ],
-    "note": "Crop excludes the location footer; original UI pixels retained."
+    "note": "Actual deployed game with isolated player state; crop excludes OUTPUT and location footer. No radio started.",
+    "real_private_source_check": true,
+    "installed_version": "0.9.17",
+    "source_repository_id": 1441947361,
+    "isolated_player_state": true,
+    "actual_game_initialization": true,
+    "radio_started": false
   },
   {
     "file": "wifi-ble-menu.png",

@@ -35,7 +35,7 @@ The updater resolves `https://api.github.com/repositories/1441947361` for the re
 
 Public installations use ordinary HTTPS and do not require `gh` or a token. While the source is private, the owner's existing GitHub authentication can provide access, including when the game runs with sudo. Authentication material is never placed in request URLs, source files or game output. Without access, the check reports an error.
 
-The current uConsole's source is determined by its deployed updater constants, deployment manifest and file hashes. Its legacy Git HEAD does not describe every deployed overlay. It may remain bound to the private development repository until a separately verified migration; changing the review repository's name or visibility does not switch that installation to another repository ID. The private deployment report records the actual source used on the device.
+An installation's source is determined by its deployed updater constants, deployment manifest and file hashes. A legacy Git HEAD does not describe every deployed overlay. A development installation keeps its own source until a separately verified migration; renaming another repository does not switch that installation to a different repository ID. The validated uConsole deployment was migrated once to the clean release source with its full runtime manifest, preserving player data and the older recovery reference. The private deployment report records its actual source and rollback.
 
 ## Publication and existing installations
 

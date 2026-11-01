@@ -251,9 +251,9 @@ Future work will be documented as it is implemented and checked. More field test
 | 🔁 WiFi / BLE | Seven complete WiFi and seven BLE phases on XIAO ESP32-C5 / JanOS 1.7.0, with GPS and CSV output. |
 | 📤 Upload repair | Complete live accounting and persisted receipts; zero pending after restart in that check. Later captures can requeue. |
 | 🔋 Shutdown on uConsole | Three isolated real-device exit cases; final ESP32 STOP acknowledged, radio workers/serial closed, all managed AIO power OFF. |
-| 🧰 Software checks, 1 November 2026 | Main suite after the shutdown fix: uConsole **447 PASS / 2 SKIP**, Windows **438 PASS / 11 SKIP**. Earlier receiver/SPI baseline: **49 PASS**. |
+| 🧰 Software checks | Release 0.9.17: uConsole **566 PASS / 0 SKIP**. Windows: 566 cases, OK with 14 platform/fixture skips. Update and rollback flow checked separately. Earlier receiver/SPI baseline: **49 PASS**. |
 
-The initial documentation candidate preserved runtime `3481cf9`; this branch now also includes the tested shutdown fix. Screenshots show UI states; they do not independently prove RF reception, approved AUTO operation or chat delivery. Not every preset, region or US RF/antenna configuration has been physically validated.
+The release includes the tested shutdown fix and updater. Screenshots show UI states; they do not independently prove RF reception, approved AUTO operation or chat delivery. Not every preset, region or US RF/antenna configuration has been physically validated.
 
 🔬 **[Evidence and test limits →](docs/VALIDATION.md)**
 

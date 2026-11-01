@@ -54,4 +54,4 @@ The GitHub-native player uses a smaller H.264/AAC copy of the complete reviewed 
 
 [Open the native GitHub video player](https://github.com/user-attachments/assets/047f3c2f-ffb4-4a24-8871-52a9a8577e9c). The attachment was uploaded in this private repository context. It is the same full 100-second edit, encoded as a 9,190,468-byte H.264/AAC copy for GitHub. The README player uses this permanent attachment address, not an expiring signed media URL.
 
-The current RF-menu images retain the existing typography and layout. `update-game.png` shows the deployed Update Game window, cropped above the location footer. Source hashes and crop bounds are recorded in the supplementary manifest.
+The current RF-menu images retain the existing typography and layout. `update-game.png` shows the deployed 0.9.17 Update Game window on uConsole with isolated player state and a real private release-source check, cropped above OUTPUT. Source hashes and crop bounds are recorded in the supplementary manifest.
