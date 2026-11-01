@@ -47,7 +47,7 @@ Removing private material from the newest tree does not remove it from older com
 
 The development repository is a **private GitHub fork of a private upstream repository**. GitHub does not allow changing a fork's visibility independently; see [GitHub's fork visibility rules](https://docs.github.com/en/pull-requests/reference/forks). Its private history and branches remain in that repository.
 
-The selected route uses the existing clean review repository, not another newly created repository. It is a substantial code fork of [LOCOSP/WatchDogsGo](https://github.com/LOCOSP/WatchDogsGo) with original authorship and license retained. GitHub's metadata identifies the clean repository as standalone, rather than a formal fork in the private upstream's network. This distinction does not change its code attribution.
+The selected route uses the existing clean review repository, not another newly created repository. It is a substantial code fork of [LOCOSP/esp32-watch-dogs](https://github.com/LOCOSP/esp32-watch-dogs) with original authorship and license retained. GitHub's metadata identifies the clean repository as standalone, rather than a formal fork in the private upstream's network. This distinction does not change its code attribution.
 
 Only after the owner's explicit publication instruction, rename `KiloGramowy/WatchDogsGo-1` to `KiloGramowy/WatchDogsGo` and change the **same repository** to public. Its immutable ID remains `1441947361`, its owner ID remains `315514197`, and the branch remains `main`. The updater already resolves that identity, so publication needs no new code or source-binding edit. Do not merge or mirror-push the private development history into it.
 
