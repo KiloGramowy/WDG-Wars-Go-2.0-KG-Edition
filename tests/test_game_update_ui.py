@@ -7,13 +7,18 @@ and the final transaction runs only after the main thread has stopped devices.
 import ast
 import copy
 import logging
+import os
 from pathlib import Path
 from queue import Queue
 import random
+import re
+import sys
 import time
 from types import SimpleNamespace
 import unittest
-from unittest.mock import Mock
+from unittest.mock import Mock, patch
+
+from watchdogs import __version__ as INSTALLED_VERSION
 
 
 class PyxelRecorder:
@@ -37,6 +42,10 @@ class FakeUpdates:
         self.seen = set()
         self.notice_pending = Mock(side_effect=lambda release: release.release_id not in self.seen)
         self.acknowledge = Mock(side_effect=lambda release: self.seen.add(release.release_id) or True)
+        self.notice_key = Mock(side_effect=lambda release: "github:1441947361:" + release.channel + ":" + release.release_id)
+        self.source_info = Mock(return_value=dict(repository_id=1441947361,
+            repository="KiloGramowy/WatchDogsGo-1",
+            url="https://github.com/KiloGramowy/WatchDogsGo-1", verified=False))
         self.check = Mock()
         self.prepare = Mock(return_value="verified-plan")
         self.discard = Mock()
@@ -62,9 +71,10 @@ METHODS = {"_init_game_updates", "_check_game_update", "_request_game_update_che
            "_update_game_update_notice", "_draw_game_update_notice", "_start_game_update",
            "_gameupd_note_lines", "_update_gameupd_screen", "_gameupd_prepare", "_gameupd_log_add",
            "_gameupd_do", "_gameupd_discard_plan", "_draw_gameupd_screen", "_draw_menu", "_draw_boot_screen",
+           "_gameupd_source_info", "_gameupd_open_source", "_gameupd_open_source_worker",
            "update", "_draw_inner", "draw"}
 ENV = dict(__name__="watchdogs.update_ui_test", __package__="watchdogs", __file__=str(SOURCE),
-           Path=Path, Queue=Queue, pyxel=PX, logging=logging, random=random, time=time,
+           Path=Path, Queue=Queue, pyxel=PX, logging=logging, random=random, re=re, time=time,
            threading=SimpleNamespace(Thread=RecordedThread), GameUpdates=lambda **kwargs: FakeUpdates())
 for statement in TREE.body:
     if isinstance(statement, ast.Assign):
@@ -321,7 +331,7 @@ class GameUpdateUiTests(unittest.TestCase):
         portraits = [args for name, args in PX.calls if name == "blt"]
         self.assertEqual(len(portraits), 1)
         self.assertEqual(portraits[0][-2:], (32, 32))
-        self.assertIn("Current: v0.9.16", [args[2] for args in self.texts()])
+        self.assertIn("Current: v" + INSTALLED_VERSION, [args[2] for args in self.texts()])
         self.assertFalse(any("KG Edition" in args[2] for args in self.texts()))
 
     def test_menu_keeps_original_label_position_and_dim_white_state(self):
@@ -335,6 +345,184 @@ class GameUpdateUiTests(unittest.TestCase):
             positions.append(row[:2])
             self.assertEqual(row[3], expected)
         self.assertEqual(*positions)
+
+    def verified_source(self, g, repository="KiloGramowy/WatchDogsGo-1"):
+        g._game_updates.source_info.return_value = dict(repository_id=1441947361,
+            repository=repository, url="https://github.com/" + repository, verified=True)
+
+    def test_source_header_is_cached_and_follows_verified_rename(self):
+        g = game()
+        for repository in ("KiloGramowy/WatchDogsGo-1", "KiloGramowy/WatchDogsGo"):
+            PX.calls.clear()
+            self.verified_source(g, repository)
+            g._draw_gameupd_screen()
+            self.assertIn("Source: " + repository, [args[2] for args in self.texts()])
+            self.assertTrue(any("O GitHub" in args[2] for args in self.texts()))
+            self.assert_above_output()
+        self.assertEqual(RecordedThread.started, [])
+        g._game_updates.check.assert_not_called()
+        g._game_updates.prepare.assert_not_called()
+        g._game_updates.install.assert_not_called()
+
+    def test_offline_check_still_displays_installed_release_notes(self):
+        g = game()
+        g._game_update_status = "error"
+        g._game_update_message = "Cannot check for updates. Check network and GitHub access."
+        notes = "WatchDogsGo 0.9.17\nMesh and wardriving improvements."
+        with patch.object(Path, "read_text", return_value=notes):
+            g._draw_gameupd_screen()
+        values = [args[2] for args in self.texts()]
+        self.assertIn("INSTALLED RELEASE NOTES", values)
+        self.assertIn("WatchDogsGo 0.9.17", values)
+        self.assertIn("Mesh and wardriving improvements.", values)
+        self.assertFalse(any("PRIVATE PREVIEW" in value for value in values))
+        self.assert_above_output()
+        g._game_updates.check.assert_not_called()
+        g._game_updates.install.assert_not_called()
+
+    def test_missing_installed_notes_uses_neutral_fallback(self):
+        g = game()
+        with patch.object(Path, "read_text", side_effect=OSError("missing local notes")):
+            g._draw_gameupd_screen()
+        values = [args[2] for args in self.texts()]
+        self.assertIn("INSTALLED RELEASE NOTES", values)
+        self.assertIn("Release notes are unavailable.", values)
+        self.assertFalse(any("PRIVATE PREVIEW" in value for value in values))
+        self.assertFalse(any("No release has been published" in value for value in values))
+        self.assert_above_output()
+
+    def test_long_source_name_still_fits_existing_header(self):
+        g = game()
+        self.verified_source(g, "KiloGramowy/" + "a" * 100)
+        g._draw_gameupd_screen()
+        self.assert_above_output()
+        source = next(args[2] for args in self.texts() if args[2].startswith("Source: "))
+        self.assertTrue(source.endswith("..."))
+
+    def test_o_requires_verified_source_and_only_requests_check(self):
+        g = game()
+        g._start_game_update()
+        self.press(g, PX.KEY_O)
+        self.assertFalse(g._gameupd_source_opening)
+        self.assertTrue(g._game_update_checking)
+        self.assertEqual(len(RecordedThread.started), 1)
+        self.assertEqual(RecordedThread.started[0].target.__name__, "_check_game_update")
+        g._game_updates.prepare.assert_not_called()
+        g._game_updates.install.assert_not_called()
+        self.assertIn("Checking the source", g._gameupd_log[-1])
+
+    def test_o_hands_verified_renamed_url_to_worker_without_installing(self):
+        g = game()
+        self.verified_source(g, "KiloGramowy/WatchDogsGo")
+        g._start_game_update()
+        self.press(g, PX.KEY_O)
+        self.assertTrue(g._gameupd_source_opening)
+        self.assertEqual(len(RecordedThread.started), 1)
+        thread = RecordedThread.started[0]
+        self.assertEqual(thread.target.__name__, "_gameupd_open_source_worker")
+        self.assertEqual(thread.args, ("https://github.com/KiloGramowy/WatchDogsGo",))
+        self.press(g, PX.KEY_O)
+        self.assertEqual(len(RecordedThread.started), 1)
+        g._game_updates.check.assert_not_called()
+        g._game_updates.prepare.assert_not_called()
+        g._game_updates.install.assert_not_called()
+
+    def test_browser_worker_uses_normal_desktop_without_shell(self):
+        g = game()
+        self.verified_source(g)
+        url = "https://github.com/KiloGramowy/WatchDogsGo-1"
+        with patch.dict(os.environ, {"DISPLAY": ":0"}, clear=True), \
+                patch.object(os, "geteuid", return_value=1000, create=True), \
+                patch("subprocess.run", return_value=SimpleNamespace(returncode=0)) as run:
+            g._gameupd_open_source_worker(url)
+        self.assertEqual(run.call_args.args[0], ["xdg-open", url])
+        self.assertEqual(run.call_args.kwargs["timeout"], 15)
+        self.assertFalse(run.call_args.kwargs.get("shell", False))
+        g._poll_game_update_events()
+        self.assertFalse(g._gameupd_source_opening)
+        self.assertIn("GitHub opened", g._gameupd_log[-1])
+        g._game_updates.install.assert_not_called()
+
+    def test_browser_worker_drops_root_to_desktop_user(self):
+        g = game()
+        self.verified_source(g)
+        owner = SimpleNamespace(pw_uid=1000, pw_name="x", pw_dir="/home/x")
+        pwd = SimpleNamespace(getpwnam=Mock(return_value=owner), getpwuid=Mock(return_value=owner))
+        with patch.dict(os.environ, {"DISPLAY": ":0", "SUDO_USER": "x"}, clear=True), \
+                patch.dict(sys.modules, {"pwd": pwd}), \
+                patch.object(os, "geteuid", return_value=0, create=True), \
+                patch("subprocess.run", return_value=SimpleNamespace(returncode=0)) as run:
+            g._gameupd_open_source_worker("https://github.com/KiloGramowy/WatchDogsGo-1")
+        command = run.call_args.args[0]
+        self.assertEqual(command[:7], ["sudo", "-n", "-H", "-u", "x", "--", "env"])
+        self.assertIn("XDG_RUNTIME_DIR=/run/user/1000", command)
+        self.assertIn("DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/1000/bus", command)
+        self.assertIn("XAUTHORITY=" + str(Path(owner.pw_dir) / ".Xauthority"), command)
+        self.assertEqual(command[-2:], ["xdg-open", "https://github.com/KiloGramowy/WatchDogsGo-1"])
+        self.assertFalse(run.call_args.kwargs.get("shell", False))
+
+    def test_browser_worker_rejects_unverified_or_malformed_source(self):
+        for url in ("https://example.invalid/collect", "https://github.com/KiloGramowy/WatchDogsGo-1?token=x"):
+            with self.subTest(url=url):
+                g = game()
+                self.verified_source(g)
+                g._game_updates.source_info.return_value["url"] = url
+                with patch("subprocess.run") as run:
+                    g._gameupd_open_source_worker(url)
+                run.assert_not_called()
+                g._poll_game_update_events()
+                self.assertIn("Check the source again", g._gameupd_log[-1])
+                g._game_updates.install.assert_not_called()
+
+    def test_browser_error_stays_generic_and_does_not_change_update_state(self):
+        g = game()
+        self.verified_source(g)
+        self.available(g)
+        with patch.dict(os.environ, {"DISPLAY": ":0"}, clear=True), \
+                patch.object(os, "geteuid", return_value=1000, create=True), \
+                patch("subprocess.run", side_effect=OSError("private diagnostics must stay hidden")):
+            g._gameupd_open_source_worker("https://github.com/KiloGramowy/WatchDogsGo-1")
+        g._poll_game_update_events()
+        self.assertTrue(g._game_update_available)
+        self.assertNotIn("private diagnostics", g._gameupd_log[-1])
+        self.assertIn("not confirmed", g._gameupd_log[-1])
+
+    def test_headless_browser_is_not_launched(self):
+        g = game()
+        self.verified_source(g)
+        with patch.dict(os.environ, {}, clear=True), patch("subprocess.run") as run:
+            g._gameupd_open_source_worker("https://github.com/KiloGramowy/WatchDogsGo-1")
+        run.assert_not_called()
+        g._poll_game_update_events()
+        self.assertIn("No desktop browser session", g._gameupd_log[-1])
+
+    def test_browser_worker_refuses_to_start_a_root_browser(self):
+        g = game()
+        self.verified_source(g)
+        pwd = SimpleNamespace(getpwnam=Mock(), getpwuid=Mock())
+        with patch.dict(os.environ, {"DISPLAY": ":0", "SUDO_USER": "root"}, clear=True), \
+                patch.dict(sys.modules, {"pwd": pwd}), \
+                patch.object(os, "geteuid", return_value=0, create=True), \
+                patch.object(Path, "stat", return_value=SimpleNamespace(st_uid=0)), \
+                patch("subprocess.run") as run:
+            g._gameupd_open_source_worker("https://github.com/KiloGramowy/WatchDogsGo-1")
+        run.assert_not_called()
+        pwd.getpwuid.assert_not_called()
+        g._poll_game_update_events()
+        self.assertIn("desktop user is required", g._gameupd_log[-1])
+
+    def test_same_release_notice_key_survives_repository_rename(self):
+        g = game()
+        self.available(g)
+        g._maybe_show_game_update_notice()
+        self.assertIsNotNone(g._game_update_notice)
+        g._game_update_notice = None
+        item = release()
+        item.repository = "KiloGramowy/WatchDogsGo"
+        self.available(g, item)
+        g._maybe_show_game_update_notice()
+        self.assertIsNone(g._game_update_notice)
+        self.assertEqual(g._game_updates.acknowledge.call_count, 1)
 
     def test_boot_keeps_locosp_and_adds_modified_credit_below(self):
         g = game()

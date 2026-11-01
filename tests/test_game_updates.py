@@ -6,6 +6,7 @@ Every installed file, player fixture and notification preference is temporary.
 from dataclasses import replace
 import hashlib
 import importlib
+import io
 import json
 import os
 from pathlib import Path
@@ -13,7 +14,8 @@ import shutil
 import subprocess
 import tempfile
 import unittest
-from unittest.mock import patch
+from unittest.mock import Mock, patch
+import urllib.error
 
 from watchdogs import game_updates as updates
 
@@ -117,8 +119,16 @@ class GameUpdateTests(unittest.TestCase):
         for name, data in self.player_files.items():
             write(self.root, name, data)
         self.calls = []
+        self.source_name = updates.REPOSITORY
+        self.source_id = updates.REPOSITORY_ID
+        self.owner_id = updates.OWNER_ID
+        self.owner_login = updates.OWNER
         self.fail_fetch = False
-        self.manager = updates.GameUpdates(root=self.root, home=self.home, git=self.transport)
+        self.manager = updates.GameUpdates(root=self.root, home=self.home, git=self.transport, metadata=self.source_metadata)
+
+    def source_metadata(self):
+        return dict(id=self.source_id, full_name=self.source_name,
+                    owner=dict(id=self.owner_id, login=self.owner_login))
 
     def transport(self, root, *args, timeout=30):
         self.calls.append(tuple(args))
@@ -126,7 +136,7 @@ class GameUpdateTests(unittest.TestCase):
         if args[0] == "fetch":
             if self.fail_fetch:
                 return subprocess.CompletedProcess(args, 128, "", "PRIVATE_TOKEN_SECRET failed")
-            expected = f"https://github.com/{updates.REPOSITORY}.git"
+            expected = f"https://github.com/{self.source_name}.git"
             self.assertIn(expected, args)
             args[args.index(expected)] = str(self.remote)
         return subprocess.run(["git", "-c", "core.autocrlf=false", "-C", str(root), *args],
@@ -171,6 +181,100 @@ class GameUpdateTests(unittest.TestCase):
         self.assertIsNone(result.release)
         self.assertFalse(self.manager.state_path.exists())
 
+    def test_source_display_is_cached_and_rename_fetches_the_same_repository_id(self):
+        with patch.object(self.manager, "_metadata", wraps=self.source_metadata) as metadata:
+            self.assertFalse(self.manager.source_info()["verified"])
+            self.assertEqual(self.manager.source_info()["repository_id"], updates.REPOSITORY_ID)
+            metadata.assert_not_called()
+            self.publish(schema=2, repository_id=updates.REPOSITORY_ID)
+            first = self.release()
+            self.manager.acknowledge(first)
+            original_key = self.manager.notice_key(first)
+            self.source_name = updates.OWNER + "/WatchDogsGo"
+            self.publish(schema=2, repository_id=updates.REPOSITORY_ID, repository=self.source_name)
+            renamed = self.release()
+            source = self.manager.source_info()
+            self.assertTrue(source["verified"])
+            self.assertEqual(source["url"], "https://github.com/" + self.source_name)
+            self.assertEqual(source["repository_id"], updates.REPOSITORY_ID)
+            self.assertEqual(self.manager.notice_key(renamed), original_key)
+            self.assertFalse(self.manager.notice_pending(renamed))
+            self.assertIn("https://github.com/" + self.source_name + ".git",
+                          [part for call in self.calls for part in call])
+
+    def test_rename_keeps_original_feed_alias_and_old_notification_history(self):
+        release = self.release()
+        legacy_key = f"{updates.REPOSITORY}:{release.channel}:{release.release_id}"
+        write(self.home, self.manager.state_path.name, json.dumps(dict(schema=1, seen=[legacy_key])))
+        self.source_name = updates.OWNER + "/WatchDogsGo"
+        # The baseline feed was prepared before the review suffix was removed.
+        self.publish(schema=2, repository_id=updates.REPOSITORY_ID)
+        renamed = self.release()
+        self.assertEqual(renamed.repository, updates.REPOSITORY)
+        self.assertFalse(self.manager.notice_pending(renamed))
+        plan = self.manager.prepare(renamed)
+        receipt = self.manager.install(plan, quiescent=True)
+        manifest = json.loads((self.root / updates.MANIFEST_PATH).read_text())
+        self.assertEqual(manifest["source_repository"], self.source_name)
+        self.assertEqual(manifest["source_repository_id"], updates.REPOSITORY_ID)
+        self.manager.rollback(receipt, quiescent=True)
+        self.assert_player_kept()
+
+    def test_foreign_repository_identity_owner_and_unsafe_canonical_names_fail_closed(self):
+        for changes in (dict(source_id=updates.REPOSITORY_ID + 1),
+                        dict(owner_id=updates.OWNER_ID + 1),
+                        dict(owner_login="OtherOwner"),
+                        dict(source_name="OtherOwner/WatchDogsGo"),
+                        dict(source_name=updates.OWNER + "/../outside"),
+                        dict(source_name=updates.OWNER + "/WatchDogsGo.git?token=private")):
+            with self.subTest(changes=changes):
+                original = {name: getattr(self, name) for name in changes}
+                for name, value in changes.items():
+                    setattr(self, name, value)
+                self.calls.clear()
+                result = self.manager.check()
+                self.assertEqual(result.status, "error")
+                self.assertFalse(self.manager.source_info()["verified"])
+                self.assertFalse(any(call[0] == "fetch" for call in self.calls))
+                for name, value in original.items():
+                    setattr(self, name, value)
+
+    def test_schema_two_feed_requires_pinned_id_and_a_verified_repository_name(self):
+        for changes in (dict(schema=2),
+                        dict(schema=2, repository_id=updates.REPOSITORY_ID + 1),
+                        dict(schema=2, repository_id=str(updates.REPOSITORY_ID)),
+                        dict(schema=2, repository_id=updates.REPOSITORY_ID,
+                             repository=updates.OWNER + "/DifferentRepository")):
+            with self.subTest(changes=changes):
+                self.publish(**changes)
+                self.assertEqual(self.manager.check().status, "error")
+
+    def test_feed_only_descendant_with_identical_runtime_is_current(self):
+        # A fresh clone has the feed commit after the source commit in the feed.
+        source = git(self.remote, "rev-parse", "HEAD").stdout.decode().strip()
+        self.publish(schema=2, repository_id=updates.REPOSITORY_ID, source_commit=source)
+        advertised = git(self.remote, "rev-parse", "HEAD").stdout.decode().strip()
+        git(self.root, "fetch", str(self.remote), updates.BRANCH)
+        git(self.root, "checkout", "--detach", "--force", advertised)
+        (self.root / updates.MANIFEST_PATH).unlink()
+        result = self.manager.check()
+        self.assertEqual(result.status, "current", result.message)
+        self.assertEqual(result.installed_version, "0.9.17")
+
+    def test_same_version_descendant_with_different_runtime_is_not_called_current(self):
+        release = self.release()
+        write(self.remote, "watchdogs/app.py", "UNREVIEWED = True\n")
+        git(self.remote, "add", "watchdogs/app.py")
+        git(self.remote, "commit", "-qm", "Unadvertised runtime change")
+        git(self.root, "fetch", str(self.remote), updates.BRANCH)
+        newer = git(self.remote, "rev-parse", "HEAD").stdout.decode().strip()
+        git(self.root, "checkout", "--detach", "--force", newer)
+        (self.root / updates.MANIFEST_PATH).unlink()
+        result = self.manager.check()
+        self.assertEqual(result.status, "error")
+        self.assertIn("unapproved game changes", result.message)
+        self.assert_player_kept()
+
     def test_network_failure_does_not_use_stale_ref_or_erase_notification_history(self):
         release = self.release()
         self.manager.acknowledge(release)
@@ -211,7 +315,7 @@ class GameUpdateTests(unittest.TestCase):
         release = self.release()
         self.manager.acknowledge(release)
         self.manager.acknowledge(release)
-        restarted = updates.GameUpdates(self.root, self.home, git=self.transport)
+        restarted = updates.GameUpdates(self.root, self.home, git=self.transport, metadata=self.source_metadata)
         self.assertFalse(restarted.notice_pending(release))
         self.assertFalse(restarted.notice_pending(replace(release, notes="Edited release notes")))
         self.assertTrue(restarted.notice_pending(replace(release, release_id="v0.9.18")))
@@ -274,6 +378,30 @@ class GameUpdateTests(unittest.TestCase):
         self.assertEqual(config.read_text(), "USER_DEFAULT = 42\n")
         self.assert_player_kept()
 
+    def test_installed_release_notes_are_updated_without_other_docs_or_player_data(self):
+        notes = "WatchDogsGo 0.9.17\nApproved installed release notes.\n"
+        write(self.remote, "docs/UPDATE_PREVIEW.txt", notes)
+        write(self.remote, "docs/README.md", "Unrelated upstream documentation.\n")
+        git(self.remote, "add", "docs")
+        git(self.remote, "commit", "-qm", "Approved offline release notes")
+        target = git(self.remote, "rev-parse", "HEAD").stdout.decode().strip()
+        self.publish(source_commit=target)
+        local_doc = "Locally maintained documentation.\n"
+        write(self.root, "docs/README.md", local_doc)
+        plan = self.manager.prepare(self.release())
+        self.assertIn("docs/UPDATE_PREVIEW.txt", plan.changed_files)
+        self.assertNotIn("docs/README.md", plan.changed_files)
+        receipt = self.manager.install(plan, quiescent=True)
+        self.assertEqual((self.root / "docs/UPDATE_PREVIEW.txt").read_text(), notes)
+        self.assertEqual((self.root / "docs/README.md").read_text(), local_doc)
+        self.assert_player_kept()
+        progress = b'{"xp":1500,"level":6}'
+        write(self.root, "loot/player.json", progress)
+        self.manager.rollback(receipt.backup_dir, quiescent=True)
+        self.assertFalse((self.root / "docs/UPDATE_PREVIEW.txt").exists())
+        self.assertEqual((self.root / "docs/README.md").read_text(), local_doc)
+        self.assertEqual((self.root / "loot/player.json").read_bytes(), progress)
+
     def test_local_edits_to_changed_code_block_entire_update(self):
         write(self.root, "watchdogs/app.py", "MY_LOCAL_CHANGE = True\n")
         before = snapshot(self.root)
@@ -306,6 +434,7 @@ class GameUpdateTests(unittest.TestCase):
                 updates._runtime(name)
         self.assertFalse(updates._runtime(".gitignore"))
         self.assertFalse(updates._runtime("docs/media/demo.mp4"))
+        self.assertFalse(updates._runtime("docs/UPDATE_PREVIEW.md"))
         self.assertFalse(updates._runtime("plugins/.wardrive_state.json"))
         self.assertFalse(updates._runtime("loot/player.py"))
 
@@ -480,7 +609,7 @@ class GameUpdateTests(unittest.TestCase):
         receipt = self._power_loss()
         other = self.directory_path / "another-checkout"
         other.mkdir()
-        manager = updates.GameUpdates(root=other, home=self.home, git=self.transport)
+        manager = updates.GameUpdates(root=other, home=self.home, git=self.transport, metadata=self.source_metadata)
         entry = importlib.import_module("watchdogs.__main__")
         before = snapshot(self.root)
         # Even a broken helper in the other checkout is never loaded here.
@@ -527,6 +656,63 @@ class GameUpdateTests(unittest.TestCase):
             self.assertEqual(os.getxattr(app, "user.wdg-update-test"), b"keep")
             self.manager.rollback(receipt, quiescent=True)
             self.assertEqual(os.getxattr(app, "user.wdg-update-test"), b"keep")
+
+
+class GitHubSourceMetadataTests(unittest.TestCase):
+    """Public and authenticated-private source lookup, with no HTTP or gh I/O."""
+    def setUp(self):
+        directory = tempfile.TemporaryDirectory()
+        self.addCleanup(directory.cleanup)
+        self.folder = Path(directory.name)
+        self.manager = updates.GameUpdates(root=self.folder, home=self.folder)
+        self.value = dict(id=updates.REPOSITORY_ID, full_name=updates.OWNER + "/WatchDogsGo",
+                          owner=dict(id=updates.OWNER_ID, login=updates.OWNER))
+
+    def test_public_lookup_needs_no_github_cli_or_authentication(self):
+        with patch.object(updates.urllib.request, "urlopen",
+                          return_value=io.BytesIO(json.dumps(self.value).encode())) as request, \
+                patch.object(updates.shutil, "which", return_value=None), \
+                patch.object(updates.subprocess, "run") as command:
+            self.assertEqual(self.manager._resolve_source(), self.value["full_name"])
+        outgoing = request.call_args.args[0]
+        self.assertEqual(outgoing.full_url,
+                         f"https://api.github.com/repositories/{updates.REPOSITORY_ID}")
+        self.assertIsNone(outgoing.get_header("Authorization"))
+        command.assert_not_called()
+        self.assertTrue(self.manager.source_info()["verified"])
+
+    def test_private_lookup_uses_existing_cli_login_without_exposing_credentials(self):
+        denied = urllib.error.HTTPError("https://api.github.com", 404, "private", None, None)
+        result = subprocess.CompletedProcess([], 0, json.dumps(self.value), "")
+        with patch.object(updates.urllib.request, "urlopen", side_effect=denied), \
+                patch.object(updates.shutil, "which", return_value="/usr/bin/gh"), \
+                patch.object(updates.subprocess, "run", return_value=result) as command:
+            self.assertEqual(self.manager._resolve_source(), self.value["full_name"])
+        args = command.call_args.args[0]
+        self.assertEqual(args[-3:], ["gh", "api", f"repositories/{updates.REPOSITORY_ID}"])
+        self.assertNotIn("--hostname", args)
+        self.assertTrue(self.manager.source_info()["verified"])
+
+    def test_failed_private_lookup_has_only_a_safe_error_and_no_verified_url(self):
+        result = subprocess.CompletedProcess([], 1, "", "PRIVATE_TOKEN_SECRET authentication failure")
+        with patch.object(updates.urllib.request, "urlopen", side_effect=OSError("offline")), \
+                patch.object(updates.shutil, "which", return_value="/usr/bin/gh"), \
+                patch.object(updates.subprocess, "run", return_value=result), \
+                self.assertRaises(updates.UpdateError) as failure:
+            self.manager._resolve_source()
+        self.assertNotIn("PRIVATE_TOKEN", str(failure.exception))
+        self.assertFalse(self.manager.source_info()["verified"])
+
+    def test_oversized_metadata_and_foreign_repo_id_are_rejected(self):
+        with patch.object(updates.urllib.request, "urlopen",
+                          return_value=io.BytesIO(b" " * (updates.MAX_FEED_BYTES + 1))), \
+                self.assertRaises(updates.UpdateError):
+            self.manager._resolve_source()
+        self.value["id"] += 1
+        self.manager._metadata = lambda: self.value
+        with self.assertRaises(updates.UpdateError):
+            self.manager._resolve_source()
+        self.assertFalse(self.manager.source_info()["verified"])
 
 
 if __name__ == "__main__":

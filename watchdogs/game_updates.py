@@ -1,8 +1,8 @@
 """Release checks and code-only updates for this fork.
 
-A commit on the development branch is not an advertised release. The owner
-publishes ``updates/stable.json`` only when a build is approved. There is no
-such feed in the private UI preview. Git is used as an authenticated transport;
+A commit alone is not an advertised release. The owner identifies approved
+code in ``updates/stable.json``. GitHub's immutable repository ID keeps the
+same source after a rename or visibility change. Git supplies transport;
 the installed checkout's legacy origin/HEAD are never an update destination.
 
 Preparing an update only writes a private staging directory. Installing needs
@@ -26,11 +26,16 @@ import tarfile
 import tempfile
 import threading
 from typing import Optional
+import urllib.error
+import urllib.request
 
 
-# One explicit destination, independent of the installed checkout's old origin.
-# Change these together only when an approved public fork is actually created.
+# The immutable GitHub identity stays valid when the review suffix is removed.
+# The name is a bootstrap label, not authority to fetch another repository.
 REPOSITORY = "KiloGramowy/WatchDogsGo-1"
+REPOSITORY_ID = 1441947361
+OWNER = "KiloGramowy"
+OWNER_ID = 315514197
 BRANCH = "main"
 CHANNEL = "stable"
 FEED_PATH = "updates/stable.json"
@@ -43,9 +48,11 @@ MAX_FILES = 2048
 _COMMIT = re.compile(r"[0-9a-f]{40}\Z")
 _VERSION = re.compile(r"[0-9]+(?:\.[0-9]+){1,3}\Z")
 _ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,95}\Z")
+_REPOSITORY_NAME = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,99}/[A-Za-z0-9][A-Za-z0-9._-]{0,99}\Z")
 _ROOT_FILES = frozenset(("meshtastic_rx_probe.py", "requirements.txt", "run.sh",
                          "setup.sh", "watchdogs-launcher", "watchdogs.desktop",
-                         "LICENSE", "THIRD_PARTY_NOTICES.md", "CHANGELOG.md"))
+                         "LICENSE", "THIRD_PARTY_NOTICES.md", "CHANGELOG.md",
+                         "docs/UPDATE_PREVIEW.txt"))
 _ASSET_EXTENSIONS = frozenset((".png", ".wav", ".mp3", ".bdf", ".svg"))
 
 
@@ -62,10 +69,12 @@ class Release:
     source_commit: str
     title: str
     notes: str
+    repository_id: int = 0
 
     @property
     def identity(self):
-        return f"{self.repository}:{self.channel}:{self.release_id}"
+        repository = f"github:{self.repository_id}" if self.repository_id else self.repository
+        return f"{repository}:{self.channel}:{self.release_id}"
 
 
 @dataclass(frozen=True)
@@ -200,14 +209,80 @@ def _numeric(version):
 
 
 class GameUpdates:
-    def __init__(self, root=None, home=None, git=None):
+    def __init__(self, root=None, home=None, git=None, metadata=None):
         self.root = Path(root or Path(__file__).resolve().parent.parent).resolve()
         self.home = Path(home) if home is not None else _home()
         self.state_path = self.home / ".watchdogs_game_updates.json"
         self.staging_root = self.home / ".watchdogs_update_staging"
         self.backup_root = self.home / ".watchdogs_update_backups"
         self._git = git
+        self._metadata = metadata
+        self._source = dict(repository_id=REPOSITORY_ID, repository=REPOSITORY,
+                            url=f"https://github.com/{REPOSITORY}", verified=False)
         self._thread_lock = threading.Lock()
+
+    def source_info(self):
+        """Return a cached display snapshot; drawing never starts network I/O."""
+        return dict(self._source)
+
+    def notice_key(self, release):
+        return self._release(asdict(release)).identity
+
+    def _github_metadata(self):
+        """Read the pinned repository by ID, with owner credentials if private.
+
+        Public installations use plain HTTPS and do not require gh or a token.
+        The private preview can use the checkout owner's existing gh login;
+        authentication material is never placed in a request URL or game log.
+        """
+        request = urllib.request.Request(
+            f"https://api.github.com/repositories/{REPOSITORY_ID}",
+            headers={"Accept": "application/vnd.github+json", "User-Agent": "WatchDogsGo-Updater"})
+        try:
+            with urllib.request.urlopen(request, timeout=12) as response:
+                data = response.read(MAX_FEED_BYTES + 1)
+            if len(data) > MAX_FEED_BYTES:
+                raise UpdateError("The update source metadata is too large.")
+            return json.loads(data.decode("utf-8"))
+        except (urllib.error.URLError, OSError, ValueError, UnicodeError):
+            pass
+        if not shutil.which("gh"):
+            raise UpdateError("Cannot verify the update source. Check network and GitHub access.")
+        command = ["gh", "api", f"repositories/{REPOSITORY_ID}"]
+        if hasattr(os, "geteuid") and os.geteuid() == 0 and self.root.stat().st_uid != 0:
+            import pwd
+            owner = pwd.getpwuid(self.root.stat().st_uid).pw_name
+            command = ["sudo", "-n", "-H", "-u", owner] + command
+        result = subprocess.run(command, capture_output=True, text=True, timeout=20,
+                                encoding="utf-8", errors="strict")
+        if result.returncode or len(result.stdout.encode("utf-8")) > MAX_FEED_BYTES:
+            raise UpdateError("Cannot verify the update source. Check network and GitHub access.")
+        try:
+            return json.loads(result.stdout)
+        except (ValueError, UnicodeError):
+            raise UpdateError("The update source metadata is invalid.") from None
+
+    def _resolve_source(self):
+        # A failed fresh identity check must not leave an unverified link active.
+        self._source = dict(self._source, verified=False)
+        value = self._metadata() if self._metadata is not None else self._github_metadata()
+        try:
+            if not isinstance(value, dict):
+                raise ValueError
+            owner = value.get("owner")
+            name = value.get("full_name")
+            if (type(value.get("id")) is not int or value["id"] != REPOSITORY_ID or
+                    not isinstance(owner, dict) or type(owner.get("id")) is not int or
+                    owner["id"] != OWNER_ID or not isinstance(owner.get("login"), str) or
+                    owner["login"].casefold() != OWNER.casefold() or
+                    not isinstance(name, str) or not _REPOSITORY_NAME.fullmatch(name) or
+                    name.partition("/")[0].casefold() != OWNER.casefold()):
+                raise ValueError
+        except (ValueError, TypeError):
+            raise UpdateError("The update source identity does not match this fork.") from None
+        self._source = dict(repository_id=REPOSITORY_ID, repository=name,
+                            url=f"https://github.com/{name}", verified=True)
+        return name
 
     def _run(self, *args, timeout=30):
         if self._git is not None:
@@ -234,10 +309,11 @@ class GameUpdates:
     def _fetch(self):
         if not (self.root / ".git").exists():
             raise UpdateError("This installation has no Git metadata; a manual update is required.")
+        repository = self._resolve_source()
         # Do not read/fetch `origin`: deployed installations retain LOCOSP's
         # original origin and an old HEAD beneath the reviewed source overlay.
         self._required("fetch", "--quiet", "--no-tags", "--no-write-fetch-head",
-                       f"https://github.com/{REPOSITORY}.git",
+                       f"https://github.com/{repository}.git",
                        f"+refs/heads/{BRANCH}:{FETCH_REF}", timeout=60)
         commit = self._required("rev-parse", "--verify", FETCH_REF + "^{commit}", timeout=10).strip()
         if not _COMMIT.fullmatch(commit):
@@ -290,12 +366,21 @@ class GameUpdates:
     @staticmethod
     def _release(value):
         try:
-            if not isinstance(value, dict) or set(value) - {"schema", "repository", "channel",
+            if not isinstance(value, dict) or set(value) - {"schema", "repository", "repository_id", "channel",
                     "release_id", "version", "source_commit", "title", "notes"}:
                 raise ValueError
-            if value.get("schema", 1) != 1:
+            schema = value.get("schema", 1)
+            if type(schema) is not int or schema not in (1, 2):
                 raise ValueError
-            if value.get("repository") != REPOSITORY or value.get("channel") != CHANNEL:
+            repository = value.get("repository")
+            repository_id = value.get("repository_id", 0)
+            if (not isinstance(repository, str) or not _REPOSITORY_NAME.fullmatch(repository) or
+                    repository.partition("/")[0].casefold() != OWNER.casefold() or
+                    type(repository_id) is not int or
+                    repository_id not in (0, REPOSITORY_ID) or
+                    (schema == 2 and repository_id != REPOSITORY_ID) or
+                    (repository_id == 0 and repository != REPOSITORY) or
+                    value.get("channel") != CHANNEL):
                 raise ValueError
             if not _ID.fullmatch(value.get("release_id", "")):
                 raise ValueError
@@ -310,7 +395,8 @@ class GameUpdates:
             if (not isinstance(notes, str) or not notes.strip() or len(notes.encode("utf-8")) > 65536 or
                     any((ord(c) < 32 and c not in "\n\t") or ord(c) == 127 for c in notes)):
                 raise ValueError
-            return Release(**{key: value[key] for key in Release.__dataclass_fields__})
+            return Release(**{key: value[key] for key in Release.__dataclass_fields__
+                              if key != "repository_id"}, repository_id=REPOSITORY_ID)
         except (ValueError, TypeError, UnicodeError):
             raise UpdateError("The published update manifest is invalid.") from None
 
@@ -322,6 +408,8 @@ class GameUpdates:
 
     def _validate_release(self, release, fetched_commit):
         release = self._release(asdict(release))
+        if release.repository not in {REPOSITORY, self._source["repository"]}:
+            raise UpdateError("The release does not belong to the verified update source.")
         installed = self.installed_commit()
         version = self.installed_version()
         if not self._ancestor(release.source_commit, fetched_commit):
@@ -330,6 +418,15 @@ class GameUpdates:
             if release.version != version:
                 raise UpdateError("The release version does not match the installed source.")
             return False
+        if (_numeric(release.version) == _numeric(version) and
+                self._ancestor(release.source_commit, installed)):
+            # A release feed is committed after the code it identifies. A fresh
+            # clone can therefore have a newer documentation/feed-only HEAD.
+            # Accept that baseline only when the complete runtime Git trees
+            # match; never silently label an unrelated or modified build current.
+            if self._tree(release.source_commit) == self._tree(installed):
+                return False
+            raise UpdateError("This installation has unapproved game changes after the release.")
         if not self._ancestor(installed, release.source_commit):
             raise UpdateError("This update would replace a newer or unrelated installation.")
         if _numeric(release.version) <= _numeric(version):
@@ -378,7 +475,10 @@ class GameUpdates:
 
     def notice_pending(self, release):
         release = self._release(asdict(release))
-        return release.identity not in self._seen()["seen"]
+        seen = self._seen()["seen"]
+        legacy = {f"{repository}:{release.channel}:{release.release_id}"
+                  for repository in (REPOSITORY, release.repository, self._source["repository"])}
+        return release.identity not in seen and not legacy.intersection(seen)
 
     def acknowledge(self, release):
         """Persist immediately before showing the modal (not at fetch time).
@@ -718,7 +818,8 @@ class GameUpdates:
                 else:
                     new_manifest["files"][name] = {"sha256": change["after"]["sha256"]}
             new_manifest.update(source_commit=plan.release.source_commit, branch=BRANCH,
-                                source_repository=REPOSITORY, version=plan.release.version,
+                                source_repository=self._source["repository"], source_repository_id=REPOSITORY_ID,
+                                version=plan.release.version,
                                 game_update_release=plan.release.release_id)
             manifest_bytes = _encoded(new_manifest)
             journal["manifest_after"] = _digest(manifest_bytes)

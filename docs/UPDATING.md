@@ -7,41 +7,43 @@ The updater lives in **SYSTEM → Update Game**. Its menu row retains the origin
 - Each launch checks for an approved release in the background.
 - A new release shows one notice on the main game screen, after other dialogs close.
 - **Enter / Y — OK** opens its full notes. **N / Esc — No** dismisses the notice. Neither installs code.
-- The notice is remembered per repository, release channel and stable release ID across restarts. Editing notes or pushing a development commit does not create a new notice.
+- The notice is remembered per immutable repository ID, release channel and stable release ID across restarts. Editing notes, renaming the repository or pushing a development commit does not create a new notice.
 - **Update Game** stays white while a confirmed update is available, including after dismissal.
 - In the update window, use **Up / Down**, **Page Up / Page Down**, **Home / End** to read all notes, **R** to check again and **Esc** to return.
 - When an approved update is available, **Enter** prepares it. A separate **Y / N** confirmation is required before applying it.
 
 Failed or offline checks are explicit. They are never presented as evidence that the installed game is current. Scanning and reception continue while a player reads notes; installation stops the game's operations and saves final records before replacing files.
 
-## Private preview
+## Prepared stable release
 
-This branch is still private. There is **no active `updates/stable.json` release feed** in this preview, so no real update is advertised or applied merely by launching the game. `docs/UPDATE_PREVIEW.txt` supplies clearly labelled local preview text. Notification and installation scenarios are tested with isolated software fixtures, separately from the physical screen check.
+The prepared release is **0.9.17**. The review repository remains private and keeps its `-1` suffix until a separate publication instruction. Its approved `updates/stable.json` feed identifies the release's code; committing that feed does not change repository visibility or create a GitHub Release.
 
-The preview does not bump the version, publish a release, change repository visibility, create AUTO approvals, or qualify RF reception or chat delivery.
+The code commit comes first. A second, feed-only commit records that first commit as `source_commit`. A fresh clone can therefore have a newer feed/documentation HEAD while running the same approved version. The updater reports it as current only when the approved commit and installed commit have identical runtime Git entries. In-game offline notes, including `docs/UPDATE_PREVIEW.txt`, are part of that runtime set. Unadvertised code changes cannot use this exception.
+
+Release metadata uses schema 2 and includes the immutable repository ID, repository name, channel, stable release ID, numeric version, full source commit, title and full notes. Ordinary development commits do not advertise an update. Future upgrades require a newer approved numeric version and a feed pointing to that release's code.
 
 ## Release source
 
 The approved source is explicitly configured in `watchdogs/game_updates.py`; it does not follow an arbitrary installation origin:
 
-| Build | Repository checked | Branch | Channel |
-| --- | --- | --- | --- |
-| Development source and the existing deployed preview | `KiloGramowy/esp32-watch-dogs` | `codex/wdg-go-wars-release` | `stable` |
-| Clean private review snapshot | `KiloGramowy/WatchDogsGo-1` | `main` | `stable` |
+| Build | Repository ID | Repository name | Branch | Channel |
+| --- | --- | --- | --- | --- |
+| Private development | `1437688988` | `KiloGramowy/esp32-watch-dogs` | `codex/wdg-go-wars-release` | `stable` |
+| Clean review and future public release | `1441947361` | `KiloGramowy/WatchDogsGo-1`, then `KiloGramowy/WatchDogsGo` | `main` | `stable` |
 
-The clean snapshot changes only the updater's repository/branch binding when exporting the current integrated code. This prevents a legacy installation's upstream remote from redirecting KG updates to another project. Publishing or renaming later requires deliberately updating the source binding and instructions; no uncreated public destination is assumed here. Neither private build has an active release feed in this review.
+The updater resolves `https://api.github.com/repositories/1441947361` for the release build, checks the pinned repository and owner IDs, then fetches the verified canonical name. Removing `-1` keeps the same repository ID, history, release source and notification identity. It does not require another code change. Reusing the old repository name must be avoided because it breaks GitHub's rename redirects; see [GitHub's rename documentation](https://docs.github.com/en/repositories/creating-and-managing-repositories/renaming-a-repository).
 
-Git supplies authenticated transport for the private fork using the checkout owner's existing credentials. The game never asks for, records or ships a GitHub token. An installation without access reports a failed check. Its legacy Git HEAD is not substituted for the deployed source manifest.
+Public installations use ordinary HTTPS and do not require `gh` or a token. While the source is private, the owner's existing GitHub authentication can provide access, including when the game runs with sudo. Authentication material is never placed in request URLs, source files or game output. Without access, the check reports an error.
 
-Only an explicitly approved feed advertises a release. Its stable identity and pinned source commit distinguish a release from ordinary branch commits. Release metadata includes repository, channel, release ID, numeric version, source commit, title and full notes. Before the first release, use the validator and isolated update tests; do not publish the preview notes as a real update.
+The current uConsole's source is determined by its deployed updater constants, deployment manifest and file hashes. Its legacy Git HEAD does not describe every deployed overlay. It may remain bound to the private development repository until a separately verified migration; changing the review repository's name or visibility does not switch that installation to another repository ID. The private deployment report records the actual source used on the device.
 
-## Moving the preview to a public fork
+## Publication and existing installations
 
-The preferred formal public fork would use LOCOSP's public ancestry, without importing private development history. Such a clean snapshot is not a descendant of the development preview's deployed source commit. The updater deliberately rejects unrelated histories; changing the repository address alone does not migrate that installation. Renaming the same review repository keeps its history, but still changes its approved repository identity and source binding.
+The selected publication route uses the **same clean review repository**: rename `WatchDogsGo-1` to `WatchDogsGo`, then change its visibility to public after the owner's explicit instruction. It is a substantial code fork with LOCOSP attribution and the original license retained; GitHub stores this clean repository as a standalone repository, rather than a formal fork in the private upstream's fork network. The private development repository and its branches stay private. See [Release preparation](RELEASE_PREPARATION.md) for the read-only preflight and guarded activation commands.
 
-For an existing preview installation, use a controlled, one-time code deployment: back up current files and the deployment manifest, verify the installed source against the approved public snapshot, then record the verified public source commit. Preserve current player data, settings, identities, keys, contacts and pending logs throughout. Do not clear progress, disable the ancestry check or copy private history into the public fork to make the check pass.
+No rename or visibility change is performed by an update check, game launch or ordinary push. Anonymous access to source, images, the native movie and the update feed can only be confirmed after the privacy change. The prepared publication helper runs those checks automatically after activation and reports a failure explicitly; an authenticated private preview is not proof of public access.
 
-The final public repository address, removal of the review name's `-1` suffix, and first approved version/feed are later publication steps. This review does not perform them. Future releases on the same approved ancestry and source binding can use the regular in-game update flow.
+An existing development installation has different Git ancestry from the clean release snapshot. The updater deliberately rejects unrelated histories. Moving that installation to the release repository requires a controlled, one-time code deployment: back up current changed files and the deployment manifest, verify installed file hashes against the approved source, then record that verified source commit and repository ID. Preserve current player data, settings, identities, keys, contacts, pairing and pending logs. Do not disable the ancestry check or import private commits to bypass it. Future releases on the same approved release ancestry can use the normal in-game update flow.
 
 ## Preservation and recovery
 
@@ -49,4 +51,4 @@ Preparation verifies the pinned source, permitted runtime paths and current file
 
 Installation requires stopped game-owned workers and saved player state. It keeps a verified code-only backup and recovery receipt; settings, loot, XP, achievements, RF/channel preferences, keys, contacts and pending logs are not restored from an older player snapshot during rollback. Relaunch the game after installation.
 
-Keep deployment backup paths and recovery receipts private. The separate exact-file deployment used for this preview also has its own code-only rollback, recorded in the private deployment report.
+Keep deployment backup paths and recovery receipts private. A separate exact-file deployment also has its own code-only rollback, recorded in the private deployment report. These update checks do not establish new RF reception, approved AUTO behavior or chat delivery.

@@ -1,13 +1,13 @@
 # 🔐 Private release preparation
 
-This is the consolidated private review branch. Its updater preview has separately been tested and deployed on the owner's uConsole; see [Validation](VALIDATION.md). Preparing or changing this branch does **not** publish the repository or authorize a public release.
+This is the consolidated private review repository. The integrated game and updater have separate software and device validation records; see [Validation](VALIDATION.md). Preparing this candidate does **not** publish the repository. It keeps the `-1` suffix and private visibility until an explicit publication instruction.
 
 ## Separate private development and review repositories
 
 | Repository | Purpose | Branch policy |
 | --- | --- | --- |
-| Private development repository, `KiloGramowy/esp32-watch-dogs` | Preserve the integrated source, development history and recovery references | Keep all existing development branches; use `codex/wdg-go-wars-release` as the consolidated source |
-| Private review target, `KiloGramowy/WatchDogsGo-1` | Review a clean snapshot of the current source, documentation and media before publication | One branch, `main`; do not import the private development history |
+| Private development repository, `KiloGramowy/esp32-watch-dogs` (ID `1437688988`) | Preserve the integrated source, development history and recovery references | Keep the five existing development branches; use `codex/wdg-go-wars-release` as the consolidated source |
+| Private review target, `KiloGramowy/WatchDogsGo-1` (ID `1441947361`) | Review a clean snapshot of the current source, documentation and media before publication | One branch, `main`; do not import the private development history |
 
 The current README, feature guides, reviewed media and integrated source belong together. Users should not assemble the candidate by merging prototype or development branches. The `-1` suffix marks the private review target; removing it and any public publication remain later, explicitly authorized steps.
 
@@ -35,7 +35,7 @@ Keep those backups private and verify them. Git ignore rules do not create a bac
 2. Exclude runtime loot, secrets, upload state, keys, packet captures, private screenshots/videos, backup archives and local tool output.
 3. Replace device-specific operational reports with generic documentation. Keep their private originals outside the publication package.
 4. Preserve protocol constants and explicitly synthetic tests. Do not blanket-redact public channel defaults or geographic datasets as if they were personal credentials or user GPS.
-5. Review screenshots and video pixels for identities, coordinates, message bodies, contact lists, private channels/keys and authentication requests. Commit only the reviewed publication derivatives.
+5. Review screenshots and video pixels for private coordinates, keys, authentication requests and other confidential material. The approved media policy retains public conversations and public nodes while masking GPS and keys. Keep only the reviewed publication derivatives.
 6. Check relative links, source attribution and [third-party notices](../THIRD_PARTY_NOTICES.md). A soundtrack does not inherit the software's MIT license.
 7. Make install/update instructions select this fork and the reviewed branch. Upstream curl installers do not install the fork's extra work. While the fork is private, use an authenticated checkout workflow rather than advertising a nonexistent public installer.
 
@@ -45,13 +45,37 @@ Do not embed an API token in an installer URL, source file or screenshot. Verify
 
 Removing private material from the newest tree does not remove it from older commits. A clean release artifact is not proof that making the entire existing fork public would reveal no prior operational data.
 
-The development repository is a **private GitHub fork of a private upstream repository**. GitHub does not allow changing a fork's visibility independently. The separate private review repository is a clean snapshot, not a claim that GitHub has already created a formal public fork. The preferred public route remains a formal fork of [LOCOSP/WatchDogsGo](https://github.com/LOCOSP/WatchDogsGo) containing the approved current files, with original authorship and license retained. The private development history stays private. See [GitHub's fork visibility rules](https://docs.github.com/en/pull-requests/reference/forks).
+The development repository is a **private GitHub fork of a private upstream repository**. GitHub does not allow changing a fork's visibility independently; see [GitHub's fork visibility rules](https://docs.github.com/en/pull-requests/reference/forks). Its private history and branches remain in that repository.
 
-The current instruction is **review and preparation only, without publication**. Create or update only the private review target. Keep the prior private development branches and commits unchanged. Do not merge, mirror-push or otherwise copy their history into the clean candidate or future public fork merely to preserve Git ancestry.
+The selected route uses the existing clean review repository, not another newly created repository. It is a substantial code fork of [LOCOSP/WatchDogsGo](https://github.com/LOCOSP/WatchDogsGo) with original authorship and license retained. GitHub's metadata identifies the clean repository as standalone, rather than a formal fork in the private upstream's network. This distinction does not change its code attribution.
 
-At publication, set the actual public repository/branch in the updater and installation instructions, attach the film in the public context, and verify links while signed out. The first approved numeric version and its release feed must describe that verified public snapshot. A private attachment URL or authenticated preview is not proof of anonymous access.
+Only after the owner's explicit publication instruction, rename `KiloGramowy/WatchDogsGo-1` to `KiloGramowy/WatchDogsGo` and change the **same repository** to public. Its immutable ID remains `1441947361`, its owner ID remains `315514197`, and the branch remains `main`. The updater already resolves that identity, so publication needs no new code or source-binding edit. Do not merge or mirror-push the private development history into it.
 
-An existing private preview has different Git ancestry from a clean public snapshot. Its one-time source migration needs verified files and a controlled code deployment, preserving player data; see [Updating](UPDATING.md). Do not disable the ancestry guard or disclose private commits to bypass it.
+## Prepared release and publication checks
+
+The first approved numeric release is **0.9.17**. Commit its reviewed code first, then commit the schema-2 `updates/stable.json` feed pointing `source_commit` to that exact code commit. The feed also pins repository ID `1441947361`, channel `stable`, release ID, version, title and full notes. A feed-only descendant with identical runtime Git entries is treated as the same installed release. In-game offline notes are runtime content; changing them requires an updated approved code source. This workflow does not require publishing GitHub tags, a GitHub Release or a release asset.
+
+While the repository is private, clone using the authenticated URL shown by its **Code** button. The final installation URL is `https://github.com/KiloGramowy/WatchDogsGo.git` after the rename. Do not put GitHub tokens or API secrets in either URL or the repository.
+
+In a clean checkout of the reviewed `main`, replace `FULL_APPROVED_MAIN_SHA` below with the full 40-character commit at the tip of the prepared branch:
+
+```sh
+python -B tools/public_release.py --check --expected-head FULL_APPROVED_MAIN_SHA
+```
+
+The default invocation and `--dry-run` are also read-only. Preflight checks the fixed repository and owner IDs, administration access, target-name availability, local/remote commit equality, the approved clean history, exactly one `main` branch, absence of unreviewed tags or private Actions history, source/media consistency, updater binding and baseline feed. It does not rename, publish or upload anything.
+
+The following command is reserved for the later, explicit publication instruction:
+
+```sh
+python -B tools/public_release.py --activate --confirm-public --expected-head FULL_APPROVED_MAIN_SHA
+```
+
+Activation repeats preflight, renames the same repository, changes its visibility and verifies the resulting state. It then checks anonymous repository identity, approved README, update feed, linked images, native movie and old-name redirect. If only renaming succeeds, the repository remains private and the failure is reported. If visibility becomes public but anonymous verification fails, the helper reports that public state explicitly and does not silently claim success or roll visibility back.
+
+GitHub documents redirects for repository web/Git URLs and warns that reusing the old name breaks them: [Renaming a repository](https://docs.github.com/en/repositories/creating-and-managing-repositories/renaming-a-repository). The reviewed native movie is attached to the same repository context. Its access follows repository permissions: [Attaching files](https://docs.github.com/en/get-started/writing-on-github/working-with-advanced-formatting/attaching-files). Actual anonymous playback and public link access remain pending until the visibility change; private authenticated access cannot prove them in advance. The activation helper performs those checks after the switch.
+
+An existing private development installation has different ancestry and a different source ID from this clean snapshot. Its one-time migration needs verified files and a controlled code deployment preserving player data, contacts, keys, settings, pairing and pending logs; see [Updating](UPDATING.md). The actual deployed manifest and file hashes determine its current source. Do not disable the ancestry guard or disclose private commits to bypass it.
 
 ## A useful handoff record
 

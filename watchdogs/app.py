@@ -8964,6 +8964,7 @@ class WatchDogsGame:
         self._gameupd_open_frame = -1
         self._gameupd_install_frame = -1
         self._gameupd_closed_for_install = False
+        self._gameupd_source_opening = False
         self._gameupd_avatar = None
         try:
             from . import __version__
@@ -9014,6 +9015,12 @@ class WatchDogsGame:
             elif event == "prepare_error":
                 self._gameupd_running = False
                 self._gameupd_log_add("[UPD] " + value)
+            elif event == "source_opened":
+                self._gameupd_source_opening = False
+                self._gameupd_log_add("[UPD] GitHub opened in your browser.")
+            elif event == "source_open_error":
+                self._gameupd_source_opening = False
+                self._gameupd_log_add("[UPD] " + value)
 
     def _game_update_notice_allowed(self):
         flags = ("_boot_phase", "menu_open", "input_mode", "confirm_quit", "loot_screen",
@@ -9035,7 +9042,7 @@ class WatchDogsGame:
         release = self._game_update_notice_queued
         if release is None or self._game_update_notice is not None or not self._game_update_notice_allowed():
             return
-        identity = (release.repository, release.channel, release.release_id)
+        identity = self._game_updates.notice_key(release)
         if identity in self._game_update_seen_in_session:
             self._game_update_notice_queued = None
             return
@@ -9106,12 +9113,89 @@ class WatchDogsGame:
             try:
                 content = (Path(__file__).resolve().parent.parent / "docs" / "UPDATE_PREVIEW.txt").read_text(encoding="utf-8")
             except OSError:
-                content = "PRIVATE PREVIEW\nNo release has been published yet."
+                content = "Release notes are unavailable."
         lines = []
         for paragraph in content.splitlines():
             lines.extend(textwrap.wrap(paragraph.expandtabs(4), width=83,
                          break_long_words=True, break_on_hyphens=False) or [""])
         return lines or ["No release notes provided."]
+
+    def _gameupd_source_info(self):
+        """Read cached, verified source metadata without starting network I/O."""
+        fallback = dict(repository="--", url="", verified=False)
+        try:
+            info = self._game_updates.source_info()
+            repository = info.get("repository", "")
+            if (not isinstance(repository, str) or
+                    re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9-]{0,38}/[A-Za-z0-9_.-]{1,100}", repository) is None or
+                    repository.rsplit("/", 1)[-1] in (".", "..")):
+                return fallback
+            url = "https://github.com/" + repository
+            if info.get("url") != url:
+                return fallback
+            return dict(repository=repository, url=url,
+                        verified=info.get("verified") is True)
+        except Exception:
+            return fallback
+
+    def _gameupd_open_source(self):
+        """The optional O shortcut never prepares or installs an update."""
+        if self._gameupd_source_opening or getattr(self, "_shutting_down", False):
+            return
+        info = self._gameupd_source_info()
+        if self._game_update_checking or not info["verified"]:
+            self._request_game_update_check()
+            self._gameupd_log_add("[UPD] Checking the source; press O again when ready.")
+            return
+        self._gameupd_source_opening = True
+        threading.Thread(target=self._gameupd_open_source_worker,
+                         args=(info["url"],), daemon=True).start()
+
+    def _gameupd_open_source_worker(self, url):
+        """Hand the own-source URL to the desktop user's browser, not root's."""
+        import os
+        import subprocess
+        try:
+            info = self._gameupd_source_info()
+            if not info["verified"] or info["url"] != url:
+                raise RuntimeError("Check the source again before opening GitHub.")
+            environment = dict(os.environ)
+            if not environment.get("DISPLAY") and not environment.get("WAYLAND_DISPLAY"):
+                raise RuntimeError("No desktop browser session is available.")
+            command = ["xdg-open", url]
+            if getattr(os, "geteuid", lambda: 1)() == 0:
+                import pwd
+                username = os.environ.get("SUDO_USER", "")
+                if username and username != "root":
+                    owner = pwd.getpwnam(username)
+                else:
+                    uid = Path(__file__).resolve().parent.parent.stat().st_uid
+                    if uid == 0:
+                        raise RuntimeError("A desktop user is required to open GitHub.")
+                    owner = pwd.getpwuid(uid)
+                if owner.pw_uid == 0:
+                    raise RuntimeError("A desktop user is required to open GitHub.")
+                user_environment = dict(DISPLAY=environment.get("DISPLAY", ""),
+                    XAUTHORITY=environment.get("XAUTHORITY") or str(Path(owner.pw_dir) / ".Xauthority"),
+                    XDG_RUNTIME_DIR=f"/run/user/{owner.pw_uid}",
+                    DBUS_SESSION_BUS_ADDRESS=f"unix:path=/run/user/{owner.pw_uid}/bus")
+                if environment.get("WAYLAND_DISPLAY"):
+                    user_environment["WAYLAND_DISPLAY"] = environment["WAYLAND_DISPLAY"]
+                command = ["sudo", "-n", "-H", "-u", owner.pw_name, "--", "env"]
+                command += [key + "=" + value for key, value in user_environment.items()]
+                command += ["xdg-open", url]
+            result = subprocess.run(command, stdin=subprocess.DEVNULL,
+                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                timeout=15, env=environment, check=False)
+            if result.returncode:
+                raise RuntimeError("Could not open the desktop browser. See the source above.")
+            self._game_update_events.put(("source_opened", None))
+        except RuntimeError as exc:
+            self._game_update_events.put(("source_open_error", str(exc)))
+        except Exception:
+            # Do not expose command lines, environment or browser diagnostics.
+            self._game_update_events.put(("source_open_error",
+                "Browser launch was not confirmed. See the source above."))
 
     def _update_gameupd_screen(self):
         if pyxel.frame_count == self._gameupd_open_frame:
@@ -9156,6 +9240,9 @@ class WatchDogsGame:
             return
         if pyxel.btnp(pyxel.KEY_R):
             self._request_game_update_check()
+        if pyxel.btnp(pyxel.KEY_O):
+            self._gameupd_open_source()
+            return
         lines = self._gameupd_note_lines()
         maximum = max(0, len(lines) - 9)
         if pyxel.btnp(pyxel.KEY_UP, 15, 3):
@@ -9228,6 +9315,14 @@ class WatchDogsGame:
             pyxel.blt(dx + 10, dy + 6, self._gameupd_avatar, 0, 0, 32, 32)
         pyxel.text(dx + 52, dy + 8, "UPDATE GAME", C_WARNING)
         pyxel.text(dx + 52, dy + 22, "Modified by KiloGramowy", C_DIM)
+        source = self._gameupd_source_info()
+        source_label = "Source: " + source["repository"]
+        if not source["verified"]:
+            source_label += " (check required)"
+        if len(source_label) > 75:
+            source_label = source_label[:72] + "..."
+        pyxel.text(dx + 52, dy + 34, source_label,
+                   C_HACK_CYAN if source["verified"] else C_DIM)
         version = "Current: v" + self._game_installed_version
         if self._game_update_release is not None:
             version += "   Latest: v" + self._game_update_release.version
@@ -9239,7 +9334,7 @@ class WatchDogsGame:
         for i, line in enumerate(status_lines):
             pyxel.text(dx + 10, dy + 56 + i * 9, line, C_WARNING if self._game_update_status == "error" else C_DIM)
         pyxel.line(dx + 6, dy + 76, dx + dw - 7, dy + 76, C_COAST)
-        title = self._game_update_release.title if self._game_update_release else "PRIVATE PREVIEW - what's new"
+        title = self._game_update_release.title if self._game_update_release else "INSTALLED RELEASE NOTES"
         pyxel.text(dx + 10, dy + 80, title[:83], C_TEXT)
         lines = self._gameupd_note_lines()
         maximum = max(0, len(lines) - 9)
@@ -9267,9 +9362,9 @@ class WatchDogsGame:
         elif self._gameupd_closed_for_install:
             hint = "ENTER/ESC close - relaunch the game"
         elif self._game_update_available:
-            hint = "UP/DOWN scroll  R check  ENTER update  ESC back"
+            hint = "UP/DOWN scroll  R check  O GitHub  ENTER update  ESC back"
         else:
-            hint = "UP/DOWN scroll  R check  ESC back"
+            hint = "UP/DOWN scroll  R check  O GitHub  ESC back"
         pyxel.text(dx + 10, dy + dh - 12, hint, C_DIM)
 
     def _draw_captured_data(self):

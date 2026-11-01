@@ -26,7 +26,7 @@
 | 🔧 **Startup and recovery fixes** | Better device selection, truthful errors, safe scan handover and GPS UART retry. |
 | 📤 **Upload fixes** | Persistent server receipts, meaningful pending counts and pruning of empty/invalid queue exports. |
 | 🔋 **Clean exit** | Stop WDG's operations, save the last records and switch off hardware acquired by the game — USB last. |
-| 🔔 **Quiet update notices** | Check this fork at startup; show one notice per approved release, with full notes in **SYSTEM → Update Game**. Private preview; no release published yet. |
+| 🔔 **Quiet update notices** | Check this fork at startup; show one notice per approved release, with full notes in **SYSTEM → Update Game**. |
 
 ## 🎬 Watch it on uConsole
 
@@ -209,7 +209,7 @@ The game checks this fork in the background at each launch. A published release 
 
 Opening the notes never installs an update. Installation needs a separate confirmation, stops game-owned operations, saves final data and creates a code backup. Local edits and dependency changes are checked before applying code; settings, keys, contacts, logs and player progress are preserved. A failed network check is shown as a failed check.
 
-**Private preview:** no release feed has been published yet. The screen includes clearly labelled preview notes so its layout can be reviewed without inventing a new version. See [Updating](docs/UPDATING.md) for the release and recovery contract.
+🔗 **Know your update source:** the window shows the verified repository; press **O** to open it on GitHub. The updater follows its permanent repository ID when the review suffix is removed. Installed release notes remain available offline. See [Updating](docs/UPDATING.md) for the release and recovery contract.
 
 ## 🎮 What is WatchDogsGo?
 
@@ -269,12 +269,12 @@ The initial documentation candidate preserved runtime `3481cf9`; this branch now
 
 ### 📥 Install a separate checkout
 
-🔐 **The repository remains private.** You need repository access and Git authentication. These commands select this fork; an upstream installer installs the original project instead.
+📥 These commands use the final release address. During private review, use the current clone URL from GitHub's **Code** button; repository access and Git authentication are required. These commands select this fork; an upstream installer installs the original project instead.
 
 ```bash
 mkdir -p ~/python
 git clone --branch main --single-branch \
-  https://github.com/KiloGramowy/WatchDogsGo-1.git \
+  https://github.com/KiloGramowy/WatchDogsGo.git \
   ~/python/WatchDogsGo-KiloGramowy
 cd ~/python/WatchDogsGo-KiloGramowy
 bash setup.sh
