@@ -32,9 +32,12 @@ def git(repo,*args):
 class FakeGitHub:
     def __init__(self,head):
         self.info=dict(id=publication.EXPECTED_REPOSITORY_ID,name=publication.REVIEW_NAME,
-            full_name=publication.OWNER+"/"+publication.REVIEW_NAME,private=True,
+            full_name=publication.OWNER+"/"+publication.REVIEW_NAME,private=False,
             owner=dict(id=publication.EXPECTED_OWNER_ID,login=publication.OWNER),
-            default_branch="main",archived=False,disabled=False,fork=False,permissions=dict(admin=True))
+            default_branch="main",archived=False,disabled=False,fork=True,permissions=dict(admin=True))
+        upstream=dict(id=publication.EXPECTED_UPSTREAM_ID,full_name=publication.UPSTREAM_REPOSITORY,
+            private=False,owner=dict(id=publication.EXPECTED_UPSTREAM_OWNER_ID,login=publication.UPSTREAM_OWNER))
+        self.info.update(parent=copy.deepcopy(upstream),source=copy.deepcopy(upstream))
         self.head=head
         self.patches=[]
         self.requests=[]
@@ -42,8 +45,7 @@ class FakeGitHub:
         self.extra_branch=False
         self.actions=0
         self.tags=[]
-        self.fail_visibility=False
-        self.visibility_response_lost=False
+        self.fail_rename=False
         self.rename_response_lost=False
 
     def get(self,endpoint,missing_ok=False):
@@ -65,13 +67,12 @@ class FakeGitHub:
     def patch(self,endpoint,data):
         self.requests.append(("PATCH",endpoint))
         self.patches.append(copy.deepcopy(data))
+        if "private" in data:
+            raise AssertionError("A public fork must never receive a visibility mutation")
         if "name" in data:
+            if self.fail_rename:raise publication.PublicationError("simulated rejected rename")
             self.info.update(name=data["name"],full_name=publication.OWNER+"/"+data["name"])
             if self.rename_response_lost:raise publication.PublicationError("simulated lost response")
-        if "private" in data:
-            if self.fail_visibility:raise publication.PublicationError("simulated rejected public visibility")
-            self.info["private"]=data["private"]
-            if self.visibility_response_lost:raise publication.PublicationError("simulated lost response")
         return copy.deepcopy(self.info)
 
 
@@ -197,9 +198,9 @@ class PublicationTests(unittest.TestCase):
         files={name:b"reviewed source\n" for name in package.REQUIRED_FILES}
         files[".gitignore"]=b"__pycache__/\n*.pyc\n"
         files["README.md"]=("# Approved game description\n\n![Current UI](docs/media/example.png)\n\n"+FILM+"\n").encode()
-        files["watchdogs/__init__.py"]=b'__version__ = "0.9.16"\n'
+        files["watchdogs/__init__.py"]=b'__version__ = "0.9.17"\n'
         files["watchdogs/game_updates.py"]=(f'REPOSITORY_ID = {publication.EXPECTED_REPOSITORY_ID}\n'
-            'REPOSITORY = "KiloGramowy/WatchDogsGo-1"\nBRANCH = "main"\nCHANNEL = "stable"\nFEED_PATH = "updates/stable.json"\n').encode()
+            'REPOSITORY = "KiloGramowy/WatchDogsGo"\nBRANCH = "main"\nCHANNEL = "stable"\nFEED_PATH = "updates/stable.json"\n').encode()
         image=b"\x89PNG\r\n\x1a\n"+b"\x00\x00\x00\rIHDR"+struct.pack(">II",32,24)
         files["docs/media/example.png"]=image
         files["docs/media/media-manifest.json"]=json.dumps(dict(files=[dict(path="example.png",
@@ -207,11 +208,22 @@ class PublicationTests(unittest.TestCase):
         for name,data in files.items():
             target=cls.seed/name;target.parent.mkdir(parents=True,exist_ok=True);target.write_bytes(data)
         git(cls.seed,"add",".");git(cls.seed,"commit","-qm","Approved clean root")
-        cls.root=git(cls.seed,"rev-parse","HEAD")
+        cls.snapshot=git(cls.seed,"rev-parse","HEAD")
+        # Keep a deliberately older public upstream that does not have this
+        # fork's package layout, then join it to the exact reviewed snapshot.
+        git(cls.seed,"checkout","--orphan","original-upstream")
+        git(cls.seed,"rm","-rf","--",".")
+        (cls.seed/"README.md").write_text("Original public upstream source.\n")
+        git(cls.seed,"add",".");git(cls.seed,"commit","-qm","Original public project")
+        cls.upstream=git(cls.seed,"rev-parse","HEAD")
+        tree=git(cls.seed,"rev-parse",cls.snapshot+"^{tree}")
+        cls.root=git(cls.seed,"commit-tree",tree,"-p",cls.upstream,"-p",cls.snapshot,
+                     "-m","Integrate exact reviewed snapshot with public upstream")
+        git(cls.seed,"checkout","main");git(cls.seed,"reset","--hard",cls.root)
         target=cls.seed/"updates/stable.json";target.parent.mkdir()
         target.write_text(json.dumps(dict(schema=2,repository_id=publication.EXPECTED_REPOSITORY_ID,
-            repository="KiloGramowy/WatchDogsGo-1",channel="stable",release_id="v0.9.16",
-            version="0.9.16",source_commit=cls.root,title="Approved baseline",notes="Full approved notes.")),encoding="utf-8")
+            repository="KiloGramowy/WatchDogsGo",channel="stable",release_id="v0.9.17",
+            version="0.9.17",source_commit=cls.root,title="Approved baseline",notes="Full approved notes.")),encoding="utf-8")
         git(cls.seed,"add",".");git(cls.seed,"commit","-qm","Approved baseline feed")
 
     def setUp(self):
@@ -222,8 +234,10 @@ class PublicationTests(unittest.TestCase):
         git(self.repo,"config","user.email","tests@example.invalid")
         self.head=git(self.repo,"rev-parse","HEAD")
         self.github=FakeGitHub(self.head)
-        self.root_patch=patch.object(publication,"CLEAN_ROOT",self.root)
-        self.root_patch.start();self.addCleanup(self.root_patch.stop)
+        for name,value in (("APPROVED_UPSTREAM_TIP",self.upstream),
+                           ("APPROVED_SNAPSHOT_TIP",self.snapshot),("INTEGRATION_BASE",self.root)):
+            guard=patch.object(publication,name,value)
+            guard.start();self.addCleanup(guard.stop)
         self.probed=[]
         self.operation=publication.Publication(self.repo,client=self.github,probe=self.probe,package=package)
 
@@ -241,13 +255,15 @@ class PublicationTests(unittest.TestCase):
         git(self.repo,"add",".");git(self.repo,"commit","-qm",message)
         self.head=git(self.repo,"rev-parse","HEAD");self.github.head=self.head
 
-    def test_default_check_is_read_only_and_leaves_anonymous_checks_pending(self):
+    def test_default_check_is_read_only_and_reports_the_formal_public_fork(self):
         result,_=self.operation.check()
         self.assertTrue(result["ok"])
-        self.assertTrue(result["private"])
+        self.assertFalse(result["private"])
+        self.assertTrue(result["formal_fork"])
+        self.assertEqual(result["upstream"],publication.UPSTREAM_REPOSITORY)
         self.assertFalse(result["remote_changes_made"])
-        self.assertEqual(len(result["planned_mutations"]),2)
-        self.assertEqual(result["anonymous_checks"],"pending visibility change")
+        self.assertEqual(len(result["planned_mutations"]),1)
+        self.assertEqual(result["anonymous_checks"],"available through --activate verification")
         self.assertEqual(self.github.patches,[])
         self.assertEqual(self.probed,[])
 
@@ -256,14 +272,15 @@ class PublicationTests(unittest.TestCase):
             with self.assertRaises(publication.PublicationError):self.operation.activate(head,confirmed=confirmed)
         self.assertEqual(self.github.patches,[])
 
-    def test_activation_only_renames_and_changes_visibility_then_checks_media(self):
+    def test_activation_only_renames_the_public_fork_then_checks_media(self):
         result=self.operation.activate(self.head,confirmed=True)
-        self.assertEqual(self.github.patches,[dict(name=publication.PUBLIC_NAME),dict(private=False)])
+        self.assertEqual(self.github.patches,[dict(name=publication.PUBLIC_NAME)])
         self.assertFalse(result["private"])
         self.assertEqual(result["anonymous_images_verified"],1)
         self.assertEqual(result["anonymous_native_videos_verified"],1)
         self.assertTrue(result["anonymous_readme_verified"])
         self.assertTrue(result["anonymous_repository_identity_verified"])
+        self.assertTrue(result["anonymous_formal_fork_verified"])
         self.assertTrue(result["anonymous_update_feed_verified"])
         self.assertTrue(any(video for _,video in self.probed))
 
@@ -276,7 +293,7 @@ class PublicationTests(unittest.TestCase):
         self.assertTrue(self.probed)
 
     def test_wrong_remote_identity_owner_or_admin_rights_blocks_writes(self):
-        for field,value in (("id",1),("fork",True),("default_branch","work"),
+        for field,value in (("id",1),("fork",False),("private",True),("default_branch","work"),
                             ("permissions",dict(admin=False)),("name",None),("owner",None)):
             before=copy.deepcopy(self.github.info)
             self.github.info[field]=value
@@ -284,6 +301,49 @@ class PublicationTests(unittest.TestCase):
             self.github.info=before
         self.github.info["owner"]["id"]=1
         with self.assertRaises(publication.PublicationError):self.operation.activate(self.head,confirmed=True)
+        self.assertEqual(self.github.patches,[])
+
+    def test_parent_and_source_must_both_be_the_exact_public_locosp_project(self):
+        approved=copy.deepcopy(self.github.info)
+        for relation in ("parent","source"):
+            for key,value in (("id",99),("full_name","LOCOSP/another-project"),("private",True),
+                              ("owner",dict(id=99,login="LOCOSP")),("owner",None)):
+                with self.subTest(relation=relation,key=key):
+                    self.github.info=copy.deepcopy(approved)
+                    self.github.info[relation][key]=value
+                    with self.assertRaisesRegex(publication.PublicationError,"LOCOSP"):
+                        self.operation.check()
+        self.github.info=approved
+        self.assertEqual(self.github.patches,[])
+
+    def test_pinned_upstream_history_can_predate_our_packaging_layout(self):
+        result,_=self.operation.check()
+        self.assertGreater(result["preexisting_upstream_commits"],0)
+        self.assertLess(result["reviewed_history_commits"],result["checked_history_commits"])
+        self.assertFalse(package.validate(package.snapshot(self.repo,self.upstream)[0])["ok"])
+
+    def test_unapproved_third_history_merge_is_refused(self):
+        other_tree=git(self.repo,"rev-parse",self.upstream+"^{tree}")
+        extra=git(self.repo,"commit-tree",other_tree,"-m","Unapproved additional root")
+        tree=git(self.repo,"rev-parse","HEAD^{tree}")
+        merged=git(self.repo,"commit-tree",tree,"-p",self.head,"-p",extra,"-m","Unapproved merge")
+        git(self.repo,"reset","--hard",merged)
+        self.head=merged;self.github.head=merged
+        with self.assertRaisesRegex(publication.PublicationError,"Unapproved merged or private history"):
+            self.operation.check()
+        self.assertEqual(self.github.patches,[])
+
+    def test_integration_base_requires_the_exact_two_parents_and_snapshot_tree(self):
+        with patch.object(publication,"INTEGRATION_BASE",self.head):
+            with self.assertRaisesRegex(publication.PublicationError,"two approved public parents"):
+                self.operation.check()
+        changed=git(self.repo,"commit-tree",git(self.repo,"rev-parse","HEAD^{tree}"),
+                    "-p",self.upstream,"-p",self.snapshot,"-m","Changed integration tree")
+        git(self.repo,"reset","--hard",changed)
+        self.head=changed;self.github.head=changed
+        with patch.object(publication,"INTEGRATION_BASE",changed):
+            with self.assertRaisesRegex(publication.PublicationError,"complete snapshot"):
+                self.operation.check()
         self.assertEqual(self.github.patches,[])
 
     def test_tags_cannot_expose_an_unreviewed_private_ancestor(self):
@@ -390,16 +450,17 @@ class PublicationTests(unittest.TestCase):
         self.commit("Host "+"192."+"168.1.133")
         with self.assertRaises(publication.PublicationError):self.operation.check()
 
-    def test_failed_visibility_leaves_renamed_repository_private(self):
-        self.github.fail_visibility=True
-        with self.assertRaisesRegex(publication.PublicationError,"remains private"):
+    def test_failed_rename_preserves_the_original_public_fork(self):
+        self.github.fail_rename=True
+        with self.assertRaisesRegex(publication.PublicationError,"rename request failed"):
             self.operation.activate(self.head,confirmed=True)
-        self.assertEqual(self.github.info["name"],publication.PUBLIC_NAME)
-        self.assertTrue(self.github.info["private"])
+        self.assertEqual(self.github.info["name"],publication.REVIEW_NAME)
+        self.assertFalse(self.github.info["private"])
+        self.assertTrue(self.github.info["fork"])
         self.assertEqual(self.probed,[])
 
     def test_lost_success_responses_are_resolved_by_stable_id_reads(self):
-        self.github.visibility_response_lost=self.github.rename_response_lost=True
+        self.github.rename_response_lost=True
         result=self.operation.activate(self.head,confirmed=True)
         self.assertTrue(result["ok"])
         self.assertFalse(self.github.info["private"])
@@ -427,7 +488,7 @@ class PublicationTests(unittest.TestCase):
                 result=self.operation.activate(self.head,confirmed=True)
                 self.assertTrue(result["ok"])
                 self.assertFalse(self.github.info["private"])
-                self.assertEqual(self.github.patches,[dict(name=publication.PUBLIC_NAME),dict(private=False)])
+                self.assertEqual(self.github.patches,[dict(name=publication.PUBLIC_NAME)])
                 for index,(method,_) in enumerate(self.github.requests):
                     if method=="PATCH":
                         self.assertEqual(self.github.requests[index+1],
@@ -438,7 +499,7 @@ class PublicationTests(unittest.TestCase):
         with self.assertRaisesRegex(publication.PublicationError,"is public, but"):
             self.operation.activate(self.head,confirmed=True)
         self.assertFalse(self.github.info["private"])
-        self.assertEqual(self.github.patches,[dict(name=publication.PUBLIC_NAME),dict(private=False)])
+        self.assertEqual(self.github.patches,[dict(name=publication.PUBLIC_NAME)])
 
     def test_native_attachment_must_return_video_not_an_html_login_page(self):
         original=self.operation.probe
@@ -461,7 +522,7 @@ class PublicationTests(unittest.TestCase):
         with self.assertRaisesRegex(publication.PublicationError,"is public, but"):
             self.operation.activate(self.head,confirmed=True)
         self.assertFalse(self.github.info["private"])
-        self.assertEqual(self.github.patches,[dict(name=publication.PUBLIC_NAME),dict(private=False)])
+        self.assertEqual(self.github.patches,[dict(name=publication.PUBLIC_NAME)])
 
 
 if __name__=="__main__":unittest.main()

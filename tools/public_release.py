@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
-"""Check a prepared release; publish only after a separate explicit instruction.
+"""Check a prepared formal fork; rename only after explicit instruction.
 
 Default / --check / --dry-run make no remote changes. Future activation needs
 --activate --confirm-public --expected-head FULL_SHA. It changes only the same
-repository's name and visibility, then verifies anonymous source/media access.
+public fork's name, then verifies its upstream and anonymous source/media access.
 
 GitHub's rename redirects cover web and Git operations; do not reuse the old
 name. Attachments follow repository access. Anonymous checks can only establish
@@ -26,13 +26,19 @@ from urllib.parse import quote, urlsplit
 from urllib.request import HTTPRedirectHandler, Request, build_opener
 
 
-EXPECTED_REPOSITORY_ID = 1441947361
+EXPECTED_REPOSITORY_ID = 1442123109
 EXPECTED_OWNER_ID = 315514197
 OWNER = "KiloGramowy"
-REVIEW_NAME = "WatchDogsGo-1"
+REVIEW_NAME = "WatchDogsGo-fork"
 PUBLIC_NAME = "WatchDogsGo"
 BRANCH = "main"
-CLEAN_ROOT = "76eb42882f983e920d50186365389f7a1a2833ca"
+EXPECTED_UPSTREAM_ID = 1208909098
+EXPECTED_UPSTREAM_OWNER_ID = 4149309
+UPSTREAM_OWNER = "LOCOSP"
+UPSTREAM_REPOSITORY = "LOCOSP/WatchDogsGo"
+APPROVED_UPSTREAM_TIP = "6412603d6fa7c8f2e6fe76873531d83c61adc63d"
+APPROVED_SNAPSHOT_TIP = "29412dccbfe9aff4c798252a7510d4b0314d7168"
+INTEGRATION_BASE = "be199c2ced736192399949bbf2b68098a4b5ae57"
 SHA = re.compile(r"[0-9a-f]{40}\Z")
 MAX_RESPONSE = 12 * 1024 * 1024
 
@@ -148,20 +154,33 @@ def anonymous_get(url, *, video=False):
     raise PublicationError("Public source or media is not yet available anonymously; verify the public state before announcing it.") from last
 
 
-def metadata(client):
-    value = client.get("repositories/" + str(EXPECTED_REPOSITORY_ID))
+def fork_identity(value, *, canonical=False):
+    """Require this exact public fork and both original upstream identities."""
     owner = value.get("owner", {}) if isinstance(value, dict) else {}
     if (not isinstance(value, dict) or not isinstance(owner, dict)
-            or type(value.get("private")) is not bool or value.get("id") != EXPECTED_REPOSITORY_ID
+            or value.get("private") is not False or value.get("id") != EXPECTED_REPOSITORY_ID
             or owner.get("id") != EXPECTED_OWNER_ID or owner.get("login") != OWNER
             or not isinstance(value.get("name"), str)
             or value.get("full_name") != OWNER + "/" + value.get("name", "")
             or value.get("name") not in (REVIEW_NAME, PUBLIC_NAME)
             or value.get("default_branch") != BRANCH or value.get("archived")
-            or value.get("disabled") or value.get("fork") is not False
-            or (not value["private"] and value["name"] != PUBLIC_NAME)):
-        raise PublicationError("Repository identity or publication state does not match the approved clean candidate.")
+            or value.get("disabled") or value.get("fork") is not True
+            or (canonical and value["name"] != PUBLIC_NAME)):
+        raise PublicationError("Repository identity does not match the approved public fork.")
+    for relation in ("parent", "source"):
+        upstream = value.get(relation)
+        upstream_owner = upstream.get("owner") if isinstance(upstream, dict) else None
+        if (not isinstance(upstream, dict) or upstream.get("id") != EXPECTED_UPSTREAM_ID
+                or upstream.get("full_name") != UPSTREAM_REPOSITORY
+                or upstream.get("private") is not False or not isinstance(upstream_owner, dict)
+                or upstream_owner.get("id") != EXPECTED_UPSTREAM_OWNER_ID
+                or upstream_owner.get("login") != UPSTREAM_OWNER):
+            raise PublicationError("The formal fork is not connected to the approved LOCOSP upstream.")
     return value
+
+
+def metadata(client):
+    return fork_identity(client.get("repositories/" + str(EXPECTED_REPOSITORY_ID)))
 
 
 def only_documentation_changes(names):
@@ -214,6 +233,33 @@ def public_video_source(source, film_id):
                          parsed.path) is not None)
 
 
+def reviewed_history(repo, commit):
+    """Accept two pinned public histories and one exact snapshot merge only.
+
+    Old upstream commits were already public and predate our source packaging.
+    Every snapshot/message from the reviewed release line and its descendants
+    remains subject to validation. No private branches or extra merges enter.
+    """
+    upstream = set(git(repo, "rev-list", APPROVED_UPSTREAM_TIP).splitlines())
+    snapshot = set(git(repo, "rev-list", APPROVED_SNAPSHOT_TIP).splitlines())
+    commits = git(repo, "rev-list", commit).splitlines()
+    reachable = set(commits)
+    if not (upstream | snapshot | {INTEGRATION_BASE}).issubset(reachable):
+        raise PublicationError("The formal fork is missing its approved public histories.")
+    parents = git(repo, "show", "-s", "--format=%P", INTEGRATION_BASE).split()
+    if len(parents) != 2 or set(parents) != {APPROVED_UPSTREAM_TIP, APPROVED_SNAPSHOT_TIP}:
+        raise PublicationError("The integration merge must have exactly its two approved public parents.")
+    if git(repo, "rev-parse", INTEGRATION_BASE + "^{tree}") != git(
+            repo, "rev-parse", APPROVED_SNAPSHOT_TIP + "^{tree}"):
+        raise PublicationError("The integration merge does not preserve the approved complete snapshot.")
+    introduced = reachable - upstream - snapshot
+    for item in introduced - {INTEGRATION_BASE}:
+        parents = git(repo, "show", "-s", "--format=%P", item).split()
+        if len(parents) != 1 or parents[0] not in introduced:
+            raise PublicationError("Unapproved merged or private history follows the integration snapshot.")
+    return commits, snapshot | introduced, upstream
+
+
 def source_checks(repo, package, expected_head=None):
     if git(repo, "status", "--porcelain"):
         raise PublicationError("The release checkout has uncommitted or untracked changes.")
@@ -222,8 +268,7 @@ def source_checks(repo, package, expected_head=None):
     files, modes, commit, tree = package.snapshot(repo, "HEAD")
     if expected_head is not None and (not SHA.fullmatch(expected_head) or commit != expected_head):
         raise PublicationError("The requested publication commit is not the checked checkout HEAD.")
-    if git(repo, "rev-list", "--max-parents=0", "HEAD").splitlines() != [CLEAN_ROOT] or git(repo, "rev-list", "--merges", "HEAD"):
-        raise PublicationError("The candidate must retain its single approved clean root and no merged private history.")
+    commits, reviewed, upstream = reviewed_history(repo, commit)
     validation = package.validate(files)
     if not validation["ok"]:
         raise PublicationError("The current source/media package has unresolved validation errors.")
@@ -231,12 +276,12 @@ def source_checks(repo, package, expected_head=None):
     if re.search(r"repository remains private|private preview|no release (?:feed.{0,50}published|published yet)",
                  readme_prose, re.IGNORECASE):
         raise PublicationError("The release README still contains obsolete private-preview/no-release claims.")
-    # Every reachable commit becomes public. Check past snapshots too, not only HEAD.
-    commits = git(repo, "rev-list", "HEAD").splitlines()
-    messages=git(repo,"log","--format=%B","HEAD")
+    # The pinned original upstream predates our package layout; audit the exact
+    # reviewed release history and all newly introduced snapshots/messages.
+    messages=git(repo,"log","--no-walk","--format=%B",*sorted(reviewed))
     if package.TOKEN_PATTERN.search(messages) or package.PRIVATE_PATH_PATTERN.search(messages):
         raise PublicationError("A reachable commit message contains material requiring private review.")
-    for prior in commits:
+    for prior in reviewed:
         if prior != commit and not package.validate(package.snapshot(repo, prior)[0])["ok"]:
             raise PublicationError("An earlier reachable candidate commit contains material that is not cleared by source validation.")
     settings = literal_assignments(files.get("watchdogs/game_updates.py", b""))
@@ -276,7 +321,8 @@ def source_checks(repo, package, expected_head=None):
     if runtime_entries(repo, source) != runtime_entries(repo, commit):
         raise PublicationError("The game runtime differs from the approved baseline source.")
     return dict(files=files, commit=commit, tree=tree, version=version, feed=feed,
-                validation=validation, checked_history_commits=len(commits))
+                validation=validation, checked_history_commits=len(commits),
+                reviewed_history_commits=len(reviewed), preexisting_upstream_commits=len(upstream))
 
 
 class Publication:
@@ -313,7 +359,7 @@ class Publication:
         if (not isinstance(branches, list) or len(branches) != 1
                 or not isinstance(branches[0], dict) or branches[0].get("name") != BRANCH
                 or not isinstance(branches[0].get("commit"), dict)):
-            raise PublicationError("The clean repository must have exactly one main branch.")
+            raise PublicationError("The release fork must have exactly one main branch.")
         return branches[0]["commit"].get("sha")
 
     def check(self, expected_head=None):
@@ -339,10 +385,11 @@ class Publication:
             branch=BRANCH, source_commit=checked["commit"], version=checked["version"],
             checked_history_commits=checked["checked_history_commits"],
             source_files=checked["validation"]["source_files"],
-            anonymous_checks="pending visibility change" if info["private"] else "available through --activate verification",
-            planned_mutations=[] if not info["private"] and info["name"]==PUBLIC_NAME else
-                (["rename same repository to "+PUBLIC_NAME] if info["name"]!=PUBLIC_NAME else [])+
-                (["change same repository visibility to public"] if info["private"] else []))
+            reviewed_history_commits=checked["reviewed_history_commits"],
+            preexisting_upstream_commits=checked["preexisting_upstream_commits"],
+            formal_fork=True, upstream=UPSTREAM_REPOSITORY, upstream_repository_id=EXPECTED_UPSTREAM_ID,
+            anonymous_checks="available through --activate verification",
+            planned_mutations=["rename same public fork to "+PUBLIC_NAME] if info["name"]!=PUBLIC_NAME else [])
         return result, checked
 
     def _public_checks(self, checked):
@@ -351,11 +398,7 @@ class Publication:
             public_info = json.loads(self.probe("https://api.github.com/repositories/" + str(EXPECTED_REPOSITORY_ID)))
         except (ValueError, TypeError):
             raise PublicationError("Anonymous repository metadata is unavailable.") from None
-        if (not isinstance(public_info, dict) or public_info.get("id") != EXPECTED_REPOSITORY_ID
-                or public_info.get("full_name") != canonical or public_info.get("private") is not False
-                or not isinstance(public_info.get("owner"), dict)
-                or public_info["owner"].get("id") != EXPECTED_OWNER_ID):
-            raise PublicationError("Anonymous repository identity does not match the approved public source.")
+        fork_identity(public_info, canonical=True)
         prefix = "https://raw.githubusercontent.com/" + canonical + "/" + checked["commit"] + "/"
         readme = self.probe(prefix+"README.md")
         if readme != checked["files"]["README.md"]:
@@ -383,13 +426,9 @@ class Publication:
             old_info = json.loads(self.probe("https://api.github.com/repos/" + OWNER + "/" + REVIEW_NAME))
         except (ValueError, TypeError):
             raise PublicationError("The old repository address does not resolve to verified public metadata.") from None
-        if (not isinstance(old_info, dict) or old_info.get("id") != EXPECTED_REPOSITORY_ID
-                or old_info.get("full_name") != canonical or old_info.get("private") is not False
-                or not isinstance(old_info.get("owner"), dict)
-                or old_info["owner"].get("id") != EXPECTED_OWNER_ID):
-            raise PublicationError("The old repository address resolves to a different repository.")
+        fork_identity(old_info, canonical=True)
         self.probe("https://github.com/"+OWNER+"/"+REVIEW_NAME)
-        return dict(anonymous_repository_identity_verified=True, anonymous_readme_verified=True,
+        return dict(anonymous_repository_identity_verified=True, anonymous_formal_fork_verified=True, anonymous_readme_verified=True,
                     anonymous_update_feed_verified=True, anonymous_images_verified=len(names),
                     anonymous_native_videos_verified=len(films), old_repository_web_redirect_checked=True)
 
@@ -406,25 +445,14 @@ class Publication:
                 self.client.patch("repos/"+info["full_name"], {"name": PUBLIC_NAME})
             except PublicationError:
                 observed=metadata(self.client)
-                if observed["name"] != PUBLIC_NAME or not observed["private"]:
+                if observed["name"] != PUBLIC_NAME:
                     raise PublicationError("The rename request failed. Inspect the repository name and visibility before retrying.") from None
             result["remote_changes_made"] = True
             info = metadata(self.client)
-            if info["name"] != PUBLIC_NAME or not info["private"]:
+            if info["name"] != PUBLIC_NAME:
                 raise PublicationError("Rename verification failed; inspect repository visibility before continuing.")
         if self._remote_head(info) != expected_head:
             raise PublicationError("Remote main changed after rename; repository remains in its current visibility.")
-        if info["private"]:
-            try:
-                self.client.patch("repos/"+info["full_name"], {"private": False})
-            except PublicationError:
-                try:
-                    observed=metadata(self.client)
-                except PublicationError:
-                    raise PublicationError("The visibility request may have completed, but its result cannot be verified. Inspect GitHub before retrying.") from None
-                if observed["private"]:
-                    raise PublicationError("The repository was renamed and remains private; the public visibility request failed.") from None
-            result["remote_changes_made"] = True
         info = metadata(self.client)
         if info["name"] != PUBLIC_NAME or info["private"] or self._remote_head(info) != expected_head:
             raise PublicationError("Public state verification failed; inspect GitHub before announcing the release.")

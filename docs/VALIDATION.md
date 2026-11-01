@@ -2,15 +2,33 @@
 
 This page separates recorded software checks from real hardware evidence. Preparing documentation or a release branch does not itself repeat any radio, GPS, chat-delivery or server test.
 
-## 0.9.17 release readiness
+## Formal public fork source transition
 
-Approved runtime source: `aef9e2ef9792249049fba2d30e7d105d64073e61`. The private stable feed identifies that code; later feed/media/documentation commits preserve the same runtime. The review repository remains private with its `-1` suffix.
+The formal release fork is repository ID `1442123109`, prepared as `KiloGramowy/WatchDogsGo-fork` and renamed to `KiloGramowy/WatchDogsGo` at verified cutover. Its public parent and source are `LOCOSP/WatchDogsGo`, ID `1208909098`. The private development repository and its five branches remain separate.
+
+Preparation merge `be199c2ced736192399949bbf2b68098a4b5ae57` joins public LOCOSP commit `6412603d6fa7c8f2e6fe76873531d83c61adc63d` with the reviewed published snapshot `29412dccbfe9aff4c798252a7510d4b0314d7168`. That merge retains the reviewed snapshot while establishing public ancestry; it does not import the private development branches. Subsequent source-binding and feed changes require their own recorded verification.
+
+The game version remains **0.9.17**. Existing standalone builds pin the former repository ID `1441947361`, so the maintained uConsole requires a controlled code-only 0.9.17 → 0.9.17 migration with a full verified source manifest. Reusing the final repository name does not retarget those installations. The old standalone is removed after the authorized checks; no legacy update or handoff service is retained.
+
+| Final verification area | Required record |
+| --- | --- |
+| GitHub fork relationship | Verify ID `1442123109`, `fork: true`, public LOCOSP parent/source ID `1208909098`, one `main` branch and the final canonical name. |
+| Source and feed | Record the approved formal-fork code commit, schema-2 feed, version 0.9.17 and matching repository ID. |
+| Software checks | Record fresh commands, totals and any skips for the final candidate; the earlier standalone totals below are not new results for this source transition. |
+| Maintained uConsole | Verify the code-only migration, complete runtime manifest, current player/configuration fingerprint, Proximity pairing and code-only rollback. |
+| Public access after cutover | Recheck anonymous source, feed, images and native film after removal of the old standalone, without relying on the removed ID or prior attachment permissions. |
+
+These are verification requirements, not additional passing test totals. No new RF, approved AUTO, chat-delivery or server-credit result is established by changing repository ancestry or update identity.
+
+## Earlier standalone 0.9.17 validation
+
+The following records concern the earlier standalone publication, repository ID `1441947361`, and runtime source `aef9e2ef9792249049fba2d30e7d105d64073e61`. Its preparation began as a private review with a `-1` suffix. These results remain evidence for that source and do not replace final checks of the formal fork's new identity, feed or deployment.
 
 | Check | Result |
 | --- | --- |
 | uConsole full software suite as root | **566/566 PASS, no skips**, with LoRaRF 1.4.0 and the private recorded-frame fixture supplied outside Git. |
 | Windows full software suite | 566 cases; OK with 14 reported platform/private-fixture skips, no failures/errors. |
-| Update UI and publication guards | 35 UI cases and 27 publication-helper cases are included in the full suite. Rename, identity, network failure and lost-response cases use isolated fixtures; no real publication was executed. |
+| Update UI and publication guards | 35 UI cases and 27 publication-helper cases are included in that full suite. Rename, identity, network failure and lost-response cases use isolated fixtures; those cases did not perform a real publication. |
 | Real private update transport | Numeric-ID lookup and authenticated fetch passed. A fresh clone reports 0.9.17 current; an isolated 0.9.16 checkout prepares and installs it, then reports current. All 87 runtime files match the approved code, including executable bits and offline notes. |
 | Code-only rollback | The isolated installation returns to 0.9.16 and its earlier notes while preserving newer synthetic progress, settings, pairing and pending logs. Eight additional private migration regressions cover interruption, write failure and refusal of edited source/data. |
 | Installed uConsole | Controlled code-only deployment, full 87-file source manifest, native Update Game display and full game startup passed. The check reports current from the clean review repository; ESP32 serial opened and cleanup completed without errors. |
@@ -18,11 +36,11 @@ Approved runtime source: `aef9e2ef9792249049fba2d30e7d105d64073e61`. The private
 
 The new Update Game capture shows the deployed 0.9.17 drawing code with isolated player state. Its source line and O shortcut fit inside the existing window above OUTPUT. The accepted feature descriptions and other unchanged-interface captures are retained. No local AUTO approvals were created, no radio was started and no test chat messages were sent in these checks.
 
-The private authenticated source and film preview are available. Anonymous source, feed, images, video and redirect checks remain pending until an explicitly authorized visibility change; the publication helper performs them after that switch. These checks do not repeat or extend the recorded RF, AUTO, chat-delivery or WDGWars evidence below.
+Those standalone checks initially used private authenticated source and film previews. Its later public source, feed, images, rendered native video and redirects were checked anonymously. A direct attachment-route 404 was a false failure criterion: the public README supplied a working signed media URL. None of those earlier results proves attachment access after deletion of the old repository or updates through the new fork ID. They do not extend the recorded RF, AUTO, chat-delivery or WDGWars evidence below.
 
-## Private updater preview — 2026-11-01
+## Earlier private updater preview — 2026-11-01
 
-The preview retains numeric version **0.9.16** and the original SYSTEM menu row. Its startup adds **Modified by KiloGramowy** under LOCOSP; a 32 px avatar appears only inside Update Game. No approved release feed, new version or public repository has been published.
+The earlier preview retained numeric version **0.9.16** and the original SYSTEM menu row. Its startup added **Modified by KiloGramowy** under LOCOSP; a 32 px avatar appeared only inside Update Game. At that preview stage, no approved release feed, new version or public repository had been published.
 
 | Check | Result |
 | --- | --- |

@@ -52,6 +52,6 @@ The main README keeps the approved WDG SYSTEM/LoRa hero and feature descriptions
 
 The GitHub-native player uses a smaller H.264/AAC copy of the complete reviewed film. The original full-quality `demo.mp4` remains available in this folder. The attachment inherits the same GPS masks, public-chat/node visibility choice and soundtrack terms.
 
-[Open the native GitHub video player](https://github.com/user-attachments/assets/047f3c2f-ffb4-4a24-8871-52a9a8577e9c). The attachment was uploaded in this private repository context. It is the same full 100-second edit, encoded as a 9,190,468-byte H.264/AAC copy for GitHub. The README player uses this permanent attachment address, not an expiring signed media URL.
+[Open the native GitHub video player](https://github.com/user-attachments/assets/498dfb34-79a6-4067-8d6a-e5e206c29b02). The attachment was uploaded in this formal public fork context. It is the same full 100-second edit, encoded as a 9,190,468-byte H.264/AAC copy for GitHub. The README player uses this permanent attachment address, not an expiring signed media URL.
 
-The current RF-menu images retain the existing typography and layout. `update-game.png` shows the deployed 0.9.17 Update Game window on uConsole with isolated player state and a real private release-source check, cropped above OUTPUT. Source hashes and crop bounds are recorded in the supplementary manifest.
+The current RF-menu images retain the existing typography and layout. `update-game.png` shows the deployed 0.9.17 Update Game window on uConsole with isolated player state and a real release-source check, cropped above OUTPUT. Source hashes and crop bounds are recorded in the supplementary manifest.

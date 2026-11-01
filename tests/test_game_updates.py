@@ -190,7 +190,7 @@ class GameUpdateTests(unittest.TestCase):
             first = self.release()
             self.manager.acknowledge(first)
             original_key = self.manager.notice_key(first)
-            self.source_name = updates.OWNER + "/WatchDogsGo"
+            self.source_name = updates.OWNER + "/WatchDogsGo-Renamed"
             self.publish(schema=2, repository_id=updates.REPOSITORY_ID, repository=self.source_name)
             renamed = self.release()
             source = self.manager.source_info()
@@ -206,8 +206,8 @@ class GameUpdateTests(unittest.TestCase):
         release = self.release()
         legacy_key = f"{updates.REPOSITORY}:{release.channel}:{release.release_id}"
         write(self.home, self.manager.state_path.name, json.dumps(dict(schema=1, seen=[legacy_key])))
-        self.source_name = updates.OWNER + "/WatchDogsGo"
-        # The baseline feed was prepared before the review suffix was removed.
+        self.source_name = updates.OWNER + "/WatchDogsGo-Renamed"
+        # The baseline feed can retain its label after the repository is renamed.
         self.publish(schema=2, repository_id=updates.REPOSITORY_ID)
         renamed = self.release()
         self.assertEqual(renamed.repository, updates.REPOSITORY)

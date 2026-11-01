@@ -32,7 +32,7 @@
 
 **🔊 Press Play, then unmute with the speaker icon for the full 100-second demo with the selected Infraction / Venom soundtrack.** GitHub starts the player muted.
 
-https://github.com/user-attachments/assets/047f3c2f-ffb4-4a24-8871-52a9a8577e9c
+https://github.com/user-attachments/assets/498dfb34-79a6-4067-8d6a-e5e206c29b02
 
 ▶️ **[Open / download the full-quality film](docs/media/demo.mp4)** · 🎞️ **[Media details and soundtrack credit](docs/media/README.md)**
 
