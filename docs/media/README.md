@@ -1,3 +1,35 @@
+# 🎬 WDG Wars Go 2.0 — full feature tour
+
+The new **2 min 23 sec** film leads the repository README. LOCOSP's newer foundation comes first; KiloGramowy's additions follow. The original 100-second MeshCore/Meshtastic film remains below the KG feature guide.
+
+[Play the full feature tour](https://github.com/user-attachments/assets/dc91c3e3-4e69-44af-8339-48a6277803b2) · [Discord / YouTube descriptions](../VIDEO_POSTS.md)
+
+![Opening card for the full feature tour](showcase-poster.png)
+
+The tour covers Reticulum/LXMF chat, Monster RF SubGHz, Emergency Radio, Proximity, CRISIS, sound and hardware controls, both mesh protocols/chats, contacts, local RF profiles/AUTO GPS, alternating WiFi/BLE wardriving, upload accounting, clean exit and Update Game. The edition name is **2.0**; game software remains **0.9.17**.
+
+## Sources, privacy and presentation
+
+Current native UI motion was captured on uConsole with isolated empty player state and automatic hardware/network connections disabled. The external-device panels show their actual controls, not invented connected results. Historical recorded chats, contacts and the owner's 103-received/100-new upload screenshot retain source labels. The startup reproduces the installed theme; the WDG launch is recorded footage. The save dialog uses the existing drawing-code illustration with test coordinates. No local AUTO assignment was created.
+
+The edit combines genuine UI pixels with title cards, captions, 41 visual glitch bursts and 46 transition sound events. One unrelated top strip behind modal panels is excluded; modal content and layout remain unchanged. GPS/footer masks are applied after effects. Public conversations and NodeIDs remain visible as requested; precise location and credentials are hidden.
+
+Both exports contain **4,300 frames at 30 fps**, H.264/AAC and fast-start metadata. The 1920×1080 master is retained locally for the owner. GitHub plays the **9,560,605-byte 1280×720** copy, below 10 MB. Both decoded fully without errors; all 300 startup-mask and 4,000 later footer-mask frames passed the matte checks, with zero clipped audio samples. Sampled visual review complements the mask checks; this is not an exhaustive OCR audit or a new RF, GPS, delivery or server-credit test.
+
+[Showcase provenance and hashes](showcase-manifest.json) · [Combined media manifest](media-manifest.json)
+
+## 🎵 Soundtrack credit
+
+Music from #InAudio: https://inaudio.org/
+
+Infraction - Venom (Rave)
+
+https://inaudio.org/track/venom-rave/
+
+The full tour uses the approved instrumental arrangement without tempo changes or looping, with fades, volume adjustment and original transition effects. Preserve the track credit in the published description on GitHub, Discord and YouTube. [Official terms](https://inaudio.org/license-terms/) are separate from the software's MIT license. No standalone music file is distributed.
+
+---
+
 # Watch Dogs Go — historical uConsole demo
 
 [Watch the 100-second demo](demo.mp4). The montage uses the real uConsole UI recorded on **29 October 2026**, with the user's original startup theme and a historical upload screenshot. It predates the later AUTO GPS windows and alternating WiFi/BLE wardrive changes.

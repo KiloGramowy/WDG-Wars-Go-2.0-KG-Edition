@@ -2,6 +2,14 @@
 
 This page separates recorded software checks from real hardware evidence. Preparing documentation or a release branch does not itself repeat any radio, GPS, chat-delivery or server test.
 
+## Full feature tour and media checks
+
+The 143.333-second showcase combines recorded footage with 4,080 newly captured native UI frames across 17 scenes, using the same approved runtime and isolated empty player state. The original 100-second film remains available below the KG feature guide. Neither film publication nor UI capture repeats an RF, approved AUTO, chat-delivery or server-credit test.
+
+Both final H.264/AAC exports decoded all 4,300 frames without errors. The full startup/footer privacy-matte checks passed on both exports: 300 startup frames plus 4,000 later frames each, zero failures. Decoded audio had zero clipped samples. The publication guard's **45/45 software tests passed, no skips**, including independent hashes, sizes and repository identity for both native video attachments. These are media/publication checks; the 0.9.17 runtime, release feed and player data remain unchanged.
+
+The native panels have no injected traffic, peers, GPS fixes or alerts. Public chats and the upload result are labelled recordings; external-device controls are UI tours. Exact source hashes, timeline, edits and limits are in the [showcase manifest](media/showcase-manifest.json).
+
 ## Edition 2.0 documentation and rename
 
 The edition name is **WDG Wars Go 2.0 — KG Edition**; software version **0.9.17** and approved runtime `774f636e22a29d344f7e90d590f0f831eb4b7031` remain unchanged. This documentation update presents the newer LOCOSP features first and KiloGramowy's additions afterwards, with 9 additional UI images and a refreshed Update Game image. The existing film and accepted KG feature descriptions are retained.

@@ -1,5 +1,5 @@
 {
-  "schema_version": 4,
+  "schema_version": 5,
   "source": {
     "name": "UConsole_WDG_Cyberpunk_v2.mp4",
     "sha256": "cbb14b91b977e3fd780701d8429f38681bade16ee048b0fbf69974e66ccf228f",
@@ -89,8 +89,8 @@
   "files": [
     {
       "path": "README.md",
-      "bytes": 7815,
-      "sha256": "4101c4d17bc0d2c60d5eaa734c168095f0ec494bb30b17ec0e49416534137475"
+      "bytes": 10709,
+      "sha256": "55c28c427083f3bf533adcf0fe34a084d856502868ce22fcc2418b0ecdeee8f6"
     },
     {
       "path": "auto-save-preview.png",
@@ -367,6 +367,21 @@
         300
       ],
       "source_kind": "actual uConsole application capture"
+    },
+    {
+      "path": "showcase-manifest.json",
+      "bytes": 12323,
+      "sha256": "84711cee0616a79f04324f46f4a1cea2f9f1ced58b9b8ecdbd9c469e1e928d73"
+    },
+    {
+      "path": "showcase-poster.png",
+      "bytes": 300273,
+      "sha256": "1414c5bc4e68874d00e144e8876edf31a6d0d1aca3fcda0d5398ed8ef1f76400",
+      "dimensions": [
+        1920,
+        1080
+      ],
+      "source_kind": "Editorial title card for the new full feature tour"
     }
   ],
   "supplementary_menu_sources": "supplementary-menu-manifest.json",
@@ -379,7 +394,9 @@
     "edition_name": "WDG Wars Go 2.0 — KG Edition",
     "in_game_version": "0.9.17",
     "locosp_features_presented_first": true,
-    "kg_features_presented_afterwards": true
+    "kg_features_presented_afterwards": true,
+    "new_showcase_first": true,
+    "original_mesh_demo_retained_below_kg_features": true
   },
   "native_readme_video": {
     "file": "wdg-uconsole-demo-github.mp4",
@@ -419,5 +436,28 @@
     "anonymous_http_status": 200,
     "anonymous_bytes_verified": 9190468,
     "anonymous_sha256_verified": "a049ccb0aba8ce863a134e4c47a70c73f28059ab14c8f7918683c7939c593d1a"
+  },
+  "native_showcase_video": {
+    "file": "WDG_Wars_Go_2.0_KG_Edition_Discord_GitHub_720p.mp4",
+    "bytes": 9560605,
+    "sha256": "95a38c3e0a4e4f7296fd69365a873883dca8486ab1563ad1524bf97562d0a7ee",
+    "duration_seconds": 143.33333333333334,
+    "frames": 4300,
+    "dimensions": [
+      1280,
+      720
+    ],
+    "fps": 30,
+    "audio_present": true,
+    "faststart": true,
+    "full_decode_errors": 0,
+    "public_chats_and_node_ids_retained": true,
+    "permanent_attachment_url": "https://github.com/user-attachments/assets/dc91c3e3-4e69-44af-8339-48a6277803b2",
+    "attachment_repository_id": 1442123109,
+    "provenance_manifest": "showcase-manifest.json",
+    "master_file_basename": "WDG_Wars_Go_2.0_KG_Edition_1080p.mp4",
+    "master_sha256": "610ab5c7f8af2f5c5bb072420e71afeebb922513018c2d0302efedd469cef7c6",
+    "distribution": "Native GitHub README player; full-quality master provided locally to the owner.",
+    "autoplay": "User presses Play and unmutes; autoplay is not promised."
   }
 }

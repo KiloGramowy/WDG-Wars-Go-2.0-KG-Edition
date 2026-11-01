@@ -13,6 +13,7 @@ https://docs.github.com/en/get-started/writing-on-github/working-with-advanced-f
 """
 import argparse
 import ast
+import hashlib
 from html.parser import HTMLParser
 import importlib.util
 import json
@@ -41,6 +42,10 @@ APPROVED_SNAPSHOT_TIP = "29412dccbfe9aff4c798252a7510d4b0314d7168"
 INTEGRATION_BASE = "be199c2ced736192399949bbf2b68098a4b5ae57"
 SHA = re.compile(r"[0-9a-f]{40}\Z")
 MAX_RESPONSE = 12 * 1024 * 1024
+NATIVE_VIDEO_FIELDS = ("native_readme_video", "native_showcase_video")
+NATIVE_VIDEO_URL = re.compile(
+    r"https://github\.com/user-attachments/assets/"
+    r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\Z")
 
 
 class PublicationError(RuntimeError):
@@ -133,8 +138,6 @@ def anonymous_get(url, *, video=False):
     if not allowed_https(url):
         raise PublicationError("An anonymous check has an unsafe URL.")
     headers = {"User-Agent": "WatchDogsGo-release-check", "Accept": "*/*"}
-    if video:
-        headers["Range"] = "bytes=0-65535"
     request = Request(url, headers=headers, method="GET")
     last = None
     for attempt in range(3):
@@ -142,11 +145,10 @@ def anonymous_get(url, *, video=False):
             with build_opener(SafeRedirects()).open(request, timeout=12) as response:
                 if response.status not in (200, 206):
                     raise PublicationError("Public source or media is not available anonymously.")
-                limit = 65536 if video else MAX_RESPONSE
-                data = response.read(limit + 1)
-                if not video and len(data) > limit:
+                data = response.read(MAX_RESPONSE + 1)
+                if len(data) > MAX_RESPONSE:
                     raise PublicationError("An anonymous source/media response exceeds its limit.")
-                return data[:limit]
+                return data
         except (HTTPError, URLError, OSError) as error:
             last = error
             if attempt < 2:
@@ -233,6 +235,56 @@ def public_video_source(source, film_id):
                          parsed.path) is not None)
 
 
+def native_video_declarations(files):
+    """Bind each README attachment to its own reviewed manifest record."""
+    try:
+        manifest = json.loads(files["docs/media/media-manifest.json"])
+        readme = files["README.md"].decode("utf-8")
+    except (KeyError, ValueError, TypeError, UnicodeError):
+        raise PublicationError("The native video manifest is missing or invalid.") from None
+    if (not isinstance(manifest, dict) or "native_readme_video" not in manifest
+            or any(name.startswith("native_") and name not in NATIVE_VIDEO_FIELDS for name in manifest)):
+        raise PublicationError("The native video manifest contains missing or unknown attachment declarations.")
+    declarations = {}
+    for name in NATIVE_VIDEO_FIELDS:
+        if name not in manifest:
+            continue
+        entry = manifest[name]
+        if not isinstance(entry, dict):
+            raise PublicationError("A native video declaration is invalid.")
+        url, size, digest = entry.get("permanent_attachment_url"), entry.get("bytes"), entry.get("sha256")
+        if (not isinstance(url, str) or NATIVE_VIDEO_URL.fullmatch(url) is None
+                or url in declarations or type(size) is not int or not 12 <= size <= MAX_RESPONSE
+                or not isinstance(digest, str) or re.fullmatch(r"[0-9a-f]{64}", digest) is None
+                or type(entry.get("attachment_repository_id")) is not int
+                or entry["attachment_repository_id"] != EXPECTED_REPOSITORY_ID):
+            raise PublicationError("A native video declaration has invalid identity, size or hash.")
+        if "source" in entry or "source_sha256" in entry:
+            source = entry.get("source")
+            if (not isinstance(source, str) or source not in files
+                    or entry.get("source_sha256") != hashlib.sha256(files[source]).hexdigest()):
+                raise PublicationError("A native video declaration does not match its tracked source provenance.")
+        if "provenance_manifest" in entry:
+            provenance = entry["provenance_manifest"]
+            if (not isinstance(provenance, str) or not provenance.endswith(".json")
+                    or "\\" in provenance or ":" in provenance
+                    or any(part in ("", ".", "..") for part in provenance.split("/"))):
+                raise PublicationError("A native video provenance reference is invalid.")
+            try:
+                proof = json.loads(files["docs/media/" + provenance])
+            except (KeyError, ValueError, TypeError):
+                raise PublicationError("A native video provenance manifest is missing or invalid.") from None
+            if not isinstance(proof, dict):
+                raise PublicationError("A native video provenance manifest must be an object.")
+        declarations[url] = entry
+    attachments = {url.rstrip(")") for url in re.findall(
+        r"https://github\.com/user-attachments/assets/[^\s<>\"']+", readme)}
+    if (not attachments or any(NATIVE_VIDEO_URL.fullmatch(url) is None for url in attachments)
+            or attachments != set(declarations)):
+        raise PublicationError("README native videos do not exactly match the approved manifest declarations.")
+    return declarations
+
+
 def reviewed_history(repo, commit):
     """Accept two pinned public histories and one exact snapshot merge only.
 
@@ -272,6 +324,7 @@ def source_checks(repo, package, expected_head=None):
     validation = package.validate(files)
     if not validation["ok"]:
         raise PublicationError("The current source/media package has unresolved validation errors.")
+    native_videos = native_video_declarations(files)
     readme_prose = package.prose(files["README.md"].decode("utf-8"))
     if re.search(r"repository remains private|private preview|no release (?:feed.{0,50}published|published yet)",
                  readme_prose, re.IGNORECASE):
@@ -320,7 +373,7 @@ def source_checks(repo, package, expected_head=None):
         raise PublicationError("The baseline feed must identify this runtime; only reviewed packaging changes may follow it.")
     if runtime_entries(repo, source) != runtime_entries(repo, commit):
         raise PublicationError("The game runtime differs from the approved baseline source.")
-    return dict(files=files, commit=commit, tree=tree, version=version, feed=feed,
+    return dict(files=files, commit=commit, tree=tree, version=version, feed=feed, native_videos=native_videos,
                 validation=validation, checked_history_commits=len(commits),
                 reviewed_history_commits=len(reviewed), preexisting_upstream_commits=len(upstream))
 
@@ -333,6 +386,7 @@ class Publication:
         self.package = package or package_module()
 
     def _video_header(self, film, commit):
+        """Read the complete bounded video, including through GitHub's fallback."""
         try:
             return self.probe(film, video=True)
         except PublicationError as error:
@@ -414,13 +468,17 @@ class Publication:
             encoded = quote(name, safe="/")
             if self.probe(prefix+encoded) != checked["files"][name]:
                 raise PublicationError("An anonymous README image does not match the approved source.")
-        films = set(re.findall(r"https://github\.com/user-attachments/assets/[0-9a-fA-F-]{36}", readme.decode("utf-8")))
-        if not films:
-            raise PublicationError("The approved README has no native video attachment.")
-        for film in films:
-            header = self._video_header(film, checked["commit"])
-            if len(header)<12 or header[4:8] != b"ftyp":
+        manifest_path = "docs/media/media-manifest.json"
+        if self.probe(prefix + manifest_path) != checked["files"][manifest_path]:
+            raise PublicationError("The anonymous media manifest does not match the approved source.")
+        films = checked["native_videos"]
+        for film, declaration in sorted(films.items()):
+            data = self._video_header(film, checked["commit"])
+            if len(data)<12 or data[4:8] != b"ftyp":
                 raise PublicationError("The native video attachment is not accessible anonymously as video.")
+            if (len(data) != declaration["bytes"]
+                    or hashlib.sha256(data).hexdigest() != declaration["sha256"]):
+                raise PublicationError("A native video attachment does not match its approved size and hash.")
         # Old README/clone links remain useful after the rename while the old name is not reused.
         try:
             old_info = json.loads(self.probe("https://api.github.com/repos/" + OWNER + "/" + REVIEW_NAME))
@@ -430,7 +488,8 @@ class Publication:
         self.probe("https://github.com/"+OWNER+"/"+REVIEW_NAME)
         return dict(anonymous_repository_identity_verified=True, anonymous_formal_fork_verified=True, anonymous_readme_verified=True,
                     anonymous_update_feed_verified=True, anonymous_images_verified=len(names),
-                    anonymous_native_videos_verified=len(films), old_repository_web_redirect_checked=True)
+                    anonymous_native_videos_verified=len(films), anonymous_media_manifest_verified=True,
+                    old_repository_web_redirect_checked=True)
 
     def activate(self, expected_head, *, confirmed=False):
         if confirmed is not True or not SHA.fullmatch(expected_head or ""):

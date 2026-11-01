@@ -1,0 +1,399 @@
+{
+  "schema_version": 1,
+  "title": "WDG Wars Go 2.0 — KG Edition: full feature tour",
+  "edition_name": "2.0 — KG Edition",
+  "in_game_version": "0.9.17",
+  "runtime_source_commit": "774f636e22a29d344f7e90d590f0f831eb4b7031",
+  "runtime_changed": false,
+  "render": {
+    "duration_seconds": 143.33333333333334,
+    "frames": 4300,
+    "fps": 30,
+    "master_dimensions": [
+      1920,
+      1080
+    ],
+    "web_dimensions": [
+      1280,
+      720
+    ],
+    "files": {
+      "WDG_Wars_Go_2.0_KG_Edition_1080p.mp4": {
+        "bytes": 66726082,
+        "sha256": "610ab5c7f8af2f5c5bb072420e71afeebb922513018c2d0302efedd469cef7c6"
+      },
+      "WDG_Wars_Go_2.0_KG_Edition_Discord_GitHub_720p.mp4": {
+        "bytes": 9560605,
+        "sha256": "95a38c3e0a4e4f7296fd69365a873883dca8486ab1563ad1524bf97562d0a7ee"
+      },
+      "showcase-poster.png": {
+        "bytes": 300273,
+        "sha256": "1414c5bc4e68874d00e144e8876edf31a6d0d1aca3fcda0d5398ed8ef1f76400"
+      },
+      "YouTube_Thumbnail_WDG_Wars_Go_2.0.png": {
+        "bytes": 303654,
+        "sha256": "66aa6afa66fb235e87f391c851ac560565e2eb456eacf44435aac9ace010a01b"
+      }
+    }
+  },
+  "timeline": [
+    {
+      "start": 0,
+      "end": 10,
+      "name": "boot",
+      "title": "BOOTING THE CYBERDECK",
+      "subtitle": "",
+      "source_kind": "old",
+      "source_label": "THEME REPRODUCTION",
+      "credit": ""
+    },
+    {
+      "start": 10,
+      "end": 14,
+      "name": "brand",
+      "title": "WDG WARS GO 2.0|KG EDITION",
+      "subtitle": "The bigger cyberdeck toolbox",
+      "source_kind": "card",
+      "source_label": "TITLE",
+      "credit": ""
+    },
+    {
+      "start": 14,
+      "end": 17,
+      "name": "foundation",
+      "title": "THE NEWER|LOCOSP FOUNDATION",
+      "subtitle": "More ways to connect. More tools to explore.",
+      "source_kind": "card",
+      "source_label": "TITLE",
+      "credit": "LOCOSP"
+    },
+    {
+      "start": 17,
+      "end": 23,
+      "name": "reticulum",
+      "title": "WDGWARS CHAT",
+      "subtitle": "Reticulum + LXMF / TCP hub / optional RNode LoRa",
+      "source_kind": "native",
+      "source_label": "UI TOUR",
+      "credit": "LOCOSP"
+    },
+    {
+      "start": 23,
+      "end": 29,
+      "name": "monster",
+      "title": "MONSTER RF / SUB-GHZ",
+      "subtitle": "Read / RAW / analyzer / saved signals / CC1101 + JanOS RF",
+      "source_kind": "native",
+      "source_label": "UI TOUR",
+      "credit": "LOCOSP"
+    },
+    {
+      "start": 29,
+      "end": 34,
+      "name": "emergency",
+      "title": "EMERGENCY RADIO",
+      "subtitle": "RTL-SDR RF activity + alerts / Polish band plan / no voice decoding",
+      "source_kind": "native",
+      "source_label": "UI TOUR",
+      "credit": "LOCOSP"
+    },
+    {
+      "start": 34,
+      "end": 39,
+      "name": "proximity",
+      "title": "PROXIMITY + PROX RADAR",
+      "subtitle": "Compatible BLE peers / signal trends / mutual contact",
+      "source_kind": "native",
+      "source_label": "UI TOUR",
+      "credit": "LOCOSP"
+    },
+    {
+      "start": 39,
+      "end": 46,
+      "name": "crisis",
+      "title": "CRISIS: THE OFFLINE SHELF",
+      "subtitle": "Wikipedia / ctOS Map / Organic Maps / local service status",
+      "source_kind": "native",
+      "source_label": "UI TOUR",
+      "credit": "LOCOSP"
+    },
+    {
+      "start": 46,
+      "end": 50,
+      "name": "mute",
+      "title": "LESS BEEP. SAME CYBERDECK.",
+      "subtitle": "Notification mute + LOCOSP visual polish",
+      "source_kind": "native",
+      "source_label": "UI TOUR",
+      "credit": "LOCOSP"
+    },
+    {
+      "start": 50,
+      "end": 56,
+      "name": "hardware",
+      "title": "HARDWARE TOOLS, BUILT IN",
+      "subtitle": "Refined XIAO flashing / the original Update Game entry",
+      "source_kind": "native",
+      "source_label": "UI TOUR",
+      "credit": "LOCOSP"
+    },
+    {
+      "start": 56,
+      "end": 59,
+      "name": "kg",
+      "title": "KILOGRAMOWY'S|ADDITIONS",
+      "subtitle": "Same WDG style. More mesh.",
+      "source_kind": "card",
+      "source_label": "TITLE",
+      "credit": "KILOGRAMOWY"
+    },
+    {
+      "start": 59,
+      "end": 66,
+      "name": "selector",
+      "title": "CHOOSE YOUR MESH",
+      "subtitle": "MeshCore <-> Meshtastic / one SX1262 at a time",
+      "source_kind": "native",
+      "source_label": "UI TOUR",
+      "credit": "KILOGRAMOWY"
+    },
+    {
+      "start": 66,
+      "end": 73,
+      "name": "meshcore",
+      "title": "MESHCORE CHAT",
+      "subtitle": "The original messenger / saved channels and identity",
+      "source_kind": "old",
+      "source_label": "RECORDED FOOTAGE",
+      "credit": "KILOGRAMOWY"
+    },
+    {
+      "start": 73,
+      "end": 83,
+      "name": "meshtastic",
+      "title": "MESHTASTIC IN WDG",
+      "subtitle": "Public text RX/TX / NodeInfo / positions / saved history",
+      "source_kind": "old",
+      "source_label": "RECORDED FOOTAGE",
+      "credit": "KILOGRAMOWY"
+    },
+    {
+      "start": 83,
+      "end": 91,
+      "name": "contacts",
+      "title": "CLOSE THE CHAT. KEEP DISCOVERING.",
+      "subtitle": "Persistent NodeIDs / deduplication / existing XP rules",
+      "source_kind": "old-pair",
+      "source_label": "RECORDED FOOTAGE",
+      "credit": "KILOGRAMOWY"
+    },
+    {
+      "start": 91,
+      "end": 103,
+      "name": "auto",
+      "title": "MANUAL + LOCAL AUTO GPS",
+      "subtitle": "Separate profiles / explicit local approval / stable GPS fix",
+      "source_kind": "auto",
+      "source_label": "UI TOUR",
+      "credit": "KILOGRAMOWY"
+    },
+    {
+      "start": 103,
+      "end": 111,
+      "name": "wardrive",
+      "title": "WIFI + BLE, TAKING TURNS",
+      "subtitle": "WiFi -> save -> confirmed handover -> BLE -> save -> repeat",
+      "source_kind": "still",
+      "source_label": "RECORDED SELECTIONS",
+      "credit": "KILOGRAMOWY"
+    },
+    {
+      "start": 111,
+      "end": 116,
+      "name": "starts",
+      "title": "CLEANER STARTS. SAFER HANDOVER.",
+      "subtitle": "ESP32 selection / truthful errors / GPS UART retry",
+      "source_kind": "native",
+      "source_label": "UI TOUR",
+      "credit": "KILOGRAMOWY"
+    },
+    {
+      "start": 116,
+      "end": 123,
+      "name": "upload",
+      "title": "SYNC THE RESULT. NOT A GUESS.",
+      "subtitle": "Receipts / pending / empty-export cleanup",
+      "source_kind": "proof",
+      "source_label": "RECORDED UPLOAD",
+      "credit": "KILOGRAMOWY"
+    },
+    {
+      "start": 123,
+      "end": 129,
+      "name": "exit",
+      "title": "GAME OVER. RADIOS OFF.",
+      "subtitle": "Save final data / stop owned workers / release power / USB last",
+      "source_kind": "native",
+      "source_label": "FEATURE OVERVIEW",
+      "credit": "KILOGRAMOWY"
+    },
+    {
+      "start": 129,
+      "end": 136,
+      "name": "updates",
+      "title": "UPDATES WITHOUT THE MORNING ALARM",
+      "subtitle": "One notice per release / full notes / confirmed install / code backup",
+      "source_kind": "native",
+      "source_label": "UI TOUR",
+      "credit": "KILOGRAMOWY"
+    },
+    {
+      "start": 136,
+      "end": 143.33333333333334,
+      "name": "outro",
+      "title": "WDG WARS GO 2.0|KG EDITION",
+      "subtitle": "More coming. Take the cyberdeck outside.",
+      "source_kind": "card",
+      "source_label": "CREDITS",
+      "credit": ""
+    }
+  ],
+  "sources": {
+    "approved_recording": {
+      "path": "demo.mp4",
+      "sha256": "bd6dc5f7558a32e054ad671a70d3ef7ab2d2aa83472b6ad37b3fd308764ccd37",
+      "use": "Approved privacy-masked historical film; genuine launch, public chats, contacts and background UI. Startup theme reproduction is labelled separately."
+    },
+    "native_ui": {
+      "runtime_source_commit": "774f636e22a29d344f7e90d590f0f831eb4b7031",
+      "frames": 4080,
+      "fps": 30,
+      "scenes": 17,
+      "dimensions": [
+        640,
+        360
+      ],
+      "capture_archive_sha256": "680bec188392225c2dcea128ed570f33d88d38f34dc392da111afd46674a9337",
+      "method": "Native installed Pyxel drawing on uConsole; isolated empty player state; automatic hardware and network connections disabled; no action activation or injected peers, traffic, fixes or alerts. Private capture archive is not published."
+    },
+    "recorded_upload": {
+      "source_basename": "Screenshot 2026-10-29 215754.png",
+      "sha256": "5ac70ce2efecaac1a6a29e35a3bcce7ca2be185e025bc65b3dcd4ee6c4f77696",
+      "counts": {
+        "received": 103,
+        "new": 100,
+        "MeshCore": 3,
+        "Meshtastic": 100
+      },
+      "new_server_action": false
+    },
+    "save_dialog": {
+      "path": "auto-save-preview.png",
+      "sha256": "90e72df3c281fd6a445ff5a78ab44f68aa45c2e3c9007c1ce0c7086898ab62dc",
+      "method": "Existing actual WDG drawing-code preview using test coordinates; no real fix or assignment created."
+    }
+  },
+  "editing": {
+    "visual_glitch_bursts": 41,
+    "audio_transition_events": 46,
+    "launch_inset": {
+      "approved_source": "demo.mp4",
+      "source_seconds": [
+        14,
+        18
+      ],
+      "output_seconds": [
+        10,
+        14
+      ]
+    },
+    "modal_context_crop": {
+      "region": [
+        0,
+        0,
+        1920,
+        45
+      ],
+      "times": [
+        [
+          59,
+          66
+        ],
+        [
+          91,
+          99
+        ]
+      ],
+      "reason": "Exclude unrelated retained framebuffer behind modal panels; modal pixels unchanged."
+    },
+    "privacy": "Hide exact GPS and authentication material; retain public conversations and nodes as approved. Privacy mattes retained after all visual effects. No fictional counters/messages or telemetry.",
+    "source_labels": [
+      "THEME REPRODUCTION",
+      "UI TOUR",
+      "RECORDED FOOTAGE",
+      "RECORDED UPLOAD",
+      "FEATURE OVERVIEW"
+    ]
+  },
+  "music": {
+    "title": "Infraction - Venom (Rave), Instrumental",
+    "source_sha256": "9c4dc2ffbae42403c3f9b54de16906fec4fcdffb82b142f37871df625833b929",
+    "source_duration_seconds": 143.30935416666668,
+    "output_duration_seconds": 143.33333333333334,
+    "arrangement_preserved": true,
+    "tempo_changed": false,
+    "music_gain": 0.46,
+    "headroom_gain": 1,
+    "pcm_peak_dbfs": -4.84329580869826,
+    "transition_effects": 46,
+    "clipped_pcm_samples": 0,
+    "credit": "Music from #InAudio: https://inaudio.org/ | Infraction - Venom (Rave)",
+    "track_url": "https://inaudio.org/track/venom-rave/",
+    "terms_url": "https://inaudio.org/license-terms/",
+    "license_scope": "Attributed free-track use in a video, separate from repository MIT. No standalone audio source is distributed."
+  },
+  "validation": {
+    "status": "PASS",
+    "results": [
+      {
+        "file": "WDG_Wars_Go_2.0_KG_Edition_1080p.mp4",
+        "decoded_frames": 4300,
+        "boot_mask_frames": 300,
+        "footer_mask_frames": 4000,
+        "mask_failures": 0,
+        "maximum_boot_mask_pixel": 18,
+        "maximum_footer_mask_pixel": 12,
+        "decoded_audio_peak_dbfs": -1.887835144406318,
+        "clipped_audio_samples": 0,
+        "visual_samples": 24
+      },
+      {
+        "file": "WDG_Wars_Go_2.0_KG_Edition_Discord_GitHub_720p.mp4",
+        "decoded_frames": 4300,
+        "boot_mask_frames": 300,
+        "footer_mask_frames": 4000,
+        "mask_failures": 0,
+        "maximum_boot_mask_pixel": 26,
+        "maximum_footer_mask_pixel": 13,
+        "decoded_audio_peak_dbfs": -1.06427666370616,
+        "clipped_audio_samples": 0,
+        "visual_samples": 24
+      }
+    ],
+    "scope": "Full decode, privacy-matte interiors and sampled visual review. Not exhaustive OCR of every possible credential or a new RF test.",
+    "full_audio_video_decode_errors": 0,
+    "new_rf_or_delivery_test": false
+  },
+  "preservation": {
+    "protected_source_manifest_sprite_records": 88,
+    "player_settings_keys_pairing_unchanged": true,
+    "initial_aio_power_state_unchanged": true,
+    "local_auto_approvals_created": false
+  },
+  "distribution": {
+    "permanent_attachment_url": "https://github.com/user-attachments/assets/dc91c3e3-4e69-44af-8339-48a6277803b2",
+    "attachment_repository_id": 1442123109,
+    "full_quality_master": "Retained locally for the owner to upload to YouTube; not a tracked source archive asset.",
+    "autoplay": "Playback is controlled by GitHub and the browser; press Play and unmute."
+  }
+}

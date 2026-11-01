@@ -22,6 +22,14 @@ publication=importlib.util.module_from_spec(spec)
 spec.loader.exec_module(publication)
 package=publication.package_module()
 FILM="https://github.com/user-attachments/assets/11111111-1111-1111-1111-111111111111"
+SHOWCASE="https://github.com/user-attachments/assets/22222222-2222-2222-2222-222222222222"
+FILM_BYTES=b"\x00\x00\x00\x18ftypmp42"+b"approved original demo"
+SHOWCASE_BYTES=b"\x00\x00\x00\x18ftypmp42"+b"approved complete feature showcase"
+
+
+def video_declaration(url, data):
+    return dict(permanent_attachment_url=url, bytes=len(data), sha256=hashlib.sha256(data).hexdigest(),
+                attachment_repository_id=publication.EXPECTED_REPOSITORY_ID)
 
 
 def git(repo,*args):
@@ -77,6 +85,23 @@ class FakeGitHub:
 
 
 class UrlPolicyTests(unittest.TestCase):
+    def test_video_reads_the_complete_bounded_body_without_a_range_request(self):
+        data=FILM_BYTES+b"x"*70000
+        response=unittest.mock.MagicMock()
+        response.__enter__.return_value=response
+        response.status=200
+        response.read.return_value=data
+        opener=unittest.mock.Mock()
+        opener.open.return_value=response
+        with patch.object(publication,"build_opener",return_value=opener):
+            self.assertEqual(publication.anonymous_get(FILM,video=True),data)
+            request=opener.open.call_args.args[0]
+            self.assertFalse(request.has_header("Range"))
+            response.read.assert_called_once_with(publication.MAX_RESPONSE+1)
+            response.read.return_value=b"x"*(publication.MAX_RESPONSE+1)
+            with self.assertRaisesRegex(publication.PublicationError,"exceeds its limit"):
+                publication.anonymous_get(FILM,video=True)
+
     def test_packaging_exception_is_limited_to_the_publication_helper_and_its_tests(self):
         self.assertTrue(publication.only_documentation_changes(
             ["tools/public_release.py", "tests/test_public_release.py", "docs/media/README.md"]))
@@ -141,7 +166,7 @@ class VideoFallbackTests(unittest.TestCase):
             return self.page
         if url == self.source:
             self.assertTrue(video)
-            return b"\x00\x00\x00\x18ftypmp42"
+            return FILM_BYTES
         raise AssertionError("Unexpected anonymous request")
 
     def test_public_rendered_readme_resolves_video_after_standalone_attachment_404(self):
@@ -206,7 +231,8 @@ class PublicationTests(unittest.TestCase):
         image=b"\x89PNG\r\n\x1a\n"+b"\x00\x00\x00\rIHDR"+struct.pack(">II",32,24)
         files["docs/media/example.png"]=image
         files["docs/media/media-manifest.json"]=json.dumps(dict(files=[dict(path="example.png",
-            bytes=len(image),sha256=hashlib.sha256(image).hexdigest(),dimensions=[32,24])])).encode()
+            bytes=len(image),sha256=hashlib.sha256(image).hexdigest(),dimensions=[32,24])],
+            native_readme_video=video_declaration(FILM,FILM_BYTES))).encode()
         for name,data in files.items():
             target=cls.seed/name;target.parent.mkdir(parents=True,exist_ok=True);target.write_bytes(data)
         git(cls.seed,"add",".");git(cls.seed,"commit","-qm","Approved clean root")
@@ -245,7 +271,7 @@ class PublicationTests(unittest.TestCase):
 
     def probe(self,url,video=False):
         self.probed.append((url,video))
-        if video:return b"\x00\x00\x00\x18ftypmp42"
+        if video:return {FILM:FILM_BYTES,SHOWCASE:SHOWCASE_BYTES}[url]
         if url.startswith("https://api.github.com/"):
             return json.dumps(self.github.info).encode()
         if url.startswith("https://raw.githubusercontent.com/"):
@@ -256,6 +282,84 @@ class PublicationTests(unittest.TestCase):
     def commit(self,message="Reviewed preparation"):
         git(self.repo,"add",".");git(self.repo,"commit","-qm",message)
         self.head=git(self.repo,"rev-parse","HEAD");self.github.head=self.head
+
+    def add_showcase(self):
+        readme=self.repo/"README.md"
+        readme.write_text(readme.read_text()+"\n"+SHOWCASE+"\n")
+        manifest_path=self.repo/"docs/media/media-manifest.json"
+        manifest=json.loads(manifest_path.read_text())
+        manifest["native_showcase_video"]=dict(video_declaration(SHOWCASE,SHOWCASE_BYTES),
+            provenance_manifest="showcase-manifest.json")
+        manifest_path.write_text(json.dumps(manifest))
+        (self.repo/"docs/media/showcase-manifest.json").write_text(json.dumps(dict(
+            description="Reviewed composite source provenance; its master is not tracked.")))
+        self.commit()
+
+    def test_two_declared_videos_verify_independent_bytes_hashes_and_provenance(self):
+        self.add_showcase()
+        result=self.operation.activate(self.head,confirmed=True)
+        self.assertEqual(result["anonymous_native_videos_verified"],2)
+        self.assertTrue(result["anonymous_media_manifest_verified"])
+        self.assertEqual({url for url,video in self.probed if video},{FILM,SHOWCASE})
+
+    def test_two_video_hash_or_size_mixups_are_rejected(self):
+        self.add_showcase()
+        original=self.operation.probe
+        for received in (SHOWCASE_BYTES,FILM_BYTES[:-1],FILM_BYTES[:-1]+b"!"):
+            with self.subTest(received=hashlib.sha256(received).hexdigest()):
+                self.operation.probe=lambda url,video=False:received if url==FILM and video else original(url,video)
+                with self.assertRaisesRegex(publication.PublicationError,"is public, but"):
+                    self.operation.activate(self.head,confirmed=True)
+
+    def test_unknown_unmatched_duplicate_and_foreign_video_declarations_block_before_rename(self):
+        manifest_path=self.repo/"docs/media/media-manifest.json"
+        approved=json.loads(manifest_path.read_text())
+        invalid=[]
+        unknown=copy.deepcopy(approved);unknown["native_other_video"]=video_declaration(SHOWCASE,SHOWCASE_BYTES)
+        invalid.append(unknown)
+        unmatched=copy.deepcopy(approved);unmatched["native_showcase_video"]=video_declaration(SHOWCASE,SHOWCASE_BYTES)
+        invalid.append(unmatched)
+        duplicate=copy.deepcopy(approved);duplicate["native_showcase_video"]=copy.deepcopy(duplicate["native_readme_video"])
+        invalid.append(duplicate)
+        foreign=copy.deepcopy(approved);foreign["native_readme_video"]["attachment_repository_id"]=99
+        invalid.append(foreign)
+        for manifest in invalid:
+            with self.subTest(manifest=manifest):
+                manifest_path.write_text(json.dumps(manifest));self.commit()
+                with self.assertRaises(publication.PublicationError):
+                    self.operation.activate(self.head,confirmed=True)
+        self.assertEqual(self.github.patches,[])
+
+    def test_undeclared_readme_video_and_missing_or_bad_source_provenance_block_before_rename(self):
+        readme=self.repo/"README.md";original_readme=readme.read_text()
+        readme.write_text(original_readme+"\n"+SHOWCASE+"\n");self.commit()
+        with self.assertRaisesRegex(publication.PublicationError,"manifest declarations"):
+            self.operation.check()
+        readme.write_text(original_readme)
+        manifest_path=self.repo/"docs/media/media-manifest.json"
+        approved=json.loads(manifest_path.read_text())
+        for change in ({"source":"missing.mp4","source_sha256":"a"*64},
+                       {"source":"docs/media/example.png","source_sha256":"a"*64},
+                       {"provenance_manifest":"missing.json"},
+                       {"provenance_manifest":"../README.md"}):
+            with self.subTest(change=change):
+                manifest=copy.deepcopy(approved);manifest["native_readme_video"].update(change)
+                manifest_path.write_text(json.dumps(manifest));self.commit()
+                with self.assertRaisesRegex(publication.PublicationError,"provenance"):
+                    self.operation.check()
+        self.assertEqual(self.github.patches,[])
+
+    def test_second_video_failure_cannot_be_hidden_by_the_first_valid_video(self):
+        self.add_showcase()
+        original=self.operation.probe
+        def failed_showcase(url,video=False):
+            if url==SHOWCASE and video:
+                raise publication.PublicationError("Showcase unavailable") from HTTPError(
+                    SHOWCASE,403,"Forbidden",None,None)
+            return original(url,video)
+        self.operation.probe=failed_showcase
+        with self.assertRaisesRegex(publication.PublicationError,"is public, but"):
+            self.operation.activate(self.head,confirmed=True)
 
     def test_default_check_is_read_only_and_reports_the_formal_public_fork(self):
         result,_=self.operation.check()

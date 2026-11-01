@@ -5,11 +5,21 @@
   <strong>📡 MeshCore + Meshtastic &nbsp; · &nbsp; 🛰️ Local AUTO GPS &nbsp; · &nbsp; 🔁 WiFi + BLE wardriving</strong>
 </p>
 
-<p align="center">
-  <img src="docs/media/demo-poster.png" width="960" alt="WatchDogsGo on uConsole — the original cyberdeck interface with the LoRa control selected">
-</p>
-
 <p align="center"><em>🕶️ Pocket cyberdeck. Bigger toolbox. WatchDogsGo by LOCOSP, expanded by KiloGramowy.</em></p>
+
+## 🎬 The full 2.0 feature tour
+
+**🔊 Press Play and unmute. Same Venom. Bigger toolbox. More glitches.** A **2 min 23 sec** cyberdeck tour: LOCOSP's newer features first, then our KG additions.
+
+https://github.com/user-attachments/assets/dc91c3e3-4e69-44af-8339-48a6277803b2
+
+📡 Reticulum, SubGHz, Proximity and CRISIS meet MeshCore, Meshtastic, local AUTO GPS, WiFi/BLE wardriving, sync and clean shutdown. Your battery did not volunteer for overtime. 🔋
+
+The edit combines recorded uConsole footage with a current native UI tour. External-device panels are shown as controls; recorded chats and upload results retain their source labels. GPS and credentials are hidden; public conversations and nodes stay visible.
+
+🎵 Music from **#InAudio**: https://inaudio.org/ · **Infraction — Venom (Rave)** · [Track and credit](https://inaudio.org/track/venom-rave/)
+
+🎞️ [Media details](docs/media/README.md) · 📝 [Ready-to-copy Discord and YouTube descriptions](docs/VIDEO_POSTS.md)
 
 ## ✨ What is new in this edition?
 
@@ -21,24 +31,6 @@
 | 🛠️ **From KiloGramowy** | Meshtastic integration beside MeshCore, local AUTO GPS, persistent mesh discoveries, alternating WiFi/BLE wardriving, upload/startup fixes, clean shutdown and the expanded release updater. |
 
 **2.0 is the edition name; the in-game software version remains 0.9.17.** Original authorship and the upstream fork relationship are retained.
-
-## 🎬 Watch it on uConsole
-
-**🔊 Press Play, then unmute with the speaker icon for the full 100-second demo with the selected Infraction / Venom soundtrack.** GitHub starts the player muted.
-
-https://github.com/user-attachments/assets/498dfb34-79a6-4067-8d6a-e5e206c29b02
-
-▶️ **[Open / download the full-quality film](docs/media/demo.mp4)** · 🎞️ **[Media details and soundtrack credit](docs/media/README.md)**
-
-The film shows the startup theme, WDG launch, protocol selection, both chats, contacts and a historical upload confirmation. The boot segment recreates the installed Plymouth theme; the WDG launch is recorded footage. Later AUTO GPS and WiFi/BLE changes have their own screenshots below. Exact GPS and credentials are hidden; public conversations and nodes remain visible.
-
-### 🚀 Starting WatchDogsGo
-
-| 🖥️ WDG starts | ✅ System check and loading |
-| --- | --- |
-| ![Recorded WDG title and startup screen](docs/media/wdg-startup.png) | ![Recorded WDG hardware checks and loading screen](docs/media/wdg-loading.png) |
-
-*Recorded WDG launch and loading sequence. The personal uConsole boot theme in the film is separate from the game installer.*
 
 ## 🧰 Newer LOCOSP features — already on board
 
@@ -309,6 +301,24 @@ Opening the notes never installs an update. Installation needs a separate confir
 🔗 **Know your update source:** the window shows the verified repository; press **O** to open it on GitHub. The updater follows its permanent repository ID across repository renames. Installed release notes remain available offline. See [Updating](docs/UPDATING.md) for the release and recovery contract.
 
 
+## 🎞️ The original MeshCore + Meshtastic demo
+
+**🔊 Press Play, then unmute with the speaker icon for the full 100-second demo with the selected Infraction / Venom soundtrack.** GitHub starts the player muted.
+
+https://github.com/user-attachments/assets/498dfb34-79a6-4067-8d6a-e5e206c29b02
+
+▶️ **[Open / download the full-quality film](docs/media/demo.mp4)** · 🎞️ **[Media details and soundtrack credit](docs/media/README.md)**
+
+The film shows the startup theme, WDG launch, protocol selection, both chats, contacts and a historical upload confirmation. The boot segment recreates the installed Plymouth theme; the WDG launch is recorded footage. Later AUTO GPS and WiFi/BLE changes have their own screenshots below. Exact GPS and credentials are hidden; public conversations and nodes remain visible.
+
+### 🚀 Starting WatchDogsGo
+
+| 🖥️ WDG starts | ✅ System check and loading |
+| --- | --- |
+| ![Recorded WDG title and startup screen](docs/media/wdg-startup.png) | ![Recorded WDG hardware checks and loading screen](docs/media/wdg-loading.png) |
+
+*Recorded WDG launch and loading sequence. The personal uConsole boot theme in the film is separate from the game installer.*
+
 ## 🎮 What is WatchDogsGo?
 
 **Watch Dogs Go was created by [LOCOSP](https://github.com/LOCOSP).** It is a Pyxel-based, open-world cyberdeck RPG that brings real hardware observations into a Watch Dogs-inspired interface. KG Edition builds on **WDG 0.9.16**; the original game, MeshCore messenger, maps and progression are LOCOSP's work.
@@ -415,8 +425,8 @@ Optional driver sources/private replay fixtures can cause skips. Software checks
 - 📦 [Private release preparation](docs/RELEASE_PREPARATION.md)
 - 🙏 [Third-party notices](THIRD_PARTY_NOTICES.md)
 
-### 🎵 Demo soundtrack
+### 🎵 Soundtrack in both films
 
 Music from **#InAudio**: https://inaudio.org/
 
-**Infraction — Venom (Rave), Instrumental** — [track](https://inaudio.org/track/venom-rave/) · [free-use terms](https://inaudio.org/license-terms/). Edited excerpt with adjusted duration, fades and volume; separate from the software's MIT license.
+**Infraction — Venom (Rave), Instrumental** — [track](https://inaudio.org/track/venom-rave/) · [free-use terms](https://inaudio.org/license-terms/). The full tour preserves the instrumental arrangement, with fades, volume adjustment and original transition effects. The earlier demo uses an edited excerpt. Music is separate from the software's MIT license.
