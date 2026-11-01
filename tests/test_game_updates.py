@@ -665,7 +665,7 @@ class GitHubSourceMetadataTests(unittest.TestCase):
         self.addCleanup(directory.cleanup)
         self.folder = Path(directory.name)
         self.manager = updates.GameUpdates(root=self.folder, home=self.folder)
-        self.value = dict(id=updates.REPOSITORY_ID, full_name=updates.OWNER + "/WatchDogsGo",
+        self.value = dict(id=updates.REPOSITORY_ID, full_name=updates.REPOSITORY,
                           owner=dict(id=updates.OWNER_ID, login=updates.OWNER))
 
     def test_public_lookup_needs_no_github_cli_or_authentication(self):

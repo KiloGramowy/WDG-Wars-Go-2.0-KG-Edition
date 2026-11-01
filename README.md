@@ -274,7 +274,7 @@ The release includes the tested shutdown fix and updater. Screenshots show UI st
 ```bash
 mkdir -p ~/python
 git clone --branch main --single-branch \
-  https://github.com/KiloGramowy/WatchDogsGo.git \
+  https://github.com/KiloGramowy/WatchDogsGo-KG-Edition.git \
   ~/python/WatchDogsGo-KiloGramowy
 cd ~/python/WatchDogsGo-KiloGramowy
 bash setup.sh

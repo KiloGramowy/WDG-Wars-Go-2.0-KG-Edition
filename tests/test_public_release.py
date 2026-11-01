@@ -200,7 +200,7 @@ class PublicationTests(unittest.TestCase):
         files["README.md"]=("# Approved game description\n\n![Current UI](docs/media/example.png)\n\n"+FILM+"\n").encode()
         files["watchdogs/__init__.py"]=b'__version__ = "0.9.17"\n'
         files["watchdogs/game_updates.py"]=(f'REPOSITORY_ID = {publication.EXPECTED_REPOSITORY_ID}\n'
-            'REPOSITORY = "KiloGramowy/WatchDogsGo"\nBRANCH = "main"\nCHANNEL = "stable"\nFEED_PATH = "updates/stable.json"\n').encode()
+            f'REPOSITORY = "{publication.OWNER}/{publication.PUBLIC_NAME}"\nBRANCH = "main"\nCHANNEL = "stable"\nFEED_PATH = "updates/stable.json"\n').encode()
         image=b"\x89PNG\r\n\x1a\n"+b"\x00\x00\x00\rIHDR"+struct.pack(">II",32,24)
         files["docs/media/example.png"]=image
         files["docs/media/media-manifest.json"]=json.dumps(dict(files=[dict(path="example.png",
@@ -222,7 +222,7 @@ class PublicationTests(unittest.TestCase):
         git(cls.seed,"checkout","main");git(cls.seed,"reset","--hard",cls.root)
         target=cls.seed/"updates/stable.json";target.parent.mkdir()
         target.write_text(json.dumps(dict(schema=2,repository_id=publication.EXPECTED_REPOSITORY_ID,
-            repository="KiloGramowy/WatchDogsGo",channel="stable",release_id="v0.9.17",
+            repository=publication.OWNER+"/"+publication.PUBLIC_NAME,channel="stable",release_id="v0.9.17",
             version="0.9.17",source_commit=cls.root,title="Approved baseline",notes="Full approved notes.")),encoding="utf-8")
         git(cls.seed,"add",".");git(cls.seed,"commit","-qm","Approved baseline feed")
 

@@ -4,15 +4,15 @@ This page separates recorded software checks from real hardware evidence. Prepar
 
 ## Formal public fork source transition
 
-The formal release fork is repository ID `1442123109`, prepared as `KiloGramowy/WatchDogsGo-fork` and renamed to `KiloGramowy/WatchDogsGo` at verified cutover. Its public parent and source are `LOCOSP/WatchDogsGo`, ID `1208909098`. The private development repository and its five branches remain separate.
+The formal release fork is `KiloGramowy/WatchDogsGo-KG-Edition`, repository ID `1442123109`. Its public parent and source are `LOCOSP/WatchDogsGo`, ID `1208909098`. The canonical name is already set; no further rename is planned. The private development repository and its five branches remain separate.
 
 Preparation merge `be199c2ced736192399949bbf2b68098a4b5ae57` joins public LOCOSP commit `6412603d6fa7c8f2e6fe76873531d83c61adc63d` with the reviewed published snapshot `29412dccbfe9aff4c798252a7510d4b0314d7168`. That merge retains the reviewed snapshot while establishing public ancestry; it does not import the private development branches. Subsequent source-binding and feed changes require their own recorded verification.
 
-The game version remains **0.9.17**. Existing standalone builds pin the former repository ID `1441947361`, so the maintained uConsole requires a controlled code-only 0.9.17 → 0.9.17 migration with a full verified source manifest. Reusing the final repository name does not retarget those installations. The old standalone is removed after the authorized checks; no legacy update or handoff service is retained.
+The game version remains **0.9.17**. Existing standalone builds from `KiloGramowy/WatchDogsGo` pin the former repository ID `1441947361`, so the maintained uConsole requires a controlled code-only 0.9.17 → 0.9.17 migration to the new fork with a full verified source manifest. The new name alone does not retarget those installations. The old standalone is removed after the authorized checks; no legacy update or handoff service is retained.
 
 | Final verification area | Required record |
 | --- | --- |
-| GitHub fork relationship | Verify ID `1442123109`, `fork: true`, public LOCOSP parent/source ID `1208909098`, one `main` branch and the final canonical name. |
+| GitHub fork relationship | Verify `KiloGramowy/WatchDogsGo-KG-Edition`, ID `1442123109`, `fork: true`, public LOCOSP parent/source ID `1208909098` and one `main` branch. |
 | Source and feed | Record the approved formal-fork code commit, schema-2 feed, version 0.9.17 and matching repository ID. |
 | Software checks | Record fresh commands, totals and any skips for the final candidate; the earlier standalone totals below are not new results for this source transition. |
 | Maintained uConsole | Verify the code-only migration, complete runtime manifest, current player/configuration fingerprint, Proximity pairing and code-only rollback. |

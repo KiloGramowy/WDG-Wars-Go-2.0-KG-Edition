@@ -32,7 +32,7 @@ import urllib.request
 
 # The immutable GitHub identity stays valid when the review suffix is removed.
 # The name is a bootstrap label, not authority to fetch another repository.
-REPOSITORY = "KiloGramowy/WatchDogsGo"
+REPOSITORY = "KiloGramowy/WatchDogsGo-KG-Edition"
 REPOSITORY_ID = 1442123109
 OWNER = "KiloGramowy"
 OWNER_ID = 315514197

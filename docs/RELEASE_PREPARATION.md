@@ -7,9 +7,9 @@ This release is a formal public fork of [LOCOSP/WatchDogsGo](https://github.com/
 | Repository | Purpose | Branch policy |
 | --- | --- | --- |
 | Private development repository, `KiloGramowy/esp32-watch-dogs` (ID `1437688988`) | Preserve the integrated source, development history and recovery references | Keep the five existing development branches; use `codex/wdg-go-wars-release` as the consolidated source |
-| Formal public fork, `KiloGramowy/WatchDogsGo-fork`, then `KiloGramowy/WatchDogsGo` (ID `1442123109`) | Release the reviewed source, documentation and media with GitHub's upstream fork relationship | One branch, `main`; retain public LOCOSP ancestry and the reviewed published snapshot, not private operational history |
+| Formal public fork, `KiloGramowy/WatchDogsGo-KG-Edition` (ID `1442123109`) | Release the reviewed source, documentation and media with GitHub's upstream fork relationship | One branch, `main`; retain public LOCOSP ancestry and the reviewed published snapshot, not private operational history |
 
-The current README, feature guides, reviewed media and integrated source belong together. Users should not assemble the release by merging prototype or development branches. The temporary `WatchDogsGo-fork` name is used for verification before the formal fork takes the final `WatchDogsGo` name. A fork of a public repository is public during preparation; see [GitHub's fork visibility rules](https://docs.github.com/en/pull-requests/reference/forks).
+The current README, feature guides, reviewed media and integrated source belong together. Users should not assemble the release by merging prototype or development branches. The formal fork now uses the canonical name `WatchDogsGo-KG-Edition`; no further rename is planned. A fork of a public repository is public during preparation; see [GitHub's fork visibility rules](https://docs.github.com/en/pull-requests/reference/forks).
 
 Older development branches are history and recovery references, rather than additional release editions. Keep them in the development repository. Tidying the separate review repository does not require deleting or rewriting that history.
 
@@ -49,13 +49,13 @@ The development repository is a **private GitHub fork of a private upstream repo
 
 The release fork's parent and source are **public** `LOCOSP/WatchDogsGo`, ID `1208909098`. The private `LOCOSP/esp32-watch-dogs` network belongs to the separate development workflow and does not prevent creating this public fork. GitHub's metadata, not a README badge or a Git remote alone, establishes the formal relationship.
 
-After the required tests, the formal fork becomes `KiloGramowy/WatchDogsGo`, retaining its own immutable ID `1442123109`, owner ID `315514197`, and `main` branch. The previous standalone publication used ID `1441947361`; it is removed after verified backups and cutover as authorized, not retained as a legacy update or handoff repository. Reusing its name does not transfer that old ID to the formal fork. Do not merge or mirror-push private development history into either public network.
+The formal fork is `KiloGramowy/WatchDogsGo-KG-Edition`, with immutable ID `1442123109`, owner ID `315514197`, and `main` branch. The previous standalone publication, `KiloGramowy/WatchDogsGo` with ID `1441947361`, is removed after verified backups and cutover as authorized, not retained as a legacy update or handoff repository. The two repositories have different identities. Do not merge or mirror-push private development history into either public network.
 
 ## Prepared release and publication checks
 
 The numeric release remains **0.9.17**. Commit its reviewed formal-fork code first, then commit the schema-2 `updates/stable.json` feed pointing `source_commit` to that exact code commit. The feed also pins repository ID `1442123109`, channel `stable`, release ID, version, title and full notes. A feed-only descendant with identical runtime Git entries is treated as the same installed release. In-game offline notes are runtime content; changing them requires an updated approved code source. This workflow does not require publishing GitHub tags, a GitHub Release or a release asset.
 
-During preparation, clone using the temporary fork's URL shown by its **Code** button. The final installation URL is `https://github.com/KiloGramowy/WatchDogsGo.git` after cutover. Neither public URL requires GitHub credentials. Do not put GitHub tokens or API secrets in URLs or the repository.
+The installation URL is `https://github.com/KiloGramowy/WatchDogsGo-KG-Edition.git`, also available from its **Code** button. This public URL requires no GitHub credentials. Do not put GitHub tokens or API secrets in URLs or the repository.
 
 In a clean checkout of the reviewed `main`, replace `FULL_APPROVED_MAIN_SHA` below with the full 40-character commit at the tip of the prepared branch:
 
@@ -63,7 +63,7 @@ In a clean checkout of the reviewed `main`, replace `FULL_APPROVED_MAIN_SHA` bel
 python -B tools/public_release.py --check --expected-head FULL_APPROVED_MAIN_SHA
 ```
 
-The default invocation and `--dry-run` are also read-only. Preflight must verify the fixed fork and owner IDs, public LOCOSP parent/source IDs, administration access, local/remote commit equality, the reviewed public ancestry, exactly one `main` branch, source/media consistency, updater binding and baseline feed. It must also account for the previous standalone publication occupying the final name. It does not rename, remove or upload anything.
+The default invocation and `--dry-run` are also read-only. Preflight must verify the fixed fork and owner IDs, public LOCOSP parent/source IDs, administration access, local/remote commit equality, the reviewed public ancestry, exactly one `main` branch, source/media consistency, updater binding and baseline feed. It must distinguish this fork from the previous standalone publication by repository ID. It does not rename, remove or upload anything.
 
 Guarded activation is a maintainer operation after tests and the owner's cutover instruction:
 
@@ -71,7 +71,7 @@ Guarded activation is a maintainer operation after tests and the owner's cutover
 python -B tools/public_release.py --activate --confirm-public --expected-head FULL_APPROVED_MAIN_SHA
 ```
 
-Activation repeats preflight and verifies the formal fork at the final name. The fork is already public; its identity and parent/source relationship must remain unchanged by the rename. The separately controlled removal of the old standalone requires verified backups and the authorized final checks. Partial failures must report which repository currently occupies each name; do not announce success from a rename alone.
+Activation repeats preflight and verifies the already-public formal fork at `KiloGramowy/WatchDogsGo-KG-Edition`; no rename or visibility change is needed. Its identity and parent/source relationship must remain intact. The separately controlled removal of the old standalone requires verified backups and the authorized final checks. Partial failures must report the state of both repositories; do not announce success from the canonical name alone.
 
 GitHub documents redirects for repository web/Git URLs and warns that reusing a name breaks its earlier redirects: [Renaming a repository](https://docs.github.com/en/repositories/creating-and-managing-repositories/renaming-a-repository). Do not promise redirects to the deleted standalone ID. After cutover and its removal, repeat anonymous repository identity, README, feed, linked images and native movie checks. The public README can supply an expiring signed video URL even when the direct attachment route returns 404; verify the rendered source without credentials. Do not save those signed URLs or tokens in reports. Media access must be rechecked after deleting the repository that originally hosted the attachment; an earlier successful preview is insufficient.
 
