@@ -53,12 +53,6 @@ The optional [FusedStamen WiFi/BLE bridge](https://github.com/FusedStamen/WatchD
 
 LoRa uses separate hardware and can receive while the ESP32 alternates. Packet sniffer and HS capture are separate operations, not additional parallel phases.
 
-## 📋 Choose a scanned WiFi network
-
-**ATTACK → Deauth** opens the same scan table used by Evil Twin, in a single-network form mode. It shows **SSID, BSSID, channel and RSSI** from the current session's previous scan results. Identical SSIDs remain separate by BSSID. Opening the popup does not run a command.
-
-Use **↑/↓** and **Enter** to fill the existing BSSID/channel form; selection alone does not execute it. **M** opens the original empty manual form, **R** requests a fresh WiFi scan and **Esc** cancels. Refresh uses the scanner's existing stop/acknowledgement barrier and cancels a selected wardrive schedule. While refresh is pending, rows cannot fill the form. A failed or timed-out scan leaves retry/manual input available; late replies cannot reopen a cancelled popup. Whitelisted networks remain blocked. The Evil Twin popup keeps its existing multi-selection and portal flow.
-
 ## 📤 Uploads, XP and ownership
 
 The WDGWars pending counter counts **sessions**, not nodes. An active session stays open for further observations. New records or changed supported fields can create a new pending payload even when the identifiers are already known.

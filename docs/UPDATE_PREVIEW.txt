@@ -29,15 +29,7 @@ Before: Ctrl+H hid the panel when no contacts were saved.
 Changed: show CONTACTS (0) and the empty-list message. Keep MeshCore and
 Meshtastic contacts and panel states separate.
 
-5. DEAUTH WIFI NETWORK LIST
----------------------------
-Before: BSSID and channel had to be entered manually.
-Changed: use the Evil Twin scan-table popup for a single network choice.
-Show SSID, BSSID, channel and RSSI. Enter fills the form; M opens manual
-input, R refreshes the scan and Esc cancels. Selection does not execute
-the form. Keep whitelist checks and the scanner STOP barrier.
-
-6. UPDATE NOTES
+5. UPDATE NOTES
 ---------------
 Before: change descriptions used one text color.
 Changed: use numbered yellow titles on dark strips, underlines and blank

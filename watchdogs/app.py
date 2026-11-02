@@ -969,7 +969,6 @@ class WatchDogsGame:
         self._et_select_args = ""        # "1 3 5" for select_networks cmd
         self._et_net_screen = False      # show network picker overlay
         self._et_scan_pending = False    # waiting for scan results
-        self._wifi_input_picker = None  # network choice fills a form only
 
         # Loot password history viewer
         self._loot_pwd_screen = False
@@ -1972,10 +1971,6 @@ class WatchDogsGame:
     def _activate_menu_item(self, cat_idx: int, item_idx: int):
         _, items = MENU_CATS[cat_idx]
         _hotkey, name, cmd, state_key, input_type = items[item_idx]
-        if cmd == "start_deauth" and input_type == "bssid_ch":
-            self.menu_open = False
-            self._start_wifi_input_picker(cat_idx, item_idx)
-            return
         if input_type:
             self.menu_open = False
             self._start_input_dialog(cat_idx, item_idx, input_type)
@@ -2297,26 +2292,14 @@ class WatchDogsGame:
         if cancel_pending:
             self._pending_cmd = None
             self._pending_cmd_state = self._pending_cmd_name = ""
-            picker = getattr(self, "_wifi_input_picker", None)
-            if picker and picker["pending"]:
-                picker["pending"] = False
-                picker["status"] = "Scan cancelled. R scan or M manual."
 
     def _begin_esp_scan(self, final_cmd, state_key, name):
         scheduled = state_key in getattr(self, "_wardrive_selected", ())
         if not self._send(final_cmd, wardrive=scheduled):
-            picker = getattr(self, "_wifi_input_picker", None)
-            if picker and picker["pending"] and state_key == "wifi_scan":
-                picker.update(pending=False, status="Scan could not start. R retry or M manual.")
             self.msg(f"[ERR] Could not start {name}", C_ERROR)
             return False
         self._clear_esp_scan_state()
         self._set_running(state_key, True)
-        picker = getattr(self, "_wifi_input_picker", None)
-        if picker and picker["pending"] and state_key == "wifi_scan":
-            # Clear only after the STOP barrier and a successful scan start.
-            self.state.networks.clear()
-            picker["started"] = True
         if state_key in ("wardriving", "wifi_scan"):
             self._wifi_scan_start_time = time.time()
         if state_key in ("bt_scanning", "ble_scan"):
@@ -2948,82 +2931,10 @@ class WatchDogsGame:
         self._portal_select_screen = True
         self._attack_step = "select_portal"
 
-    def _start_wifi_input_picker(self, cat_idx, item_idx):
-        """Choose a single scanned network; never execute a form command."""
-        self._wifi_input_picker = dict(menu=(cat_idx, item_idx), pending=False,
-                                       started=False, status="Previous scan results. R refresh or M manual.")
-        self._attack_scan_results = list(self.state.networks)
-        self._et_net_sel = 0
-        self._et_net_selected.clear()
-        self._et_scan_pending = False
-        self._et_net_screen = True
 
-    def _refresh_wifi_input_scan(self):
-        picker = self._wifi_input_picker
-        if not picker or picker["pending"]:
-            return
-        if not self._esp32 and not self._try_reconnect_esp32():
-            picker["status"] = "No scanner connected. R retry or M manual."
-            return
-        picker.update(pending=True, started=False, status="Scanning... ESC cancels; M manual.")
-        if not self._start_scan_cmd("scan_networks", "wifi_scan", "WiFi list scan"):
-            picker.update(pending=False, status="Scan could not start. R retry or M manual.")
 
-    def _complete_wifi_input_scan(self):
-        picker = getattr(self, "_wifi_input_picker", None)
-        if (picker and self._et_net_screen and picker["pending"]
-                and picker["started"] and self._wifi_scan_only):
-            self._attack_scan_results = list(self.state.networks)
-            self._et_net_sel = 0
-            picker.update(pending=False, status="Scan complete. ENTER fills the form; M manual.")
 
-    def _close_wifi_input_picker(self):
-        picker = self._wifi_input_picker
-        self._wifi_input_picker = None
-        self._et_net_screen = False
-        if picker and picker["pending"]:
-            # Cancel our scan/queued start; late completion cannot reopen UI.
-            self._request_esp_stop()
-        return picker["menu"]
 
-    def _update_wifi_input_picker(self):
-        picker = self._wifi_input_picker
-        if pyxel.btnp(pyxel.KEY_ESCAPE):
-            self._close_wifi_input_picker()
-            self._esc_consumed_frame = pyxel.frame_count
-            return
-        if pyxel.btnp(pyxel.KEY_M):
-            menu = self._close_wifi_input_picker()
-            self._start_input_dialog(*menu, "bssid_ch")
-            return
-        if pyxel.btnp(pyxel.KEY_R):
-            self._refresh_wifi_input_scan()
-            return
-        if picker["pending"]:
-            return
-        nets = self._attack_scan_results
-        self._et_net_sel = max(0, min(self._et_net_sel, len(nets) - 1))
-        if pyxel.btnp(pyxel.KEY_UP):
-            self._et_net_sel = max(0, self._et_net_sel - 1)
-        elif pyxel.btnp(pyxel.KEY_DOWN):
-            self._et_net_sel = max(0, min(len(nets) - 1, self._et_net_sel + 1))
-        elif pyxel.btnp(pyxel.KEY_RETURN) and nets:
-            net = nets[self._et_net_sel]
-            bssid = str(net.bssid).upper()
-            try:
-                channel = int(net.channel)
-            except (TypeError, ValueError):
-                channel = 0
-            if not re.fullmatch(r"(?:[0-9A-F]{2}:){5}[0-9A-F]{2}", bssid) or not 1 <= channel <= 233:
-                picker["status"] = "Invalid BSSID/channel. R scan or M manual."
-                return
-            if self._whitelist.is_blocked(bssid):
-                picker["status"] = "This network is whitelisted. Choose another network."
-                return
-            menu = self._close_wifi_input_picker()
-            self._start_input_dialog(*menu, "bssid_ch")
-            self.input_fields[0]["value"] = bssid
-            self.input_fields[1]["value"] = str(channel)
 
     def _show_net_selection(self):
         """Show network picker overlay for Evil Twin."""
@@ -5204,9 +5115,6 @@ class WatchDogsGame:
     def _update_picker_overlay(self):
         """Handle UP/DOWN/ENTER/ESC for network or portal picker overlays."""
         import pyxel as px
-        if self._et_net_screen and getattr(self, "_wifi_input_picker", None) is not None:
-            self._update_wifi_input_picker()
-            return
         if self._et_net_screen:
             nets = self._attack_scan_results
             if px.btnp(px.KEY_UP):
@@ -5764,8 +5672,6 @@ class WatchDogsGame:
         # --- Scan cycle completion ---
         # One-shot scans (SCAN tab): mark as done, stop running flag
         if "scan results printed" in sl:
-            if getattr(self, "_wifi_input_picker", None):
-                self._complete_wifi_input_scan()
             # Evil Twin scan pending → show network picker
             if self._et_scan_pending:
                 self._et_scan_pending = False
@@ -8336,9 +8242,8 @@ class WatchDogsGame:
     # ------------------------------------------------------------------
 
     def _draw_net_picker(self):
-        """Draw the shared scan table, with a form-only single-choice mode."""
+        """Draw Evil Twin network selection overlay."""
         nets = self._attack_scan_results
-        picker = getattr(self, "_wifi_input_picker", None)
         # Build client count lookup from sniffer data (if available)
         cli_map: dict[str, int] = {}
         for sap in self.state.sniffer_aps:
@@ -8349,17 +8254,13 @@ class WatchDogsGame:
         # Dialog box — 14px rows for 5x8 font
         ROW_H = 14
         dw, dh = 540, min(260, 60 + len(nets) * ROW_H)
-        if picker:
-            dh = min(260, max(108, 84 + len(nets) * ROW_H))
         dx = (W - dw) // 2
         dy = (H - dh) // 2
         pyxel.rect(dx, dy, dw, dh, 0)
         pyxel.rectb(dx, dy, dw, dh, C_HACK_CYAN)
         pyxel.rectb(dx + 1, dy + 1, dw - 2, dh - 2, C_COAST)
         # Title
-        pyxel.text(dx + 4, dy + 4,
-                   "DEAUTH — Select Network" if picker else "EVIL TWIN — Select Target Network",
-                   C_HACK_CYAN)
+        pyxel.text(dx + 4, dy + 4, "EVIL TWIN — Select Target Network", C_HACK_CYAN)
         pyxel.line(dx + 2, dy + 14, dx + dw - 3, dy + 14, C_COAST)
         # Column headers — spaced for 5x8 font (widened from 4x6)
         hy = dy + 18
@@ -8372,8 +8273,6 @@ class WatchDogsGame:
         pyxel.line(dx + 2, hy + 10, dx + dw - 3, hy + 10, 1)
         # Network list with scroll
         max_vis = (dh - 70) // ROW_H
-        if picker:
-            max_vis = (dh - 84) // ROW_H
         start = max(0, self._et_net_sel - max_vis + 1)
         y = hy + 14
         picked = self._et_net_selected
@@ -8390,8 +8289,8 @@ class WatchDogsGame:
                     if dx + 2 < _nx < dx + dw - 3:
                         pyxel.line(_nx, y - 1, _nx, y + ROW_H - 4, _sc)
             # Checkbox: [X] or [ ]
-            mark = ">" if picker and cursor else (" " if picker else f"[{'X' if checked else ' '}]")
-            pyxel.text(dx + 4, y + 2, mark,
+            mark = "X" if checked else " "
+            pyxel.text(dx + 4, y + 2, f"[{mark}]",
                        0 if cursor else (C_WARNING if checked else C_DIM))
             ssid = (net.ssid or "<hidden>")[:24]
             bssid = net.bssid if hasattr(net, 'bssid') else "?"
@@ -8419,19 +8318,14 @@ class WatchDogsGame:
             pyxel.rect(dx + dw - 4, bar_y, 2, bar_h, C_HACK_CYAN)
         # Selection info
         n_sel = len(picked)
-        if n_sel > 0 and not picker:
+        if n_sel > 0:
             pyxel.text(dx + dw - 130, dy + 4,
                        f"1st=clone {n_sel-1}=deauth" if n_sel > 1 else "1 target",
                        C_WARNING)
         # Hints
         has_cli = bool(cli_map)
         hint = "SPACE mark  ENTER confirm  ESC cancel"
-        if picker:
-            hint = "ENTER select  R scan  M manual  ESC cancel"
-            if not nets:
-                pyxel.text(dx + 26, hy + 14, "No scan results. Press R to scan or M for manual input.", C_DIM)
-            pyxel.text(dx + 4, dy + dh - 25, picker["status"][:104], C_DIM)
-        elif not has_cli:
+        if not has_cli:
             hint += "  (run Sniffer first for client counts)"
         pyxel.text(dx + 4, dy + dh - 11, hint, C_DIM)
         # Count

@@ -18,7 +18,7 @@ Failed or offline checks are explicit. They are never presented as evidence that
 
 ## Prepared stable release
 
-The prepared release is **0.9.18**. It combines legacy progress preservation, bridge BLE completion, empty mesh contact panels and the WiFi form picker. Its public source is the formal fork [KiloGramowy/WDG-Wars-Go-2.0-KG-Edition](https://github.com/KiloGramowy/WDG-Wars-Go-2.0-KG-Edition), based on [LOCOSP/WatchDogsGo](https://github.com/LOCOSP/WatchDogsGo). Its approved `updates/stable.json` feed identifies the release's code; committing that feed does not create a GitHub Release.
+The prepared release is **0.9.18**. It combines legacy progress preservation, bridge BLE completion, empty mesh contact panels and clearer update notes. Its public source is the formal fork [KiloGramowy/WDG-Wars-Go-2.0-KG-Edition](https://github.com/KiloGramowy/WDG-Wars-Go-2.0-KG-Edition), based on [LOCOSP/WatchDogsGo](https://github.com/LOCOSP/WatchDogsGo). Its approved `updates/stable.json` feed identifies the release's code; committing that feed does not create a GitHub Release.
 
 The code commit comes first. A second, feed-only commit records that first commit as `source_commit`. A fresh clone can therefore have a newer feed/documentation HEAD while running the same approved version. The updater reports it as current only when the approved commit and installed commit have identical runtime Git entries. In-game offline notes, including `docs/UPDATE_PREVIEW.txt`, are part of that runtime set. Unadvertised code changes cannot use this exception.
 
