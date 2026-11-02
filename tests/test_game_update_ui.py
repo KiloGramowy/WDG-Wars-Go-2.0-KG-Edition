@@ -306,7 +306,7 @@ class GameUpdateUiTests(unittest.TestCase):
 
     def test_numbered_change_titles_are_yellow_and_fact_lines_stay_white(self):
         g = game()
-        notes = ('1. XP AND PLAYER DATA\nBefore: old saves could lose XP.\n'
+        notes = ('1. XP AND PLAYER DATA\n---------------------\nBefore: old saves could lose XP.\n'
                  'Changed: preserve XP and create a backup.\n\n'
                  '2. BLE SCAN COMPLETION\nBefore: bridge scan timed out.\n'
                  'Changed: accept its final completion marker.')
@@ -315,8 +315,10 @@ class GameUpdateUiTests(unittest.TestCase):
         colors = {args[2]: args[3] for args in self.texts()}
         self.assertEqual(colors['1. XP AND PLAYER DATA'], ENV['C_WARNING'])
         self.assertEqual(colors['2. BLE SCAN COMPLETION'], ENV['C_WARNING'])
+        self.assertEqual(colors['---------------------'], ENV['C_WARNING'])
         self.assertEqual(colors['Before: old saves could lose XP.'], ENV['C_TEXT'])
         self.assertEqual(colors['Changed: preserve XP and create a backup.'], ENV['C_TEXT'])
+        self.assertIn(('rect', (108, 115, 424, 9, 1)), PX.calls)
         self.assert_above_output()
         g._game_updates.prepare.assert_not_called()
         g._game_updates.install.assert_not_called()

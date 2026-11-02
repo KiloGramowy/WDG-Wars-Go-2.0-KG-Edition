@@ -9465,7 +9465,11 @@ class WatchDogsGame:
         self._gameupd_scroll = min(maximum, max(0, self._gameupd_scroll))
         for i, line in enumerate(lines[self._gameupd_scroll:self._gameupd_scroll + 9]):
             heading = re.fullmatch(r"\d{1,2}\. [A-Z][A-Z0-9 /()+,-]*", line)
-            pyxel.text(dx + 10, dy + 94 + i * 9, line, C_WARNING if heading else C_TEXT)
+            divider = re.fullmatch(r"-{3,83}", line)
+            y = dy + 94 + i * 9
+            if heading:
+                pyxel.rect(dx + 8, y - 1, dw - 16, 9, 1)
+            pyxel.text(dx + 10, y, line, C_WARNING if heading or divider else C_TEXT)
         if maximum:
             count = f"{self._gameupd_scroll + 1}-{min(len(lines), self._gameupd_scroll + 9)}/{len(lines)}"
             pyxel.text(dx + dw - len(count) * 5 - 10, dy + 175, count, C_DIM)

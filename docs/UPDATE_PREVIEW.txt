@@ -2,6 +2,7 @@ WatchDogsGo 0.9.18
 Original game by LOCOSP. Modified by KiloGramowy.
 
 1. XP, LEVEL AND SAVED DATA
+---------------------------
 Before: an old v1 save could lose XP, badges, contacts and history.
 Changed: preserve saved progress and counters; create a backup before
 migration. Saved zero stays zero. Unsafe migration stops startup.
@@ -9,23 +10,27 @@ For a separate clone, run.sh accepts the old installation root as its
 data argument. Already erased XP requires an intact save or backup.
 
 2. BLE SCAN COMPLETION
+----------------------
 Before: Linux bridge results could end with a false scan timeout.
 Changed: accept its final BLE scan done marker. Keep XIAO/projectZero
 Summary support and save/STOP checks. Adapter warnings pause scanning;
 late replies cannot restart a cancelled schedule.
 
 3. MESHCORE CONTACT LIST
+------------------------
 Before: Ctrl+H hid an empty list; keys still reached the chat.
 Changed: show CONTACTS (0), block chat input while the panel is open,
 and close the empty panel with Esc without leaving chat. Keep the panel
 visible after deleting the final contact.
 
 4. MESHTASTIC CONTACT LIST
+--------------------------
 Before: Ctrl+H hid the panel when no contacts were saved.
 Changed: show CONTACTS (0) and the empty-list message. Keep MeshCore and
 Meshtastic contacts and panel states separate.
 
 5. DEAUTH WIFI NETWORK LIST
+---------------------------
 Before: BSSID and channel had to be entered manually.
 Changed: use the Evil Twin scan-table popup for a single network choice.
 Show SSID, BSSID, channel and RSSI. Enter fills the form; M opens manual
@@ -33,6 +38,7 @@ input, R refreshes the scan and Esc cancels. Selection does not execute
 the form. Keep whitelist checks and the scanner STOP barrier.
 
 6. UPDATE NOTES
+---------------
 Before: change descriptions used one text color.
-Changed: separate each correction with a numbered yellow title and blank
+Changed: use numbered yellow titles on dark strips, underlines and blank
 line; keep the factual description in white.
