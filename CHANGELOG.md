@@ -6,6 +6,8 @@
 - Resume reception with a 60-second grace period for retained aircraft; new position messages move their markers. Aircraft no longer heard then expire normally.
 - Start with an empty aircraft map after restarting the game. Saved XP, badges and aircraft logs remain independent of map visibility.
 - Retain the 0.9.19 empty startup map and all earlier progress/contact fixes. This release supersedes the 0.9.19 ADS-B visibility and indefinite mesh-after-OFF policies described below.
+- Display `UP TO DATE` only after the approved source has been checked and matches the installed runtime. Preserve explicit check failures and source validation.
+- Automatically restart after a successful installation performed by the 0.9.19.1 updater, preserving the interpreter, launch arguments and environment. Preparing, cancelling or failing an update never restarts the game. Older running 0.9.17–0.9.19 clients still need one manual relaunch for their first upgrade to 0.9.19.1.
 
 # 0.9.19 — current-session mesh markers and live ADS-B visibility
 

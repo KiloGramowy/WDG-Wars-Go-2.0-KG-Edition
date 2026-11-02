@@ -16,6 +16,10 @@ The updater lives in **SYSTEM → Update Game**. Its menu row retains the origin
 
 Failed or offline checks are explicit. They are never presented as evidence that the installed game is current. Scanning and reception continue while a player reads notes; installation stops the game's operations and saves final records before replacing files.
 
+A successfully verified current installation displays **UP TO DATE**. The 0.9.19.1 updater automatically restarts the game after a completed installation, using the same Python interpreter, launch arguments and environment. Preparation, cancellation and failures do not restart it. An unsuccessful restart keeps the installed code and saved data and offers retry or a manual relaunch.
+
+**First upgrade from 0.9.17, 0.9.18 or 0.9.19:** that already running older updater still requires one manual relaunch. After installation, press Enter or Esc to close the game, then start it again. Automatic restart applies to subsequent updates after the 0.9.19.1 updater is running.
+
 ## Prepared stable release
 
 The prepared version is **0.9.19.1**. After ADS-B or a mesh protocol is switched OFF, its map/radar markers disappear progressively between five and ten minutes, farther from the receiver first. Active radio ADS-B uses the last received message for its 60-second timeout. Saved data and earlier progress, BLE and contact-panel corrections are preserved. The candidate is tested on the maintained uConsole before the owner authorizes publication; its presence in a local checkout does not advertise a public update. Its public source is the formal fork [KiloGramowy/WDG-Wars-Go-2.0-KG-Edition](https://github.com/KiloGramowy/WDG-Wars-Go-2.0-KG-Edition), based on [LOCOSP/WatchDogsGo](https://github.com/LOCOSP/WatchDogsGo). Its approved `updates/stable.json` feed identifies the published release's code; committing that feed does not create a GitHub Release.

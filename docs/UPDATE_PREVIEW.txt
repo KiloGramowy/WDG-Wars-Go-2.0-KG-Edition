@@ -39,6 +39,18 @@ map merely because the game restarted. The ADS-B and mesh OFF rules
 above replace the corresponding historical 0.9.19 rules below.
 Original game by LOCOSP. Modified by KiloGramowy.
 
+6. UPDATE STATUS AND AUTOMATIC RESTART
+------------------------------------
+Before: a current check used a longer status message, and a completed
+installation required closing and launching the game manually.
+Changed: a verified current installation shows UP TO DATE. Updates
+installed by the 0.9.19.1 updater restart the game automatically after
+saving progress, stopping devices and completing the code replacement.
+Cancelled, failed or merely prepared updates do not restart the game.
+First upgrade from 0.9.17, 0.9.18 or 0.9.19: the running old updater
+still needs one manual relaunch. After installation press ENTER or ESC
+to close the game, then launch it again. Later updates restart it for you.
+
 RELEASE 0.9.19 - MAP MICROFIX
 ---------------------------
 Historical notes. ADS-B and mesh OFF policies are superseded by 0.9.19.1.
