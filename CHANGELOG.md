@@ -1,4 +1,4 @@
-# 0.9.18 — preserve LOCOSP progress and complete bridge BLE scans
+# 0.9.18 — preserve progress, complete bridge scans and repair network/contact pickers
 
 - Upgrade the legacy v1 loot database without rebuilding earned XP, badges, contacts or discovery history. Existing session counts remain even if the original logs were removed.
 - Save a byte-for-byte private backup before migration; use an atomic database replacement and make repeated launches idempotent.
@@ -6,6 +6,8 @@
 - Stop startup on unreadable, unsupported or unsafe database migration instead of silently showing a new zero-XP player.
 - Document how a separate clone can use an existing installation's data folder. This does not add old and new XP or invent points missing from an overwritten save.
 - Accept the Linux WiFi/BLE bridge's exact final `BLE scan done` marker while retaining projectZero/XIAO completion, save/STOP checks and the two-second handover. Adapter warnings pause the schedule; late replies cannot restart a cancelled scan.
+- Display an empty contacts panel in MeshCore and Meshtastic instead of hiding it until the first node appears. In MeshCore, the empty panel captures input and Esc closes it without leaving chat; deleting the final contact keeps the panel visible. Protocol states remain separate.
+- Open the existing WiFi scan-table popup for Deauth in single-network form mode. Previously BSSID and channel had to be typed; Enter now fills the original form from one selected row, M retains manual entry and R refreshes the scan. Selection does not execute the form. Preserve whitelist checks, scanner STOP barriers and the Evil Twin multi-select/portal flow; failed or cancelled scans cannot leave an endless pending popup or reopen it later.
 
 ---
 

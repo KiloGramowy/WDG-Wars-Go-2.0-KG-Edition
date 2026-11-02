@@ -2,11 +2,11 @@
 
 This page separates recorded software checks from real hardware evidence. Preparing documentation or a release branch does not itself repeat any radio, GPS, chat-delivery or server test.
 
-## Prepared 0.9.18 — legacy progress and BLE bridge
+## Prepared 0.9.18 — progress, BLE and WiFi/contact pickers
 
-This combined candidate is **in preparation**, not a published update. It contains the LOCOSP format-1 loot migration fix and the Linux WiFi/BLE bridge completion fix. The public approved feed remains 0.9.17 until a separate release decision.
+This combined candidate is **in preparation**, not a published update. It contains the LOCOSP format-1 loot migration fix, the Linux WiFi/BLE bridge completion fix, visible empty MeshCore/Meshtastic contacts and the Deauth form's single-network scan-table popup. The public approved feed remains 0.9.17 until release validation and publication.
 
-The complete combined suite passed on uConsole as root: **612/612 tests, no skips**. The preserved private Meshtastic capture was supplied outside Git for software replay; no packets were received or transmitted for these checks. All 10 changed source/test/document files matched the local candidate's hashes before the run.
+The earlier XP + BLE baseline passed on uConsole as root: **612/612 tests, no skips**. The preserved private Meshtastic capture was supplied outside Git for software replay; no packets were received or transmitted for those checks. All 10 changed source/test/document files matched that candidate's hashes before the run. The later picker changes separately passed **16 network-popup tests** and **35 mesh UI tests** before staging; these execute real app methods with simulated drawing/serial and do not initialize hardware.
 
 The **22 legacy-save cases** cover exact XP and level, explicitly saved zero, badges, contacts, discovery ledgers, removed session logs, byte-for-byte backups, restart, unsupported/corrupt/unreadable data, failed writes, conflicting or symbolic-link backups and the native startup failure path. The BLE bridge tests retain projectZero completion and verify save/STOP handover, adapter warnings and cancelled work. The reported AC1200 setup still needs its own hardware test.
 

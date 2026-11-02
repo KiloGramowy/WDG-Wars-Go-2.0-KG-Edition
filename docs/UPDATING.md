@@ -17,7 +17,7 @@ Failed or offline checks are explicit. They are never presented as evidence that
 
 ## Prepared stable release
 
-The release remains **0.9.17**. Its public source is the formal fork [KiloGramowy/WDG-Wars-Go-2.0-KG-Edition](https://github.com/KiloGramowy/WDG-Wars-Go-2.0-KG-Edition), based on [LOCOSP/WatchDogsGo](https://github.com/LOCOSP/WatchDogsGo). Its approved `updates/stable.json` feed identifies the release's code; committing that feed does not create a GitHub Release.
+The prepared release is **0.9.18**. It combines legacy progress preservation, bridge BLE completion, empty mesh contact panels and the WiFi form picker. Its public source is the formal fork [KiloGramowy/WDG-Wars-Go-2.0-KG-Edition](https://github.com/KiloGramowy/WDG-Wars-Go-2.0-KG-Edition), based on [LOCOSP/WatchDogsGo](https://github.com/LOCOSP/WatchDogsGo). Its approved `updates/stable.json` feed identifies the release's code; committing that feed does not create a GitHub Release.
 
 The code commit comes first. A second, feed-only commit records that first commit as `source_commit`. A fresh clone can therefore have a newer feed/documentation HEAD while running the same approved version. The updater reports it as current only when the approved commit and installed commit have identical runtime Git entries. In-game offline notes, including `docs/UPDATE_PREVIEW.txt`, are part of that runtime set. Unadvertised code changes cannot use this exception.
 
@@ -25,7 +25,7 @@ Release metadata uses schema 2 and includes the immutable repository ID, reposit
 
 ## Edition name and repository rename
 
-**WDG Wars Go 2.0 — KG Edition** is the presentation name; the installed software version remains **0.9.17**. The repository was renamed without changing its immutable ID `1442123109`, public LOCOSP parent or approved runtime source. Existing 0.9.17 builds retain their bootstrap name `KiloGramowy/WatchDogsGo-KG-Edition` and resolve the new canonical name through that ID. The feed label can follow the rename without creating a new release or another notice. No reinstall or player-data migration is required for this rename.
+**WDG Wars Go 2.0 — KG Edition** is the presentation name; the prepared software version is **0.9.18**. The repository was renamed without changing its immutable ID `1442123109`, public LOCOSP parent or approved runtime source. Existing 0.9.17 builds retain their bootstrap name `KiloGramowy/WatchDogsGo-KG-Edition` and resolve the new canonical name through that ID. The feed label can follow the rename without creating a new release or another notice. No reinstall or player-data migration is required for this rename.
 
 ## Release source
 

@@ -51,7 +51,7 @@ METHODS = {
     "_update_mt_profile_picker", "_draw_mt_profile_picker", "_register_mesh_node",
     "_update_mesh_marker", "_on_mt_node", "_on_mt_text", "_on_mt_status", "_on_mt_tx",
     "_poll_meshtastic", "_meshtastic_view", "_update_mt_screen", "_draw_mt_screen",
-    "_update_mc_nodes_panel", "_mesh_contact_actions", "_draw_mc_screen",
+    "_update_mc_screen", "_update_mc_nodes_panel", "_mesh_contact_actions", "_draw_mc_screen",
     "_update_mc_region_picker", "_scan_loot_dir",
     "_load_loot_totals",
     "_update_input_dialog", "_draw_input_dialog",
@@ -194,6 +194,115 @@ def game():
 
 
 class MeshtasticUiTests(unittest.TestCase):
+    def test_ctrl_h_opens_visible_empty_contacts_for_both_protocols(self):
+        for protocol in ("meshcore", "meshtastic"):
+            for ctrl in (PX.KEY_LCTRL, PX.KEY_RCTRL):
+                with self.subTest(protocol=protocol, ctrl=ctrl):
+                    g = game()
+                    PX.held = {ctrl}
+                    PX.pressed = {PX.KEY_H}
+                    getattr(g, "_update_mc_screen" if protocol == "meshcore" else "_update_mt_screen")()
+                    getattr(g, "_draw_mc_screen" if protocol == "meshcore" else "_draw_mt_screen")()
+                    labels = [args[2] for op, args in PX.calls if op == "text"]
+                    self.assertIn("CONTACTS (0)", labels)
+                    self.assertIn("No contacts yet.", labels)
+                    self.assertIn("ESC=close", labels)
+                    self.assertFalse(any(label in ("DM", "Note", "Delete") for label in labels))
+                    self.assertEqual(g.events, [])
+
+    def test_empty_contacts_capture_chat_input_without_sending(self):
+        for protocol in ("meshcore", "meshtastic"):
+            with self.subTest(protocol=protocol):
+                g = game()
+                g._lora.running = g._lora.ready = True
+                g._mt.running = g._mt.ready = True
+                g._lora.send_meshcore_message = Mock(return_value=None)
+                if protocol == "meshcore":
+                    g._mc_nodes_panel = True
+                    g._mc_input = "unsent MC draft"
+                else:
+                    g._mt_view.update(nodes_panel=True, input="unsent MT draft")
+                g._get_char_input = lambda: "h"
+                update = g._update_mc_screen if protocol == "meshcore" else g._update_mt_screen
+                for key in (PX.KEY_RETURN, PX.KEY_BACKSPACE, PX.KEY_DOWN, PX.KEY_H):
+                    PX.pressed = {key}
+                    update()
+                self.assertEqual(g._mc_input, "unsent MC draft" if protocol == "meshcore" else "")
+                self.assertEqual(g._mt_view["input"], "unsent MT draft" if protocol == "meshtastic" else "")
+                self.assertFalse(g._mc_node_action)
+                self.assertFalse(g._mt_view["node_action"])
+                g._lora.send_meshcore_message.assert_not_called()
+                self.assertEqual(g.events, [])
+
+    def test_escape_closes_empty_contacts_before_chat_and_keeps_radio_running(self):
+        for protocol in ("meshcore", "meshtastic"):
+            with self.subTest(protocol=protocol):
+                g = game()
+                g._mc_screen = protocol == "meshcore"
+                g._mt_screen = protocol == "meshtastic"
+                manager = g._lora if protocol == "meshcore" else g._mt
+                manager.running = manager.ready = True
+                if protocol == "meshcore":
+                    g._mc_nodes_panel = True
+                else:
+                    g._mt_view["nodes_panel"] = True
+                PX.pressed = {PX.KEY_ESCAPE}
+                update = g._update_mc_screen if protocol == "meshcore" else g._update_mt_screen
+                update()
+                self.assertTrue(g._mc_screen if protocol == "meshcore" else g._mt_screen)
+                self.assertFalse(g._mc_nodes_panel)
+                self.assertFalse(g._mt_view["nodes_panel"])
+                self.assertTrue(manager.running)
+                update()
+                self.assertFalse(g._mc_screen if protocol == "meshcore" else g._mt_screen)
+                self.assertTrue(manager.running)
+                self.assertEqual(g.events, [])
+
+    def test_ctrl_h_closes_empty_contacts_and_keeps_protocol_panels_separate(self):
+        g = game()
+        PX.held = {PX.KEY_LCTRL}
+        PX.pressed = {PX.KEY_H}
+        g._update_mc_screen()
+        self.assertTrue(g._mc_nodes_panel)
+        self.assertFalse(g._mt_view["nodes_panel"])
+        g._update_mt_screen()
+        self.assertTrue(g._mc_nodes_panel)
+        self.assertTrue(g._mt_view["nodes_panel"])
+        g._update_mc_screen()
+        self.assertFalse(g._mc_nodes_panel)
+        self.assertTrue(g._mt_view["nodes_panel"])
+        g._update_mt_screen()
+        self.assertFalse(g._mt_view["nodes_panel"])
+        self.assertEqual(g.events, [])
+
+    def test_first_contact_becomes_visible_in_already_open_panel(self):
+        g = game()
+        g._mc_nodes_panel = True
+        g._draw_mc_screen()
+        PX.calls.clear()
+        g._mc_nodes.append(dict(id="abcd1234", name="First node", type="Client"))
+        g._draw_mc_screen()
+        labels = [args[2] for op, args in PX.calls if op == "text"]
+        self.assertIn("CONTACTS (1)", labels)
+        self.assertIn("First node", labels)
+        self.assertIn("ENTER=action", labels)
+        self.assertNotIn("No contacts yet.", labels)
+
+    def test_deleting_last_contact_keeps_visible_empty_panel(self):
+        g = game()
+        g._mc_nodes_panel = True
+        g._mc_nodes.append(dict(id="abcd1234", name="Last node", type="Client"))
+        g._mc_node_action = True
+        g._mc_node_action_sel = g._mesh_contact_actions().index("Delete")
+        PX.pressed = {PX.KEY_RETURN}
+        g._update_mc_screen()
+        self.assertTrue(g._mc_nodes_panel)
+        self.assertEqual(g._mc_nodes, [])
+        g._draw_mc_screen()
+        self.assertTrue(any(op == "text" and args[2] == "CONTACTS (0)" for op, args in PX.calls))
+        self.assertEqual(g._mc_node_sel, 0)
+        self.assertEqual(g.events, [])
+
     def test_main_radio_sprite_and_sdr_layout_match_for_ready_mc_and_mt(self):
         g = game()
         g.proj = SimpleNamespace(lon_span=1)

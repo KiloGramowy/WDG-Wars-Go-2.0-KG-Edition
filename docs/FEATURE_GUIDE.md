@@ -8,6 +8,8 @@ Open **SYSTEM → LoRa** and choose **Meshtastic** or **MeshCore**. One SX1262 c
 
 **ADDONS → MeshCore Chat** and **ADDONS → Meshtastic Chat** open their respective communicators. Opening the other chat switches the shared radio. Closing a chat leaves its receiver running in the background; **LoRa OFF** stops the active radio worker. The status indicator represents the active protocol, not whichever chat was opened last.
 
+Inside either chat, **Ctrl+H** opens or closes its contacts panel. An empty list displays **CONTACTS (0)** with a message; receiving a recognized node adds it to that protocol's list. **Esc** closes the empty panel without leaving the chat. Contact actions and note editing have their own Esc/back step. Opening the panel does not scan for nodes or send an advert.
+
 Keep one owner of the SX1262. Another radio application, including `meshtasticd`, can prevent startup. The existing launcher attempts to stop competing `meshtasticd` processes; account for that before launching it alongside another setup.
 
 ## 💬 Meshtastic messages and contacts
@@ -50,6 +52,12 @@ Initial wardrive startup follows the existing GPS wait/cancel dialog. A missing 
 The optional [FusedStamen WiFi/BLE bridge](https://github.com/FusedStamen/WatchDogsGo/blob/a543fb22520ec4e90252eb5aed6fc59bf447bbe1/wdg_wifi_bridge.py) uses Linux WiFi and Bluetooth adapters instead of an ESP32 and connects through a virtual serial port. BT Wardrive accepts its final `BLE scan done` line after the results, as well as projectZero's `Summary:`. The same save checks, two-second pause and confirmed STOP handover apply. A bridge adapter warning pauses the schedule instead of counting a failed scan as an empty success. Adapter drivers and the bridge must already be working; this completion fix does not install or configure them.
 
 LoRa uses separate hardware and can receive while the ESP32 alternates. Packet sniffer and HS capture are separate operations, not additional parallel phases.
+
+## 📋 Choose a scanned WiFi network
+
+**ATTACK → Deauth** opens the same scan table used by Evil Twin, in a single-network form mode. It shows **SSID, BSSID, channel and RSSI** from the current session's previous scan results. Identical SSIDs remain separate by BSSID. Opening the popup does not run a command.
+
+Use **↑/↓** and **Enter** to fill the existing BSSID/channel form; selection alone does not execute it. **M** opens the original empty manual form, **R** requests a fresh WiFi scan and **Esc** cancels. Refresh uses the scanner's existing stop/acknowledgement barrier and cancels a selected wardrive schedule. While refresh is pending, rows cannot fill the form. A failed or timed-out scan leaves retry/manual input available; late replies cannot reopen a cancelled popup. Whitelisted networks remain blocked. The Evil Twin popup keeps its existing multi-selection and portal flow.
 
 ## 📤 Uploads, XP and ownership
 
