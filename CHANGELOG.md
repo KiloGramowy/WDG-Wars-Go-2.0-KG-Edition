@@ -1,3 +1,11 @@
+# 0.9.19 — current-session mesh markers and live ADS-B visibility
+
+- Restore the original startup map behavior: keep saved MeshCore/Meshtastic contacts and XP, but create their map markers only after reception in the current game session. GPS backfill alone cannot replay the contact archive.
+- Hide aircraft on both map views while ADS-B is inactive or their position/reception is older than 60 seconds. Callsign and velocity messages no longer refresh the age of an old position.
+- Clear only the transient aircraft cache after confirmed SDR shutdown. Preserve saved progress, logs, counters and session XP deduplication; report pending shutdown instead of claiming STOP succeeded.
+- Install the latest complete code in one transaction, including skipped earlier corrections. Add versioned note filtering for future updates; existing 0.9.17/0.9.18 readers show the shared transition description.
+- Keep mesh markers detected this session visible until the game closes, including after LoRa is switched off. Do not introduce a mesh expiry policy or change chat channels, radio parameters, uploads or Deauth.
+
 # 0.9.18 — preserve progress, complete bridge scans and repair mesh contact panels
 
 - Upgrade the legacy v1 loot database without rebuilding earned XP, badges, contacts or discovery history. Existing session counts remain even if the original logs were removed.

@@ -176,6 +176,7 @@ def game():
     g._mc_node_name = "MC abcd"
     g._mc_bubbles = []
     g.markers = []
+    g._mesh_session_nodes = set()
     g.loot = None
     g._loot_totals = {}
     g.xp = 100

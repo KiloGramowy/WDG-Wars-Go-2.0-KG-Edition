@@ -1,3 +1,41 @@
+WatchDogsGo - cumulative update
+Original game by LOCOSP. Modified by KiloGramowy.
+One confirmation installs the latest complete code and all missing fixes.
+No intermediate installation of 0.9.18 is needed.
+
+RELEASE 0.9.19 - MAP MICROFIX
+---------------------------
+
+1. ADS-B MAP AND RADAR
+---------------------
+Before: old aircraft stayed visible after ADS-B stopped; other SBS
+messages could keep an outdated position on screen.
+Changed: both map views show positions received within 60 seconds from
+an active ADS-B scan. A confirmed STOP clears the live aircraft cache.
+A pending STOP is reported honestly. Saved XP and logs remain intact.
+
+2. MESH MAP AFTER RESTART
+------------------------
+Before: startup and GPS backfill could put all saved mesh contacts on
+the map, without receiving them in the current session.
+Changed: MeshCore and Meshtastic map markers start empty after restart.
+A contact appears after reception in this session. GPS backfill alone
+does not restore historical markers. Contacts, notes, XP and logs stay
+saved. Mesh markers received this session remain until the game closes.
+
+3. CUMULATIVE UPDATE AND NOTES
+-----------------------------
+Before: the update window always displayed the entire published text.
+Changed: 0.9.19 can select versioned sections for missing fixes in future
+updates. One confirmation installs all missing code changes together.
+Existing 0.9.17 and 0.9.18 readers show both sections during this first
+transition. The 0.9.18 section below is for users upgrading from 0.9.17.
+
+RELEASE 0.9.18 - PREVIOUS FIXES
+-----------------------------
+Catch-up for users upgrading from 0.9.17. Already on 0.9.18? These fixes
+are already installed; the new changes are in the 0.9.19 section above.
+
 WatchDogsGo 0.9.18
 Original game by LOCOSP. Modified by KiloGramowy.
 
@@ -15,6 +53,10 @@ Before: Linux bridge results could end with a false scan timeout.
 Changed: accept its final BLE scan done marker. Keep XIAO/projectZero
 Summary support and save/STOP checks. Adapter warnings pause scanning;
 late replies cannot restart a cancelled schedule.
+Validation: bridge completion handling passes software tests. AC1200
+hardware testing is pending; our own setup uses XIAO ESP32-C5.
+The fix is expected to address this completion-marker mismatch when
+the Linux adapters, drivers and bridge are already working.
 
 3. MESHCORE CONTACT LIST
 ------------------------

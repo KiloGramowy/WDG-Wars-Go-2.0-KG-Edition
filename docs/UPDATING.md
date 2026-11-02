@@ -18,15 +18,25 @@ Failed or offline checks are explicit. They are never presented as evidence that
 
 ## Prepared stable release
 
-The prepared release is **0.9.18**. It combines legacy progress preservation, bridge BLE completion, empty mesh contact panels and clearer update notes. Its public source is the formal fork [KiloGramowy/WDG-Wars-Go-2.0-KG-Edition](https://github.com/KiloGramowy/WDG-Wars-Go-2.0-KG-Edition), based on [LOCOSP/WatchDogsGo](https://github.com/LOCOSP/WatchDogsGo). Its approved `updates/stable.json` feed identifies the release's code; committing that feed does not create a GitHub Release.
+The prepared release is **0.9.19**. It corrects ADS-B visibility and mesh map history while retaining the 0.9.18 progress, BLE and contact-panel corrections. Its public source is the formal fork [KiloGramowy/WDG-Wars-Go-2.0-KG-Edition](https://github.com/KiloGramowy/WDG-Wars-Go-2.0-KG-Edition), based on [LOCOSP/WatchDogsGo](https://github.com/LOCOSP/WatchDogsGo). Its approved `updates/stable.json` feed identifies the release's code; committing that feed does not create a GitHub Release.
 
 The code commit comes first. A second, feed-only commit records that first commit as `source_commit`. A fresh clone can therefore have a newer feed/documentation HEAD while running the same approved version. The updater reports it as current only when the approved commit and installed commit have identical runtime Git entries. In-game offline notes, including `docs/UPDATE_PREVIEW.txt`, are part of that runtime set. Unadvertised code changes cannot use this exception.
 
 Release metadata uses schema 2 and includes the immutable repository ID, repository name, channel, stable release ID, numeric version, full source commit, title and full notes. Ordinary development commits do not advertise an update. Future upgrades require a newer approved numeric version and a feed pointing to that release's code.
 
+## Cumulative installation and versioned notes
+
+One confirmation installs the latest complete approved code, including missing changes from skipped releases. A 0.9.17 installation can update directly to 0.9.19; it does not need a separate 0.9.18 installation. An installation already on 0.9.18 receives only the remaining file differences. Current player data and settings stay outside the code replacement set.
+
+Published notes use `RELEASE 0.9.19 - MAP MICROFIX` style headings within the existing notes string. The 0.9.19 reader selects sections newer than the installed version; an already current installation can still read its latest section. It keeps the shared introduction and displays unrecognized formats in full.
+
+The existing 0.9.17 and 0.9.18 readers cannot select sections before their first upgrade. For this transition both show the shared description, with 0.9.19 first and an explicitly marked 0.9.18 catch-up section. The feed schema, approval source and installation confirmation are unchanged.
+
+ZIP source archives do not contain Git history and cannot use the current in-game installer. Use a genuine clone and preserve the existing data/configuration as described in [the migration guide](UPGRADING_FROM_LOCOSP.md); do not create artificial Git metadata or bypass the updater's source checks.
+
 ## Edition name and repository rename
 
-**WDG Wars Go 2.0 — KG Edition** is the presentation name; the prepared software version is **0.9.18**. The repository was renamed without changing its immutable ID `1442123109`, public LOCOSP parent or approved runtime source. Existing 0.9.17 builds retain their bootstrap name `KiloGramowy/WatchDogsGo-KG-Edition` and resolve the new canonical name through that ID. The feed label can follow the rename without creating a new release or another notice. No reinstall or player-data migration is required for this rename.
+**WDG Wars Go 2.0 — KG Edition** is the presentation name; the prepared software version is **0.9.19**. The repository was renamed without changing its immutable ID `1442123109`, public LOCOSP parent or approved runtime source. Existing 0.9.17 builds retain their bootstrap name `KiloGramowy/WatchDogsGo-KG-Edition` and resolve the new canonical name through that ID. The feed label can follow the rename without creating a new release or another notice. No reinstall or player-data migration is required for this rename.
 
 ## Release source
 

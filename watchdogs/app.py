@@ -849,9 +849,8 @@ class WatchDogsGame:
         self.ble_devices: list[BleDevice] = []
         self.wifi_networks: list[WifiNetwork] = []
         self.markers: list[MapMarker] = []
-        for protocol, contacts in (("meshcore", self._mc_nodes), ("meshtastic", self._mt_view["nodes"])):
-            for contact in contacts:
-                self._update_mesh_marker(protocol, contact)
+        # Contact history is persistent; map observations start with this session.
+        self._mesh_session_nodes: set[tuple[str, str]] = set()
         self.particles: list[Particle] = []
         self.msgs: list[tuple[str, int, int]] = []
         self.scan_pulse = 0
@@ -3458,9 +3457,12 @@ class WatchDogsGame:
             self.msg("[SDR] Enable SDR first (SYSTEM > SDR)", C_WARNING)
             return
         if self._sdr.running and "adsb" in self._sdr.mode:
-            self._sdr.stop()
-            self.msg("[ADS-B] Stopped", C_WARNING)
-            self._term_add("[SDR] ADS-B radar stopped", raw=True)
+            if self._sdr.stop():
+                self.msg("[ADS-B] Stopped", C_WARNING)
+                self._term_add("[SDR] ADS-B radar stopped", raw=True)
+            else:
+                self.msg("[ADS-B] Shutdown pending; retry STOP", C_WARNING)
+                self._term_add("[SDR] ADS-B shutdown pending; ownership retained", raw=True)
             return
         try:
             loot_dir = self.loot.session_dir if self.loot else ""
@@ -5808,7 +5810,8 @@ class WatchDogsGame:
                 if existing is not None:
                     existing.clear(); existing.update(contact)
                 else: nodes.append(contact)
-                self._update_mesh_marker(protocol, contact)
+                if (protocol, contact["id"]) in self._mesh_session_nodes:
+                    self._update_mesh_marker(protocol, contact)
             if protocol == "meshtastic": self._mt.set_known_nodes(nodes)
             self._term_add(f"[LoRa] {protocol}: receiver GPS assigned to {len(changed)} contact(s)", raw=True)
         if any(result["contacts"].values()): self._load_loot_totals()
@@ -5847,6 +5850,7 @@ class WatchDogsGame:
         else:
             existing.clear()
             existing.update(data)
+        self._mesh_session_nodes.add((protocol, data["id"]))
         self._update_mesh_marker(protocol, data)
         self._load_loot_totals()
         if protocol == "meshtastic":
@@ -7125,10 +7129,9 @@ class WatchDogsGame:
                 pyxel.rect(sx-1, sy-1, 3, 3, d.color if blink > 0 else 2)
 
     def _draw_aircraft(self):
-        """Draw ADS-B aircraft on the map. Always visible regardless of
-        zoom; label from zoom 4 up."""
+        """Draw fresh positions from an active ADS-B scan at every zoom."""
         try:
-            aircraft_list = list(self._sdr.aircraft.values())
+            aircraft_list = self._sdr.visible_aircraft()
         except Exception:
             return
         zoom = self.proj.zoom
@@ -7700,7 +7703,7 @@ class WatchDogsGame:
         if self.state.portal_running: tools.append("EP")
         if self.state.evil_twin_running: tools.append("ET")
         if self._sdr.running and "adsb" in self._sdr.mode:
-            n_pos = sum(1 for a in self._sdr.aircraft.values() if a.has_position)
+            n_pos = len(self._sdr.visible_aircraft())
             n_all = len(self._sdr.aircraft)
             tools.append(f"ADS-B:{n_pos}/{n_all}")
         if self._sdr.running and "433" in self._sdr.mode:
@@ -7942,7 +7945,7 @@ class WatchDogsGame:
                            loot_colors.get(pt.get("type", ""), C_DIM))
         # ADS-B aircraft on radar
         try:
-            for ac in list(self._sdr.aircraft.values()):
+            for ac in self._sdr.visible_aircraft():
                 if not ac.has_position:
                     continue
                 dx = (ac.lon - self.player_lon) * scale
@@ -8018,7 +8021,7 @@ class WatchDogsGame:
             # Counter label
             parts = []
             if "adsb" in self._sdr.mode:
-                n_pos = sum(1 for a in self._sdr.aircraft.values() if a.has_position)
+                n_pos = len(self._sdr.visible_aircraft())
                 parts.append(f"AC:{n_pos}/{len(self._sdr.aircraft)}")
             if "433" in self._sdr.mode:
                 parts.append(f"S:{self._sdr.total_sensors_seen}")
@@ -9124,6 +9127,7 @@ class WatchDogsGame:
 
     def _gameupd_note_lines(self):
         import textwrap
+        from watchdogs.game_updates import filter_release_notes
         release = self._game_update_release
         if release is not None:
             content = release.notes
@@ -9132,6 +9136,8 @@ class WatchDogsGame:
                 content = (Path(__file__).resolve().parent.parent / "docs" / "UPDATE_PREVIEW.txt").read_text(encoding="utf-8")
             except OSError:
                 content = "Release notes are unavailable."
+        installed = getattr(self, "_game_installed_version", "")
+        content = filter_release_notes(content, installed, release.version if release is not None else installed)
         lines = []
         for paragraph in content.splitlines():
             lines.extend(textwrap.wrap(paragraph.expandtabs(4), width=83,
@@ -9358,7 +9364,8 @@ class WatchDogsGame:
         maximum = max(0, len(lines) - 9)
         self._gameupd_scroll = min(maximum, max(0, self._gameupd_scroll))
         for i, line in enumerate(lines[self._gameupd_scroll:self._gameupd_scroll + 9]):
-            heading = re.fullmatch(r"\d{1,2}\. [A-Z][A-Z0-9 /()+,-]*", line)
+            heading = (re.fullmatch(r"\d{1,2}\. [A-Z][A-Z0-9 /()+,-]*", line) or
+                       re.fullmatch(r"RELEASE [0-9]+(?:\.[0-9]+){1,3}(?: - [A-Z0-9][A-Z0-9 /()+,._:-]*)?", line))
             divider = re.fullmatch(r"-{3,83}", line)
             y = dy + 94 + i * 9
             if heading:

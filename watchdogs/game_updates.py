@@ -208,6 +208,54 @@ def _numeric(version):
     return values + (0,) * (4 - len(values))
 
 
+def filter_release_notes(notes, installed_version, latest_version):
+    """Select missing version blocks for display without changing the release.
+
+    Plain-text ``RELEASE 0.9.19 - DESCRIPTION`` sections remain readable by
+    earlier clients, which display the complete string. This reader preserves
+    their common preamble and shows only newer blocks, or the latest block when
+    already current. Ambiguous/unrecognised input is displayed in full rather
+    than silently dropping information. Installation always uses the complete
+    approved target tree, independently of this presentation helper.
+    """
+    if (not isinstance(notes, str) or
+            not isinstance(installed_version, str) or not _VERSION.fullmatch(installed_version) or
+            not isinstance(latest_version, str) or not _VERSION.fullmatch(latest_version)):
+        return notes
+    try:
+        installed, latest = _numeric(installed_version), _numeric(latest_version)
+    except ValueError:
+        return notes
+    if installed > latest:
+        return notes
+    lines = notes.splitlines(keepends=True)
+    headers = []
+    versions = set()
+    for index, line in enumerate(lines):
+        text = line.strip()
+        if not text.startswith("RELEASE"):
+            continue
+        match = re.fullmatch(r"RELEASE ([0-9]+(?:\.[0-9]+){1,3})(?: - [A-Z0-9][A-Z0-9 /()+,._:-]*)?", text)
+        if match is None:
+            return notes
+        try:
+            version = _numeric(match.group(1))
+        except ValueError:
+            return notes
+        if version > latest or version in versions:
+            return notes
+        versions.add(version)
+        headers.append((index, version))
+    if not headers or latest not in versions:
+        return notes
+    selected = []
+    for number, (start, version) in enumerate(headers):
+        stop = headers[number + 1][0] if number + 1 < len(headers) else len(lines)
+        if (installed < version <= latest) or (installed == latest == version):
+            selected.extend(lines[start:stop])
+    return "".join(lines[:headers[0][0]] + selected) if selected else notes
+
+
 class GameUpdates:
     def __init__(self, root=None, home=None, git=None, metadata=None):
         self.root = Path(root or Path(__file__).resolve().parent.parent).resolve()

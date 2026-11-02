@@ -6,6 +6,7 @@ Subprocess + thread + queue pattern (same as serial_manager).
 
 import json
 import logging
+import math
 import os
 import shutil
 import signal
@@ -70,6 +71,7 @@ class Aircraft:
     squawk: str = ""
     last_seen: float = 0.0
     rssi: float = 0.0
+    position_seen: float = 0.0
 
     @property
     def has_position(self) -> bool:
@@ -607,6 +609,9 @@ class SDRManager:
 
             self.emergency_active = False
             self.network_present = False
+            # This is a live display cache, not the player's saved history.
+            # Readers are joined above; a new scan must get new positions.
+            self.aircraft.clear()
             self.running = False
             self.mode = ""
             complete = True
@@ -639,6 +644,28 @@ class SDRManager:
                    if now - v.last_seen > SENSOR_TIMEOUT]
         for k in stale_s:
             del self.sensors[k]
+
+    def visible_aircraft(self, now: float | None = None) -> list[Aircraft]:
+        """Snapshot current ADS-B positions for both map views.
+
+        Reception counters and saved CSVs remain independent of visibility.
+        A callsign or velocity message cannot refresh an old position.
+        """
+        if (not self.running or "adsb" not in self.mode or
+                self._stop_requested or self._stop_event.is_set()):
+            return []
+        now = time.time() if now is None else now
+
+        def fresh(timestamp):
+            return (isinstance(timestamp, (int, float)) and
+                    math.isfinite(timestamp) and 0 < timestamp <= now and
+                    now - timestamp <= ADSB_TIMEOUT)
+
+        return [ac for ac in list(self.aircraft.values())
+                if (fresh(ac.last_seen) and fresh(ac.position_seen) and
+                    math.isfinite(ac.lat) and math.isfinite(ac.lon) and
+                    -90 <= ac.lat <= 90 and -180 <= ac.lon <= 180 and
+                    ac.has_position)]
 
     def update_gps(self, lat: float, lon: float):
         """Update GPS position for tagging new sensors / logs. Ignores None so a
@@ -723,8 +750,12 @@ class SDRManager:
                 if hdg:
                     ac.heading = int(float(hdg))
                 if lat and lon:
-                    ac.lat = float(lat)
-                    ac.lon = float(lon)
+                    new_lat, new_lon = float(lat), float(lon)
+                    if (math.isfinite(new_lat) and math.isfinite(new_lon) and
+                            -90 <= new_lat <= 90 and -180 <= new_lon <= 180 and
+                            (new_lat != 0.0 or new_lon != 0.0)):
+                        ac.lat, ac.lon = new_lat, new_lon
+                        ac.position_seen = now
             elif msg_type == "4" and len(parts) > 13:
                 spd = parts[12].strip()
                 hdg = parts[13].strip()

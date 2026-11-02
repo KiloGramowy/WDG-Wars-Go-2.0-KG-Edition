@@ -323,6 +323,63 @@ class GameUpdateUiTests(unittest.TestCase):
         g._game_updates.prepare.assert_not_called()
         g._game_updates.install.assert_not_called()
 
+    def test_versioned_notes_show_only_missing_blocks_without_changing_release(self):
+        notes = ('One confirmation installs all missing fixes.\n\n'
+                 'RELEASE 0.9.19 - MAP MICROFIX\nCurrent map fixes.\n\n'
+                 'RELEASE 0.9.18 - PREVIOUS FIXES\nEarlier XP and BLE fixes.')
+        for installed, previous_visible in (("0.9.17", True), ("0.9.18", False), ("0.9.19", False)):
+            with self.subTest(installed=installed):
+                g = game()
+                item = release(notes=notes)
+                item.version = "0.9.19"
+                original = copy.deepcopy(vars(item))
+                self.available(g, item)
+                g._game_installed_version = installed
+                text = "\n".join(g._gameupd_note_lines())
+                self.assertIn("One confirmation installs all missing fixes.", text)
+                self.assertIn("RELEASE 0.9.19 - MAP MICROFIX", text)
+                self.assertEqual("RELEASE 0.9.18 - PREVIOUS FIXES" in text, previous_visible)
+                self.assertEqual(vars(item), original)
+                g._game_updates.prepare.assert_not_called()
+                g._game_updates.install.assert_not_called()
+
+    def test_release_headings_use_the_existing_yellow_title_style(self):
+        g = game()
+        notes = ('RELEASE 0.9.19 - MAP MICROFIX\nCurrent map fixes.\n\n'
+                 'RELEASE 0.9.18 - PREVIOUS FIXES\nEarlier XP and BLE fixes.')
+        item = release(notes=notes)
+        item.version = "0.9.19"
+        self.available(g, item)
+        g._game_installed_version = "0.9.17"
+        g._draw_gameupd_screen()
+        colors = {args[2]: args[3] for args in self.texts()}
+        for header in ("RELEASE 0.9.19 - MAP MICROFIX", "RELEASE 0.9.18 - PREVIOUS FIXES"):
+            self.assertEqual(colors[header], ENV["C_WARNING"])
+        self.assertEqual(colors["Current map fixes."], ENV["C_TEXT"])
+        self.assertEqual(colors["Earlier XP and BLE fixes."], ENV["C_TEXT"])
+        self.assert_above_output()
+
+    def test_note_selection_still_prepares_the_same_complete_release(self):
+        notes = ('RELEASE 0.9.19 - MAP MICROFIX\nCurrent map fixes.\n\n'
+                 'RELEASE 0.9.18 - PREVIOUS FIXES\nEarlier XP and BLE fixes.')
+        for installed in ("0.9.17", "0.9.18"):
+            with self.subTest(installed=installed):
+                g = game()
+                item = release(notes=notes)
+                item.version = "0.9.19"
+                self.available(g, item)
+                g._game_installed_version = installed
+                self.assertIn("MAP MICROFIX", "\n".join(g._gameupd_note_lines()))
+                self.press(g, PX.KEY_RETURN)
+                self.assertEqual(len(RecordedThread.started), 1)
+                thread = RecordedThread.started[0]
+                self.assertEqual(thread.args, (item,))
+                thread.target(*thread.args)
+                g._game_updates.prepare.assert_called_once_with(item)
+                self.assertEqual(item.notes, notes)
+                self.assertEqual(item.source_commit, "a" * 40)
+                g._game_updates.install.assert_not_called()
+
     def test_scrolled_change_title_keeps_yellow_color(self):
         g = game()
         notes = 'Body line.\n' * 12 + '\n3. MESHCORE CONTACT LIST\nChanged: show empty list.'
