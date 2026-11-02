@@ -97,13 +97,15 @@ class AdsbVisibilityTests(unittest.TestCase):
     def test_real_fresh_sbs_position_appears_on_map_and_radar(self):
         self.assertEqual(self.draw(1001), (True, True))
 
-    def test_off_and_non_adsb_modes_hide_cached_positions_in_both_views(self):
+    def test_off_and_non_adsb_modes_keep_last_scan_in_both_views(self):
         for running, mode in ((False, "adsb"), (False, ""), (True, "433"),
                               (True, "emergency")):
             with self.subTest(running=running, mode=mode):
                 PX.calls.clear()
                 self.manager.running, self.manager.mode = running, mode
-                self.assertEqual(self.draw(1001), (False, False))
+                with patch("watchdogs.sdr_manager.time.time", return_value=10000):
+                    self.manager.prune_stale()
+                self.assertEqual(self.draw(10000), (True, True))
                 self.assertIn("ABC123", self.manager.aircraft)
 
     def test_combined_adsb_and_433_keeps_fresh_aircraft_visible(self):
@@ -117,15 +119,17 @@ class AdsbVisibilityTests(unittest.TestCase):
                 self.assertEqual(self.draw(1000 + age), (expected, expected))
                 self.assertIn("ABC123", self.manager.aircraft)
 
-    def test_callsign_and_velocity_do_not_refresh_an_old_position(self):
+    def test_callsign_and_velocity_keep_last_position_in_receiver_range(self):
         for kind in ("1", "4"):
             self.parse(1000 + ADSB_TIMEOUT + 1, sbs(kind))
             self.assertEqual(self.manager.aircraft["ABC123"].last_seen, 1061)
             self.assertEqual(self.manager.aircraft["ABC123"].position_seen, 1000)
-            self.assertEqual(self.draw(1061), (False, False))
-        self.parse(1062, sbs())
+            self.assertEqual(self.draw(1061), (True, True))
+        self.parse(1062, sbs(lat="51.2", lon="0.2"))
+        self.assertEqual((self.manager.aircraft["ABC123"].lat,
+                          self.manager.aircraft["ABC123"].lon), (51.2, .2))
         PX.calls.clear()
-        self.assertEqual(self.draw(1062), (True, True))
+        self.assertEqual(self.draw(1062)[0], True)
 
     def test_invalid_or_incomplete_position_does_not_refresh_old_fix(self):
         for lat, lon in (("nan", "0.1"), ("51.1", "inf"), ("91", "0.1"),
@@ -133,33 +137,99 @@ class AdsbVisibilityTests(unittest.TestCase):
             with self.subTest(lat=lat, lon=lon):
                 self.parse(1061, sbs(lat=lat, lon=lon))
                 self.assertEqual(self.manager.aircraft["ABC123"].position_seen, 1000)
-                self.assertEqual(self.draw(1061), (False, False))
+                self.assertEqual((self.manager.aircraft["ABC123"].lat,
+                                  self.manager.aircraft["ABC123"].lon), (51.1, .1))
+                self.assertEqual(self.draw(1061), (True, True))
 
-    def test_unknown_invalid_or_future_timestamps_are_hidden(self):
+    def test_unknown_invalid_or_future_reception_timestamps_are_hidden(self):
         aircraft = self.manager.aircraft["ABC123"]
         for value in (0, -1, float("nan"), float("inf"), 1002):
-            with self.subTest(position_seen=value):
-                aircraft.position_seen = value
+            with self.subTest(last_seen=value):
+                aircraft.last_seen = value
                 self.assertEqual(self.manager.visible_aircraft(now=1001), [])
 
-    def test_stop_request_hides_positions_while_reader_shutdown_is_pending(self):
+    def test_stop_request_keeps_last_view_while_reader_shutdown_is_pending(self):
         self.manager._stop_requested = True
-        self.assertEqual(self.draw(1001), (False, False))
+        self.assertEqual(self.draw(10000), (True, True))
         self.assertTrue(self.manager.running)
         self.assertIn("ABC123", self.manager.aircraft)
 
-    def test_confirmed_stop_clears_only_live_aircraft_cache(self):
+    def test_confirmed_stop_freezes_last_scan_and_preserves_saved_history(self):
         self.manager.total_aircraft_seen = 12001
         self.manager.sensors["retained"] = object()
         recorded_log = self.manager._adsb_log = io.StringIO("saved aircraft row\n")
-        self.assertTrue(self.manager.stop())
-        self.assertEqual(self.manager.aircraft, {})
+        with patch("watchdogs.sdr_manager.time.time", return_value=1001):
+            self.assertTrue(self.manager.stop())
+        self.assertIn("ABC123", self.manager.aircraft)
         self.assertEqual(self.manager.total_aircraft_seen, 12001)
         self.assertIn("retained", self.manager.sensors)
         self.assertTrue(recorded_log.closed)
-        # Re-enabling a source cannot resurrect the old map position.
-        self.manager.running, self.manager.mode = True, "adsb"
-        self.assertEqual(self.draw(1001), (False, False))
+        self.assertEqual(self.draw(10000), (True, True))
+        self.assertTrue(self.manager.stop())  # A repeated STOP keeps the view.
+        PX.calls.clear()
+        self.assertEqual(self.draw(20000), (True, True))
+
+    def test_stopping_cannot_resurrect_an_already_expired_marker(self):
+        self.assertEqual(self.draw(1061), (False, False))
+        with patch("watchdogs.sdr_manager.time.time", return_value=1061):
+            self.assertTrue(self.manager.stop())
+        self.assertNotIn("ABC123", self.manager.aircraft)
+        self.assertEqual(self.draw(10000), (False, False))
+
+    def test_active_receiver_prunes_after_last_message_timeout(self):
+        self.parse(1050, sbs("4"))
+        with patch("watchdogs.sdr_manager.time.time", return_value=1110):
+            self.manager.prune_stale()
+        self.assertIn("ABC123", self.manager.aircraft)
+        with patch("watchdogs.sdr_manager.time.time", return_value=1110.01):
+            self.manager.prune_stale()
+        self.assertNotIn("ABC123", self.manager.aircraft)
+
+    def test_resume_waits_one_reception_window_before_expiring_frozen_scan(self):
+        with patch("watchdogs.sdr_manager.time.time", return_value=1001):
+            self.assertTrue(self.manager.stop())
+        process, thread = Mock(), Mock()
+        process.poll.return_value = None
+        thread.is_alive.return_value = False
+        with patch.object(self.manager, "has_dump1090", return_value=True), \
+                patch.object(self.manager, "_spawn_owned", return_value=process), \
+                patch("watchdogs.sdr_manager.subprocess.run"), \
+                patch("watchdogs.sdr_manager.time.sleep"), \
+                patch("watchdogs.sdr_manager.threading.Thread", return_value=thread), \
+                patch("watchdogs.sdr_manager.time.time", return_value=10000):
+            self.assertTrue(self.manager.start_adsb())
+        self.assertEqual(self.manager.aircraft["ABC123"].last_seen, 1000)
+        for now, expected in ((10000, True), (10060, True), (10060.01, False)):
+            with self.subTest(now=now):
+                PX.calls.clear()
+                self.assertEqual(self.draw(now), (expected, expected))
+        # A received callsign refreshes range even without new coordinates.
+        self.parse(10061, sbs("1"))
+        PX.calls.clear()
+        self.assertEqual(self.draw(10062), (True, True))
+
+    def test_other_sources_own_their_visibility_and_expiry(self):
+        external = Aircraft(icao="FED123", lat=52, lon=1, last_seen=1)
+        external.acquisition_source = "source_adapter"
+        self.manager.aircraft[external.icao] = external
+        with patch("watchdogs.sdr_manager.time.time", return_value=1001):
+            self.manager.prune_stale()
+            self.assertTrue(self.manager.stop())
+        self.assertIs(self.manager.aircraft[external.icao], external)
+        self.assertNotIn(external, self.manager.visible_aircraft(now=10000))
+
+    def test_first_rf_message_does_not_inherit_an_adapter_position(self):
+        external = Aircraft(icao="ABC123", lat=52, lon=1, last_seen=1000)
+        external.acquisition_source = "source_adapter"
+        self.manager.aircraft[external.icao] = external
+        self.parse(1001, sbs("1"))
+        aircraft = self.manager.aircraft["ABC123"]
+        self.assertIsNot(aircraft, external)
+        self.assertTrue(self.manager._owns_aircraft(aircraft))
+        self.assertFalse(aircraft.has_position)
+        self.assertEqual(self.manager.visible_aircraft(now=1001), [])
+        self.parse(1002, sbs())
+        self.assertEqual(self.manager.visible_aircraft(now=1002), [aircraft])
 
     def test_native_xp_dedup_survives_stop_and_new_position_for_same_aircraft(self):
         game = drawing_game(self.manager)
@@ -170,7 +240,8 @@ class AdsbVisibilityTests(unittest.TestCase):
         game._poll_sdr()
         self.assertEqual(game.xp, 1597156)
         self.assertEqual(game._sdr_aircraft_xp, {"ABC123"})
-        self.assertTrue(self.manager.stop())
+        with patch("watchdogs.sdr_manager.time.time", return_value=1001):
+            self.assertTrue(self.manager.stop())
         self.manager.running, self.manager.mode = True, "adsb"
         self.parse(1062, sbs())
         game._poll_sdr()
@@ -182,12 +253,13 @@ class AdsbVisibilityTests(unittest.TestCase):
         reader.is_alive.return_value = True
         self.manager._threads.append(reader)
         self.manager._adsb_log = io.StringIO("keep pending reader output\n")
-        self.assertFalse(self.manager.stop())
+        with patch("watchdogs.sdr_manager.time.time", return_value=1001):
+            self.assertFalse(self.manager.stop())
         self.assertTrue(self.manager.running)
         self.assertEqual(self.manager.mode, "adsb")
         self.assertIn("ABC123", self.manager.aircraft)
         self.assertFalse(self.manager._adsb_log.closed)
-        self.assertEqual(self.draw(1001), (False, False))
+        self.assertEqual(self.draw(10000), (True, True))
         self.manager._adsb_log.close()
 
     def test_new_manager_has_no_historical_aircraft(self):

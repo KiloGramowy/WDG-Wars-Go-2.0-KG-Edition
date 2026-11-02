@@ -54,7 +54,7 @@ RTL433_CMD = [
 # (or run them sequentially, not simultaneously)
 RTL433_CMD_DEV1 = RTL433_CMD + ["-d", "1"]
 
-ADSB_TIMEOUT = 60  # remove aircraft not seen for 60s
+ADSB_TIMEOUT = 60  # active reception: remove aircraft not heard for 60s
 SENSOR_TIMEOUT = 300  # remove sensors not seen for 5min
 
 
@@ -137,6 +137,9 @@ class SDRManager:
         # ADS-B state
         self.aircraft: dict[str, Aircraft] = {}  # icao -> Aircraft
         self.total_aircraft_seen: int = 0
+        # OFF freezes the last view. A resumed receiver gets one reception
+        # window before deciding that previously visible aircraft have left.
+        self._adsb_resumed_at: float = 0.0
 
         # 433 MHz state
         self.sensors: dict[str, Sensor433] = {}  # sid -> Sensor433
@@ -241,6 +244,7 @@ class SDRManager:
 
         self.running = True
         self.mode = "adsb"
+        self._adsb_resumed_at = time.time()
         self._events.put(("status", "ADS-B started (dump1090)"))
         return True
 
@@ -556,6 +560,9 @@ class SDRManager:
         the SDR on that result. The finite wait budget also permits retry.
         """
         deadline = time.monotonic() + 5
+        # Freeze the currently visible observations, without resurrecting
+        # already expired entries between the app's periodic prune calls.
+        self._prune_aircraft(time.time())
         self._stop_requested = True
         self._stop_event.set()
         if not self._lifecycle_lock.acquire(timeout=0.5):
@@ -609,9 +616,8 @@ class SDRManager:
 
             self.emergency_active = False
             self.network_present = False
-            # This is a live display cache, not the player's saved history.
-            # Readers are joined above; a new scan must get new positions.
-            self.aircraft.clear()
+            # Keep the last scan visible while OFF. This in-memory snapshot
+            # is not replayed from saved history when the game restarts.
             self.running = False
             self.mode = ""
             complete = True
@@ -635,34 +641,52 @@ class SDRManager:
     def prune_stale(self):
         """Remove aircraft/sensors not seen recently."""
         now = time.time()
-        stale_ac = [k for k, v in self.aircraft.items()
-                    if now - v.last_seen > ADSB_TIMEOUT]
-        for k in stale_ac:
-            del self.aircraft[k]
+        self._prune_aircraft(now)
 
         stale_s = [k for k, v in self.sensors.items()
                    if now - v.last_seen > SENSOR_TIMEOUT]
         for k in stale_s:
             del self.sensors[k]
 
+    def _adsb_receiving(self) -> bool:
+        return (self.running and "adsb" in self.mode and
+                not self._stop_requested and not self._stop_event.is_set())
+
+    @staticmethod
+    def _owns_aircraft(ac: Aircraft) -> bool:
+        # Source adapters own their explicitly tagged observations, including
+        # their removal policy. The receiver only expires its own results.
+        return getattr(ac, "acquisition_source", None) in (None, "local_rf")
+
+    def _aircraft_in_range(self, ac: Aircraft, now: float) -> bool:
+        # As in LOCOSP 0.9.16, any received message is evidence of range;
+        # position_seen describes the last coordinates, not receiver activity.
+        seen = ac.last_seen
+        return (type(seen) in (int, float) and math.isfinite(seen) and
+                0 < seen <= now and
+                now - max(seen, self._adsb_resumed_at) <= ADSB_TIMEOUT)
+
+    def _prune_aircraft(self, now: float):
+        if not self._adsb_receiving():
+            return  # OFF, shutdown, and non-ADS-B modes keep the last scan.
+        for key, aircraft in list(self.aircraft.items()):
+            if (self._owns_aircraft(aircraft) and
+                    not self._aircraft_in_range(aircraft, now) and
+                    self.aircraft.get(key) is aircraft):
+                self.aircraft.pop(key, None)
+
     def visible_aircraft(self, now: float | None = None) -> list[Aircraft]:
-        """Snapshot current ADS-B positions for both map views.
+        """Return the active reception view, or the frozen last scan while OFF.
 
-        Reception counters and saved CSVs remain independent of visibility.
-        A callsign or velocity message cannot refresh an old position.
+        Map and small radar use the same view. Receiving any message keeps
+        the last valid coordinates visible; new coordinates move the marker.
+        Saved observations and XP are independent of display retention.
         """
-        if (not self.running or "adsb" not in self.mode or
-                self._stop_requested or self._stop_event.is_set()):
-            return []
         now = time.time() if now is None else now
-
-        def fresh(timestamp):
-            return (isinstance(timestamp, (int, float)) and
-                    math.isfinite(timestamp) and 0 < timestamp <= now and
-                    now - timestamp <= ADSB_TIMEOUT)
-
+        receiving = self._adsb_receiving()
         return [ac for ac in list(self.aircraft.values())
-                if (fresh(ac.last_seen) and fresh(ac.position_seen) and
+                if (self._owns_aircraft(ac) and
+                    (not receiving or self._aircraft_in_range(ac, now)) and
                     math.isfinite(ac.lat) and math.isfinite(ac.lon) and
                     -90 <= ac.lat <= 90 and -180 <= ac.lon <= 180 and
                     ac.has_position)]
@@ -728,8 +752,13 @@ class SDRManager:
             return
 
         now = time.time()
-        is_new = icao not in self.aircraft
-        ac = self.aircraft.setdefault(icao, Aircraft(icao=icao))
+        ac = self.aircraft.get(icao)
+        is_new = ac is None or not self._owns_aircraft(ac)
+        if is_new:
+            # A real RF observation owns this identity, but must not inherit
+            # coordinates supplied by an independently managed source.
+            ac = Aircraft(icao=icao)
+            self.aircraft[icao] = ac
         ac.last_seen = now
 
         try:
