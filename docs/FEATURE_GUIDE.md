@@ -47,6 +47,8 @@ In **SNIFF**, **WiFi Wardrive** and **BT Wardrive** can both be ON:
 
 Initial wardrive startup follows the existing GPS wait/cancel dialog. A missing scan-completion reply, failed save or unconfirmed STOP pauses the plan with an error. It is not silently treated as an empty successful scan. Selecting a different ESP32 operation cancels the wardrive plan before handing over the device.
 
+The optional [FusedStamen WiFi/BLE bridge](https://github.com/FusedStamen/WatchDogsGo/blob/a543fb22520ec4e90252eb5aed6fc59bf447bbe1/wdg_wifi_bridge.py) uses Linux WiFi and Bluetooth adapters instead of an ESP32 and connects through a virtual serial port. BT Wardrive accepts its final `BLE scan done` line after the results, as well as projectZero's `Summary:`. The same save checks, two-second pause and confirmed STOP handover apply. A bridge adapter warning pauses the schedule instead of counting a failed scan as an empty success. Adapter drivers and the bridge must already be working; this completion fix does not install or configure them.
+
 LoRa uses separate hardware and can receive while the ESP32 alternates. Packet sniffer and HS capture are separate operations, not additional parallel phases.
 
 ## 📤 Uploads, XP and ownership

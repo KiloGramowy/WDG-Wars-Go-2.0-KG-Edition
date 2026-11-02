@@ -90,6 +90,93 @@ class AlternationTests(unittest.TestCase):
         self.toggle('wardriving')
         self.toggle('bt_scanning')
 
+    def test_bridge_ble_results_complete_before_confirmed_handover_to_wifi(self):
+        self.both()
+        self.complete('wardriving')
+        self.advance()
+        self.ack()
+        self.assertEqual(self.g._wardrive_phase, 'bt_scanning')
+
+        self.g._handle_serial_line('1. 11:22:33:44:55:66 RSSI: -60 dBm Name: fixture')
+        self.g.loot.save_wardriving_bt.assert_called_once()
+        self.assertEqual(self.g._wardrive_phase_done, 0)
+        self.g._handle_serial_line('BLE scan done\r\n')
+        self.assertGreater(self.g._wardrive_phase_done, 0)
+        self.assertFalse(self.g.ble_scanning)
+        self.assertFalse(self.g._wardrive_paused)
+
+        self.advance(1.9)
+        self.assertEqual(self.sent(), ['scan_networks', 'stop', 'scan_bt'])
+        self.advance(.1)
+        self.assertEqual(self.sent(), ['scan_networks', 'stop', 'scan_bt', 'stop'])
+        self.g._handle_serial_line('all stopped')
+        base.CLOCK.now += .5
+        base.PX.frame_count += 15
+        self.g._dispatch_pending_esp_command()
+        self.assertEqual(self.sent(), ['scan_networks', 'stop', 'scan_bt', 'stop', 'scan_networks'])
+
+    def test_bridge_empty_ble_cycle_repeats_without_false_timeout(self):
+        self.toggle('bt_scanning')
+        for _ in range(3):
+            self.advance(8)
+            self.g._handle_serial_line('BLE scan done')
+            self.assertGreater(self.g._wardrive_phase_done, 0)
+            self.advance()
+            self.assertFalse(self.g._wardrive_paused)
+        self.assertEqual(self.sent(), ['scan_bt'] * 4)
+
+    def test_bridge_ble_completion_keeps_failed_save_guard(self):
+        self.toggle('bt_scanning')
+        self.g.loot.save_wardriving_bt.side_effect = OSError('disk full')
+        self.g._handle_serial_line('1. 11:22:33:44:55:66 RSSI: -60 dBm Name: fixture')
+        self.g._handle_serial_line('BLE scan done')
+        self.assertTrue(self.g._wardrive_paused)
+        self.assertEqual(self.sent(), ['scan_bt', 'stop'])
+        self.assertFalse(any('complete and saved' in c.args[0]
+                             for c in self.g._term_add.call_args_list))
+
+    def test_bridge_adapter_warning_cannot_become_a_successful_empty_scan(self):
+        self.toggle('bt_scanning')
+        self.g._handle_serial_line(
+            'BLE adapter warning: scan returned in 0.1s with 0 devices')
+        self.g._handle_serial_line('BLE scan done')
+        self.assertTrue(self.g._wardrive_paused)
+        self.assertEqual(self.sent(), ['scan_bt', 'stop'])
+        self.assertFalse(any('complete and saved' in c.args[0]
+                             for c in self.g._term_add.call_args_list))
+        self.g._handle_serial_line('all stopped')
+        self.advance(30)
+        self.g._dispatch_pending_esp_command()
+        self.assertTrue(self.g._wardrive_paused)
+        self.assertEqual(self.sent(), ['scan_bt', 'stop'])
+
+    def test_late_bridge_done_does_not_restart_a_cancelled_ble_schedule(self):
+        self.toggle('bt_scanning')
+        self.toggle('bt_scanning')
+        self.g._handle_serial_line('BLE scan done')
+        self.g._handle_serial_line('all stopped')
+        self.advance(30)
+        self.g._dispatch_pending_esp_command()
+        self.assertEqual(self.g._wardrive_selected, set())
+        self.assertEqual(self.sent(), ['scan_bt', 'stop'])
+        self.assertFalse(any('complete and saved' in c.args[0]
+                             for c in self.g._term_add.call_args_list))
+
+    def test_bridge_marker_does_not_complete_wifi_or_generic_ble_messages(self):
+        self.toggle('wardriving')
+        self.g._handle_serial_line('BLE scan done')
+        self.assertEqual(self.g._wardrive_phase_done, 0)
+        self.complete('wardriving')
+        self.toggle('bt_scanning')
+        self.advance()
+        self.ack()
+        for line in ('Scan complete', 'BLE scan done: printing results',
+                     '[INFO] BLE scan done', 'BT scan done'):
+            with self.subTest(line=line):
+                self.g._handle_serial_line(line)
+                self.assertEqual(self.g._wardrive_phase_done, 0)
+                self.assertTrue(self.g.ble_scanning)
+
     def test_single_wifi_or_ble_repeats_only_that_mode_after_complete_and_pause(self):
         for key, command in [('wardriving', 'scan_networks'), ('bt_scanning', 'scan_bt')]:
             with self.subTest(key=key):

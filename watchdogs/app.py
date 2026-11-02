@@ -28,7 +28,7 @@ import pyxel
 
 from .serial_manager import SerialManager, detect_esp32_port
 from .gps_manager import GpsManager
-from .loot_manager import LootManager
+from .loot_manager import LootDataError, LootManager
 from .app_state import AppState, Network
 from .network_manager import NetworkManager
 from .coastline import COASTLINES
@@ -564,6 +564,10 @@ class WatchDogsGame:
             pyxel.text = _patched_text
         try:
             self.loot = LootManager(_app_dir, gps_manager=self.gps)
+        except LootDataError:
+            # A failed migration must not look like a fresh zero-XP player.
+            logging.getLogger(__name__).exception("Player data could not be opened safely; startup stopped")
+            raise
         except Exception:
             self.loot = None
 
@@ -836,9 +840,8 @@ class WatchDogsGame:
         self.xp = 0
         self._xp_dirty = False
         if self.loot:
-            saved_xp = self.loot.load_xp()
-            if saved_xp > 0:
-                self.xp = saved_xp
+            if self.loot.has_saved_xp():
+                self.xp = self.loot.load_xp()
             else:
                 self.xp = self.loot.calculate_xp_from_loot()
                 if self.xp > 0:
@@ -5654,6 +5657,13 @@ class WatchDogsGame:
                     self.gain_xp(25)
                 return  # don't add raw line to terminal again
 
+        # A bridge may emit its final marker even after a failed, short scan.
+        if (sl.startswith("ble adapter warning:")
+                and getattr(self, "_wardrive_phase", "") == "bt_scanning"):
+            self._term_add(s)
+            self._wardrive_pause("BLE adapter reported an incomplete scan")
+            return
+
         # --- Scan cycle completion ---
         # One-shot scans (SCAN tab): mark as done, stop running flag
         if "scan results printed" in sl:
@@ -5681,7 +5691,10 @@ class WatchDogsGame:
         if ("summary:" in sl or "scan complete" in sl
                 or "ble scan done" in sl or "bt scan done" in sl):
             if getattr(self, "_wardrive_phase", "") == "bt_scanning":
-                if "summary:" in sl:
+                # projectZero prints Summary after its results; the host
+                # wdg_wifi_bridge prints this exact marker after its results.
+                # Generic progress messages must not hand over the radio.
+                if "summary:" in sl or sl == "ble scan done":
                     self._wardrive_complete("bt_scanning")
             elif self._ble_scan_only:
                 self._ble_scan_only = False

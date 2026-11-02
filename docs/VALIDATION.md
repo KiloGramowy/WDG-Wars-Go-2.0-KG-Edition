@@ -2,6 +2,16 @@
 
 This page separates recorded software checks from real hardware evidence. Preparing documentation or a release branch does not itself repeat any radio, GPS, chat-delivery or server test.
 
+## Prepared 0.9.18 — legacy progress and BLE bridge
+
+This combined candidate is **in preparation**, not a published update. It contains the LOCOSP format-1 loot migration fix and the Linux WiFi/BLE bridge completion fix. The public approved feed remains 0.9.17 until a separate release decision.
+
+The complete combined suite passed on uConsole as root: **612/612 tests, no skips**. The preserved private Meshtastic capture was supplied outside Git for software replay; no packets were received or transmitted for these checks. All 10 changed source/test/document files matched the local candidate's hashes before the run.
+
+The **22 legacy-save cases** cover exact XP and level, explicitly saved zero, badges, contacts, discovery ledgers, removed session logs, byte-for-byte backups, restart, unsupported/corrupt/unreadable data, failed writes, conflicting or symbolic-link backups and the native startup failure path. The BLE bridge tests retain projectZero completion and verify save/STOP handover, adapter warnings and cancelled work. The reported AC1200 setup still needs its own hardware test.
+
+An earlier Windows run exposed a missing test-environment dependency (`pyserial`), rather than a game assertion failure. The final uConsole run supplied the actual installed dependencies and all optional fixtures. Tests use temporary player data; the installed game and real progress were not replaced.
+
 ## Full feature tour and media checks
 
 The 143.333-second showcase combines recorded footage with 4,080 newly captured native UI frames across 17 scenes, using the same approved runtime and isolated empty player state. The original 100-second film remains available below the KG feature guide. Neither film publication nor UI capture repeats an RF, approved AUTO, chat-delivery or server-credit test.

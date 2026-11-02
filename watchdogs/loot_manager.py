@@ -19,6 +19,7 @@ Session directory layout:
 import base64
 import csv
 import copy
+import hashlib
 import io
 import json
 import logging
@@ -37,6 +38,10 @@ from .mesh_rules import mesh_contact_xp
 from .mesh_position import mesh_position, receiver_observation
 
 log = logging.getLogger(__name__)
+
+
+class LootDataError(RuntimeError):
+    """Player data could not be opened safely; do not start with zero progress."""
 
 
 def _fsync_file(fh) -> None:
@@ -208,20 +213,90 @@ class LootManager:
     # ------------------------------------------------------------------
 
     def _load_or_build_db(self) -> dict:
-        """Load loot_db.json, or rebuild from session dirs if missing/corrupt."""
-        if self._db_path.is_file():
-            try:
-                with open(self._db_path, "r", encoding="utf-8") as fh:
-                    data = json.load(fh)
-                # Require the current schema version — a bump forces a one-time
-                # rebuild so new per-session counters (e.g. emergency) populate.
-                if (isinstance(data, dict) and data.get("version") == 2
-                        and "sessions" in data):
-                    log.info("Loot DB loaded: %d sessions", len(data.get("sessions", {})))
+        """Load existing progress safely; rebuild only when no database exists."""
+        try:
+            original = self._db_path.read_bytes()
+        except FileNotFoundError:
+            return self._rebuild_db()
+        except OSError as exc:
+            raise LootDataError("Cannot read the loot database. Player data was not reset.") from exc
+        try:
+            data = json.loads(original)
+        except (json.JSONDecodeError, UnicodeError) as exc:
+            # Keep even a damaged save intact for recovery, never replace it
+            # with a new player or an incomplete estimate from session logs.
+            raise LootDataError("Cannot read the loot database. Player data was not reset.") from exc
+        if isinstance(data, dict) and type(data.get("version")) is int:
+            if data["version"] > 2:
+                raise LootDataError("This loot database needs a newer game version. Player data was not changed.")
+            if isinstance(data.get("sessions"), dict):
+                if data["version"] == 2:
+                    log.info("Loot DB loaded: %d sessions", len(data["sessions"]))
                     return data
-            except (json.JSONDecodeError, OSError) as exc:
-                log.warning("Loot DB corrupted (%s), rebuilding", exc)
-        return self._rebuild_db()
+                if data["version"] == 1:
+                    return self._migrate_legacy_db(data, original)
+        raise LootDataError("Unsupported loot database format. Player data was not reset.")
+
+    def _migrate_legacy_db(self, previous: dict, original: bytes) -> dict:
+        """Upgrade LOCOSP's v1 cache without rebuilding earned progress.
+
+        Old session files may have been removed after upload. Their existing
+        counters and every top-level player field remain authoritative. Only
+        missing counters and newly found sessions are read from disk.
+        """
+        if ("xp" in previous and
+                (type(previous["xp"]) is not int or previous["xp"] < 0)):
+            raise LootDataError("Invalid saved XP. Player data was not reset.")
+        if not all(isinstance(value, dict) for value in previous["sessions"].values()):
+            raise LootDataError("Invalid saved session data. Player data was not reset.")
+        migrated = copy.deepcopy(previous)
+        migrated["version"] = 2
+        try:
+            for entry in sorted(self._base.iterdir()):
+                name = entry.name
+                if (not entry.is_dir() or len(name) < 19 or
+                        name[4] != "-" or name[7] != "-" or name[10] != "_"):
+                    continue
+                counts = migrated["sessions"].setdefault(name, {})
+                for key, value in self._scan_session_dir(entry).items():
+                    counts.setdefault(key, value)
+            previous_totals = copy.deepcopy(previous.get("totals", {}))
+            self._recalc_totals(migrated)
+            migrated["totals"] = {**previous_totals, **migrated["totals"]}
+            # Keep the exact source bytes before any database replacement.
+            backup = self._base / ("loot_db.v1." + hashlib.sha256(original).hexdigest() + ".bak")
+            created = False
+            try:
+                fd = os.open(backup, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+                created = True
+                with os.fdopen(fd, "wb") as fh:
+                    fh.write(original)
+                    fh.flush()
+                    os.fsync(fh.fileno())
+            except FileExistsError:
+                if backup.is_symlink() or backup.read_bytes() != original:
+                    raise LootDataError("The player-data backup could not be verified. Migration was cancelled.")
+                os.chmod(backup, 0o600)
+            except OSError:
+                if created:
+                    backup.unlink(missing_ok=True)
+                raise
+            try:
+                directory = os.open(self._base, os.O_RDONLY)
+                try:
+                    os.fsync(directory)
+                finally:
+                    os.close(directory)
+            except OSError:
+                pass  # Some filesystems do not support directory fsync.
+            if self._db_path.read_bytes() != original:
+                raise LootDataError("Player data changed during migration. Close the other game before retrying.")
+            if not self._save_db(migrated):
+                raise LootDataError("Cannot save the migrated loot database. Original progress and backup were kept.")
+        except (OSError, TypeError, ValueError) as exc:
+            raise LootDataError("Cannot migrate the loot database safely. Original progress was not reset.") from exc
+        log.info("Loot DB upgraded from v1 to v2; saved XP and player metadata preserved")
+        return migrated
 
     def _rebuild_db(self) -> dict:
         """Scan all loot session directories and build the DB from scratch.
@@ -501,6 +576,10 @@ class LootManager:
     def load_xp(self) -> int:
         """Load persisted XP from loot_db.json."""
         return self._db.get("xp", 0)
+
+    def has_saved_xp(self) -> bool:
+        """An explicitly saved zero is progress too, not a bootstrap request."""
+        return "xp" in self._db
 
     def save_xp(self, xp: int) -> None:
         """Persist current XP to loot_db.json."""

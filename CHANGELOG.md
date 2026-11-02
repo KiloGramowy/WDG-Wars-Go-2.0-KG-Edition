@@ -1,3 +1,14 @@
+# 0.9.18 — preserve LOCOSP progress and complete bridge BLE scans
+
+- Upgrade the legacy v1 loot database without rebuilding earned XP, badges, contacts or discovery history. Existing session counts remain even if the original logs were removed.
+- Save a byte-for-byte private backup before migration; use an atomic database replacement and make repeated launches idempotent.
+- Keep explicitly saved zero XP. Bootstrap XP from loot only when no saved XP exists.
+- Stop startup on unreadable, unsupported or unsafe database migration instead of silently showing a new zero-XP player.
+- Document how a separate clone can use an existing installation's data folder. This does not add old and new XP or invent points missing from an overwritten save.
+- Accept the Linux WiFi/BLE bridge's exact final `BLE scan done` marker while retaining projectZero/XIAO completion, save/STOP checks and the two-second handover. Adapter warnings pause the schedule; late replies cannot restart a cancelled scan.
+
+---
+
 # 📡 KiloGramowy fork — release preparation (2026-11-01)
 
 - Consolidates the deployed MeshCore/Meshtastic integration and earlier receiver-prototype improvements on one review branch.

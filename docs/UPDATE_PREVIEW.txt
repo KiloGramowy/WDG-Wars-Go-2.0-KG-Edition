@@ -1,92 +1,33 @@
-WatchDogsGo 0.9.17
+WatchDogsGo 0.9.18
 Original game by LOCOSP. Modified by KiloGramowy.
 
-MESHTASTIC AND MESHCORE
-Choose the protocol when enabling LoRa. One SX1262 runs one protocol;
-the HUD follows the active receiver. Each protocol has its own chat.
-Opening the other chat switches the radio; closing chat keeps reception
-running. LoRa OFF stops it. The original WDG menu style is preserved,
-and integration labels are in English.
+KEEP YOUR EXISTING XP
+Fix migration from LOCOSP's older loot database format (v1).
+Saved XP, level, badges, contacts, discovery history and session counts
+are preserved. Missing session logs do not erase their saved counters.
+Previously saved zero XP stays zero; no duplicate XP is granted.
 
-Meshtastic adds public text RX/TX, NodeInfo, position reception, saved
-contacts, history and a saved local nickname. MeshCore keeps its existing
-messenger and channels. Meshtastic uses one selected public channel;
-private Meshtastic channels and direct messages are not included.
-Local TX_DONE confirms transmission completion, not remote delivery.
+Before migration, keep a byte-for-byte private backup beside loot_db.json.
+Repeated launches do not repeat the migration. An unsafe read or write
+stops startup instead of showing an empty player. RF, scoring rates,
+chat, GPS profiles and upload behavior are preserved.
 
-RF PROFILES AND LOCAL AUTO GPS
-Meshtastic includes SFNarrow and EU868/LongFast; MeshCore has a separate
-profile catalog. GPS never selects the protocol or guesses nearby RF.
-MANUAL works without a fix and is not overwritten by GPS.
+BLE BRIDGE SCAN COMPLETION
+Accept the Linux WiFi/BLE bridge's exact final BLE scan done marker,
+alongside the existing projectZero/XIAO Summary. Save checks, the pause
+and confirmed STOP handover remain in place. Adapter warnings pause the
+schedule instead of counting a failed scan as a successful empty scan.
+Late markers do not restart a cancelled schedule. Compatible adapters,
+drivers and an already configured bridge are still required.
 
-With a stable fix, S opens Save for this area. Review the displayed
-2 km circle and confirm with Y; selecting a profile alone saves no
-approval. A enables AUTO separately. AUTO recalls only an approved,
-matching local profile for that protocol. Missing or ambiguous matches
-offer manual selection. Losing GPS keeps the active RF settings.
-F removes an assignment after confirmation. Channels and keys are kept.
+SEPARATE CLONE, EXISTING DATA
+A new folder has its own loot directory. Launch the new run.sh with
+the old installation root as its data argument to use your existing save:
+./run.sh /absolute/path/to/old/WatchDogsGo
+Use the installation root, not the loot folder, and close the old game.
+Project-local account/plugin settings are separate from that data option.
+Read docs/UPGRADING_FROM_LOCOSP.md before moving or restoring saves.
 
-PERSISTENT MESH DISCOVERIES
-Recognize supported Meshtastic frames and real NodeIDs. Repeat packets
-and retransmissions are deduplicated across restarts and use existing
-discovery XP rules without duplicate awards. A frame's author may have
-been reached through a relay; its ID does not prove direct range.
-
-Valid Node GPS takes priority. Otherwise a fresh measured uConsole fix
-can supply Receiver GPS, clearly identified as the observation position.
-Without a credible fix, recoverable contacts wait for GPS. Position
-repairs do not earn another discovery award.
-
-WIFI AND BLE WARDRIVING
-In SNIFF, one wardrive mode ON runs alone. WiFi and BT both ON alternate
-complete scan/save cycles with confirmed handover and a pause between
-phases. STOP ALL or another selected ESP32 operation cancels the schedule.
-Save or STOP failures pause it. Packet sniffing and handshake capture
-remain separate operations; LoRa can keep receiving on its own radio.
-
-STARTUP AND RECOVERY
-Improved ESP32 selection avoids unrelated USB devices. Failed starts
-report errors, stale timers cannot restart cancelled scans, and GPS
-retries its configured UART when NMEA data appears after startup.
-
-WDGWARS UPLOADS
-Application receipts distinguish imported, known, cooldown-handled,
-rejected and unresolved records. HTTP 200 alone is not acceptance.
-Receipts survive restarts and are bound to payload, account and endpoint.
-Empty or invalid queue exports are pruned while authoritative contacts,
-progress and recoverable mesh data are retained. Pending counts sessions,
-not nodes. Local XP remains separate from server credit.
-
-CLEAN EXIT
-Quitting, closing the native window and callback errors share cleanup:
-cancel queued scans, stop workers, save final records and XP, then close
-handles and release hardware power acquired by WDG. USB goes last.
-Untouched hardware is preserved; failed stops are reported, and firmware
-flashing retains its power protection.
-
-SYSTEM > UPDATE GAME
-Startup keeps LOCOSP's credit with Modified by KiloGramowy below it.
-The original menu row is retained; a small avatar appears in the update
-window with current/latest versions and full scrollable release notes.
-
-Background startup checks use the approved release feed. One notice per
-release survives restarts and repository renames. OK opens the notes;
-No or Esc dismisses it. Update Game stays white while an update remains
-available. Ordinary development commits do not trigger notices.
-
-The update source is verified by immutable GitHub repository and owner
-IDs. Source shows the verified repository; O opens it in the desktop
-browser. If verification is needed, O requests a check first. R retries
-checks. Installed release notes remain available offline; a failed check
-is reported as a failure, not as proof that the game is current.
-
-Reading notes never installs code. Enter prepares an available update;
-a separate Y/N confirmation is required to apply it. Game operations
-stop and final data is saved before replacement. Local edits and changed
-dependencies require review. A verified code backup supports rollback
-without restoring older player data. Relaunch after installation.
-
-Progress, XP, achievements, settings, keys, channels, contacts, pairing
-and pending logs are preserved. These notes describe the release's
-features; they do not establish a new RF test, an AUTO approval or chat
-delivery to another device.
+If an earlier build already overwrote the save, keep the current data
+and look for an intact old copy or backup. Exact erased XP cannot be
+recovered reliably by guessing from logs or the WDGWars server score.
