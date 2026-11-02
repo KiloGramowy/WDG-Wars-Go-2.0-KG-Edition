@@ -1,10 +1,47 @@
-WatchDogsGo - cumulative update
+RELEASE 0.9.19.1 - ADS-B AND MESH OFF VISIBILITY
+----------------------------------------------
+1. AIRCRAFT AFTER ADS-B OFF
+--------------------------
+Before: 0.9.19 hid aircraft when ADS-B stopped and cleared them on STOP.
+Changed: ADS-B OFF keeps the last visible aircraft on the map and small
+radar. They start disappearing after 5 minutes, farther ones first;
+the nearest disappear by 10 minutes. Repeated STOP does not reset this.
+
+2. MESHCORE AND MESHTASTIC AFTER OFF
+----------------------------------
+Before: mesh markers remained until the game closed, even after OFF.
+Changed: after switching a mesh protocol OFF, its markers disappear
+between 5 and 10 minutes, farther ones first. The other active protocol
+keeps its markers. Saved contacts remain available after map expiry.
+
+3. KEEP AIRCRAFT WHILE RECEPTION CONTINUES
+----------------------------------------
+Before: a position older than 60 seconds disappeared even while other
+messages from the same aircraft were still arriving.
+Changed: with ADS-B ON, any new message keeps its last known position
+visible. New coordinates move the marker. An aircraft disappears after
+60 seconds without another message. No movement is invented.
+
+4. RESUME RECEPTION AND RESTART
+-----------------------------
+Changed: turning reception back ON cancels the remaining OFF schedule.
+Already expired markers do not return without a new observation.
+Retained radio aircraft get 60 seconds to be heard again. The distance
+order uses the receiver location at OFF; object coordinates do not move.
+Restarting the game starts with an empty aircraft and mesh map.
+Saved XP, badges, contacts, notes and logs remain unchanged.
+
+5. EARLIER FIXES INCLUDED
+------------------------
+This is one cumulative installation, including the earlier progress,
+BLE and contact-panel fixes. Saved mesh contacts do not reappear on the
+map merely because the game restarted. The ADS-B and mesh OFF rules
+above replace the corresponding historical 0.9.19 rules below.
 Original game by LOCOSP. Modified by KiloGramowy.
-One confirmation installs the latest complete code and all missing fixes.
-No intermediate installation of 0.9.18 is needed.
 
 RELEASE 0.9.19 - MAP MICROFIX
 ---------------------------
+Historical notes. ADS-B and mesh OFF policies are superseded by 0.9.19.1.
 
 1. ADS-B MAP AND RADAR
 ---------------------

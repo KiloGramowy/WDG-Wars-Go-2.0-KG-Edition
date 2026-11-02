@@ -1,3 +1,12 @@
+# 0.9.19.1 — gradual ADS-B and mesh map expiry after stopping reception
+
+- While ADS-B reception is active, keep each aircraft visible until no message for its identity has arrived for 60 seconds. Callsign and speed messages keep its last known coordinates visible; the map does not extrapolate a new position.
+- After ADS-B OFF, retain the last visible aircraft on the map and small radar for five minutes, then remove them progressively, farther from the receiver first. All retained aircraft disappear by ten minutes; other SDR modes do not reset this schedule.
+- Apply the same five-to-ten-minute OFF visibility schedule separately to MeshCore and Meshtastic. Expire display markers only, not saved contacts or discovery identities. The order uses the receiver position at switch-off; it does not alter object coordinates or simulate physical movement.
+- Resume reception with a 60-second grace period for retained aircraft; new position messages move their markers. Aircraft no longer heard then expire normally.
+- Start with an empty aircraft map after restarting the game. Saved XP, badges and aircraft logs remain independent of map visibility.
+- Retain the 0.9.19 empty startup map and all earlier progress/contact fixes. This release supersedes the 0.9.19 ADS-B visibility and indefinite mesh-after-OFF policies described below.
+
 # 0.9.19 — current-session mesh markers and live ADS-B visibility
 
 - Restore the original startup map behavior: keep saved MeshCore/Meshtastic contacts and XP, but create their map markers only after reception in the current game session. GPS backfill alone cannot replay the contact archive.

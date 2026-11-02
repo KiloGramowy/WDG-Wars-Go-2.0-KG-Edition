@@ -851,6 +851,10 @@ class WatchDogsGame:
         self.markers: list[MapMarker] = []
         # Contact history is persistent; map observations start with this session.
         self._mesh_session_nodes: set[tuple[str, str]] = set()
+        self._mesh_map_decay = {}
+        self._mesh_map_previous_active: set[str] = set()
+        # Optional source adapters report only their currently active protocols.
+        self._mesh_map_adapter_protocols: set[str] = set()
         self.particles: list[Particle] = []
         self.msgs: list[tuple[str, int, int]] = []
         self.scan_pulse = 0
@@ -1695,6 +1699,7 @@ class WatchDogsGame:
         self._poll_gps()
         self._assign_missing_mesh_gps()
         self._poll_lora()
+        self._sync_mesh_map_visibility()
         self._poll_reticulum()
         self._poll_sdr()
         self._poll_subghz()
@@ -5851,6 +5856,7 @@ class WatchDogsGame:
             existing.clear()
             existing.update(data)
         self._mesh_session_nodes.add((protocol, data["id"]))
+        self._sync_mesh_map_visibility()
         self._update_mesh_marker(protocol, data)
         self._load_loot_totals()
         if protocol == "meshtastic":
@@ -5864,6 +5870,40 @@ class WatchDogsGame:
                                f"RSSI:{rssi_text}dBm SNR:{snr_text}dB", raw=True)
         else:
             self.state.mc_nodes = len(nodes)
+
+    def _sync_mesh_map_visibility(self):
+        """Expire map-only mesh observations five to ten minutes after OFF.
+
+        Saved contacts, log records and discovery/XP identities are untouched.
+        The distance order uses the receiver position at the OFF transition.
+        """
+        from watchdogs.map_visibility import OffScanDecay
+        states = getattr(self, "_mesh_map_decay", None)
+        if states is None:
+            states = self._mesh_map_decay = {}
+        protocols = ("meshcore", "meshtastic")
+        getter = getattr(self, "_active_lora_protocol", None)
+        physical = getter() if callable(getter) else ""
+        active = set(getattr(self, "_mesh_map_adapter_protocols", ()))
+        if physical in protocols:
+            active.add(physical)
+        previous = getattr(self, "_mesh_map_previous_active", set())
+        receiver = (getattr(self, "player_lat", None), getattr(self, "player_lon", None))
+        for protocol in protocols:
+            decay = states.setdefault(protocol, OffScanDecay())
+            # Remove already expired display objects before resuming reception;
+            # switching ON alone cannot replay them from saved contact history.
+            if decay.active:
+                self.markers[:] = [marker for marker in self.markers
+                    if marker.type != protocol or decay.visible(
+                        getattr(marker, "mesh_key", id(marker)))]
+            if protocol in active:
+                decay.clear()
+            elif protocol in previous and not decay.active:
+                observations = [(getattr(marker, "mesh_key", id(marker)), marker.lat, marker.lon)
+                                for marker in self.markers if marker.type == protocol]
+                decay.freeze(observations, receiver=receiver)
+        self._mesh_map_previous_active = active.intersection(protocols)
 
     def _update_mesh_marker(self, protocol, data):
         from watchdogs.mesh_position import mesh_position
@@ -7058,6 +7098,7 @@ class WatchDogsGame:
     def _draw_markers(self):
         """Draw handshake and MeshCore node markers. Always visible at any
         zoom level; label shown from zoom 5 up."""
+        self._sync_mesh_map_visibility()
         zoom = self.proj.zoom
         for m in self.markers:
             sx, sy = self.proj.geo_to_screen(m.lat, m.lon)
@@ -7904,6 +7945,7 @@ class WatchDogsGame:
             if y < HUD_TOP + 10: break
 
     def _draw_radar(self):
+        self._sync_mesh_map_visibility()
         rx, ry, rr = W - 30, HUD_TOP + 24, 20
         pyxel.rect(rx-rr-1, ry-rr-1, rr*2+3, rr*2+3, 0)
         pyxel.circb(rx, ry, rr, C_GRID)

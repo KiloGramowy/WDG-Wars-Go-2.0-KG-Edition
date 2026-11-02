@@ -28,7 +28,7 @@ The edit combines recorded uConsole footage with a current native UI tour. Exter
 | 🧰 **From LOCOSP** | WDGWars Chat and Reticulum/LoRa, Monster RF SubGHz, Emergency Radio, Proximity Radar, CRISIS, sound controls, visual polish and the original in-game updater. |
 | 🛠️ **From KiloGramowy** | Meshtastic integration beside MeshCore, local AUTO GPS, persistent mesh discoveries, alternating WiFi/BLE wardriving, upload/startup fixes, clean shutdown and the expanded release updater. |
 
-**2.0 is the edition name; the current software version is 0.9.19.** Original authorship and the upstream fork relationship are retained.
+**2.0 is the edition name; the current software version is 0.9.19.1.** Original authorship and the upstream fork relationship are retained.
 
 💾 **Coming from LOCOSP's version?** 0.9.18 preserves saved XP, level, badges and contacts when upgrading the older loot database. A separate clone needs your existing data folder: [keep your progress when upgrading](docs/UPGRADING_FROM_LOCOSP.md).
 

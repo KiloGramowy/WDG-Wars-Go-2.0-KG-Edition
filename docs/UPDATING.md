@@ -18,7 +18,7 @@ Failed or offline checks are explicit. They are never presented as evidence that
 
 ## Prepared stable release
 
-The prepared release is **0.9.19**. It corrects ADS-B visibility and mesh map history while retaining the 0.9.18 progress, BLE and contact-panel corrections. Its public source is the formal fork [KiloGramowy/WDG-Wars-Go-2.0-KG-Edition](https://github.com/KiloGramowy/WDG-Wars-Go-2.0-KG-Edition), based on [LOCOSP/WatchDogsGo](https://github.com/LOCOSP/WatchDogsGo). Its approved `updates/stable.json` feed identifies the release's code; committing that feed does not create a GitHub Release.
+The prepared version is **0.9.19.1**. After ADS-B or a mesh protocol is switched OFF, its map/radar markers disappear progressively between five and ten minutes, farther from the receiver first. Active radio ADS-B uses the last received message for its 60-second timeout. Saved data and earlier progress, BLE and contact-panel corrections are preserved. The candidate is tested on the maintained uConsole before the owner authorizes publication; its presence in a local checkout does not advertise a public update. Its public source is the formal fork [KiloGramowy/WDG-Wars-Go-2.0-KG-Edition](https://github.com/KiloGramowy/WDG-Wars-Go-2.0-KG-Edition), based on [LOCOSP/WatchDogsGo](https://github.com/LOCOSP/WatchDogsGo). Its approved `updates/stable.json` feed identifies the published release's code; committing that feed does not create a GitHub Release.
 
 The code commit comes first. A second, feed-only commit records that first commit as `source_commit`. A fresh clone can therefore have a newer feed/documentation HEAD while running the same approved version. The updater reports it as current only when the approved commit and installed commit have identical runtime Git entries. In-game offline notes, including `docs/UPDATE_PREVIEW.txt`, are part of that runtime set. Unadvertised code changes cannot use this exception.
 
@@ -26,9 +26,9 @@ Release metadata uses schema 2 and includes the immutable repository ID, reposit
 
 ## Cumulative installation and versioned notes
 
-One confirmation installs the latest complete approved code, including missing changes from skipped releases. A 0.9.17 installation can update directly to 0.9.19; it does not need a separate 0.9.18 installation. An installation already on 0.9.18 receives only the remaining file differences. Current player data and settings stay outside the code replacement set.
+One confirmation installs the latest complete approved code, including missing changes from skipped releases. Once 0.9.19.1 is approved and published, a 0.9.17, 0.9.18 or 0.9.19 installation can update directly to it. Current player data and settings stay outside the code replacement set.
 
-Published notes use `RELEASE 0.9.19 - MAP MICROFIX` style headings within the existing notes string. The 0.9.19 reader selects sections newer than the installed version; an already current installation can still read its latest section. It keeps the shared introduction and displays unrecognized formats in full.
+Published notes use `RELEASE 0.9.19.1 - ADS-B LAST SCAN` style headings within the existing notes string. Four-part numeric versions are supported by the existing updater. The 0.9.19 reader selects sections newer than the installed version; an already current installation can still read its latest section. It keeps the shared introduction and displays unrecognized formats in full.
 
 The existing 0.9.17 and 0.9.18 readers cannot select sections before their first upgrade. For this transition both show the shared description, with 0.9.19 first and an explicitly marked 0.9.18 catch-up section. The feed schema, approval source and installation confirmation are unchanged.
 
@@ -36,7 +36,7 @@ ZIP source archives do not contain Git history and cannot use the current in-gam
 
 ## Edition name and repository rename
 
-**WDG Wars Go 2.0 — KG Edition** is the presentation name; the prepared software version is **0.9.19**. The repository was renamed without changing its immutable ID `1442123109`, public LOCOSP parent or approved runtime source. Existing 0.9.17 builds retain their bootstrap name `KiloGramowy/WatchDogsGo-KG-Edition` and resolve the new canonical name through that ID. The feed label can follow the rename without creating a new release or another notice. No reinstall or player-data migration is required for this rename.
+**WDG Wars Go 2.0 — KG Edition** is the presentation name; the prepared software version is **0.9.19.1**. The repository was renamed without changing its immutable ID `1442123109`, public LOCOSP parent or approved runtime source. Existing 0.9.17 builds retain their bootstrap name `KiloGramowy/WatchDogsGo-KG-Edition` and resolve the new canonical name through that ID. The feed label can follow the rename without creating a new release or another notice. No reinstall or player-data migration is required for this rename.
 
 ## Release source
 
