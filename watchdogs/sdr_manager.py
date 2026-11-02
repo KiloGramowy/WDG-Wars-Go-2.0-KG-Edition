@@ -240,18 +240,20 @@ class SDRManager:
             except Exception:
                 pass
 
-        # Start SBS parser thread (connects to port 30003)
-        t = threading.Thread(target=self._sbs_reader, daemon=True)
-        t.start()
-        self._threads.append(t)
-
         # Remove expired OFF markers before resetting their display schedule;
-        # a new scan must not resurrect observations already faded away.
+        # a new scan must not resurrect observations already faded away. Do
+        # this before a reader can deliver its first fresh observation.
         self._prune_aircraft(time.time())
         self._adsb_off_decay.clear()
         self.running = True
         self.mode = "adsb"
         self._adsb_resumed_at = time.time()
+
+        # Start SBS parser thread (connects to port 30003)
+        t = threading.Thread(target=self._sbs_reader, daemon=True)
+        t.start()
+        self._threads.append(t)
+
         self._events.put(("status", "ADS-B started (dump1090)"))
         return True
 

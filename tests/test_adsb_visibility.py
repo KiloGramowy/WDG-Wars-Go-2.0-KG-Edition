@@ -252,6 +252,33 @@ class AdsbVisibilityTests(unittest.TestCase):
         self.assertNotIn("ABC123", self.manager.aircraft)
         self.assertEqual(self.manager.visible_aircraft(now=10000), [])
 
+    def test_first_immediate_receiver_packet_survives_resume_of_off_scan(self):
+        with patch("watchdogs.sdr_manager.time.time", return_value=1001):
+            self.assertTrue(self.manager.stop())
+        process, thread = Mock(), Mock()
+        process.poll.return_value = None
+        thread.is_alive.return_value = False
+        observed = []
+
+        def first_packet():
+            observed.append((self.manager.running, self.manager.mode,
+                             self.manager._adsb_off_decay.active))
+            self.manager._parse_sbs_line(sbs().replace("ABC123", "DEF456"))
+
+        thread.start.side_effect = first_packet
+        with patch.object(self.manager, "has_dump1090", return_value=True), \
+                patch.object(self.manager, "_spawn_owned", return_value=process), \
+                patch("watchdogs.sdr_manager.subprocess.run"), \
+                patch("watchdogs.sdr_manager.time.sleep"), \
+                patch("watchdogs.sdr_manager.threading.Thread", return_value=thread), \
+                patch("watchdogs.sdr_manager.time.time", return_value=10000):
+            self.assertTrue(self.manager.start_adsb())
+        self.assertIn("DEF456", self.manager.aircraft)
+        fresh = self.manager.aircraft["DEF456"]
+        self.assertEqual((fresh.last_seen, fresh.position_seen), (10000, 10000))
+        self.assertIn(fresh, self.manager.visible_aircraft(now=10000))
+        self.assertEqual(observed, [(True, "adsb", False)])
+
     def test_other_sources_own_their_visibility_and_expiry(self):
         external = Aircraft(icao="FED123", lat=52, lon=1, last_seen=1)
         external.acquisition_source = "source_adapter"
