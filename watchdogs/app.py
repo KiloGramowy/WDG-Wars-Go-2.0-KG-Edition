@@ -851,6 +851,7 @@ class WatchDogsGame:
         self.markers: list[MapMarker] = []
         # Contact history is persistent; map observations start with this session.
         self._mesh_session_nodes: set[tuple[str, str]] = set()
+        self._mesh_map_eligible_nodes: set[tuple[str, str]] = set()
         self._mesh_map_decay = {}
         self._mesh_map_previous_active: set[str] = set()
         # Optional source adapters report only their currently active protocols.
@@ -5802,6 +5803,7 @@ class WatchDogsGame:
         """Use a fresh receiver fix for contacts awaiting the user's fallback."""
         if not self.loot or time.monotonic() < getattr(self, "_mesh_gps_next", 0): return
         self._mesh_gps_next = time.monotonic() + 2.0
+        self._sync_mesh_map_visibility()
         try:
             result = self.loot.assign_receiver_gps_to_unlocated_contacts()
         except Exception as exc:
@@ -5815,7 +5817,7 @@ class WatchDogsGame:
                 if existing is not None:
                     existing.clear(); existing.update(contact)
                 else: nodes.append(contact)
-                if (protocol, contact["id"]) in self._mesh_session_nodes:
+                if (protocol, contact["id"]) in self._mesh_map_eligible_nodes:
                     self._update_mesh_marker(protocol, contact)
             if protocol == "meshtastic": self._mt.set_known_nodes(nodes)
             self._term_add(f"[LoRa] {protocol}: receiver GPS assigned to {len(changed)} contact(s)", raw=True)
@@ -5855,8 +5857,7 @@ class WatchDogsGame:
         else:
             existing.clear()
             existing.update(data)
-        self._mesh_session_nodes.add((protocol, data["id"]))
-        self._sync_mesh_map_visibility()
+        self._record_mesh_map_observation(protocol, data["id"])
         self._update_mesh_marker(protocol, data)
         self._load_loot_totals()
         if protocol == "meshtastic":
@@ -5871,6 +5872,12 @@ class WatchDogsGame:
         else:
             self.state.mc_nodes = len(nodes)
 
+    def _record_mesh_map_observation(self, protocol, node_id):
+        """Make a newly persisted observation eligible for the current map."""
+        self._sync_mesh_map_visibility()
+        self._mesh_session_nodes.add((protocol, node_id))
+        self._mesh_map_eligible_nodes.add((protocol, node_id))
+
     def _sync_mesh_map_visibility(self):
         """Expire map-only mesh observations five to ten minutes after OFF.
 
@@ -5881,6 +5888,9 @@ class WatchDogsGame:
         states = getattr(self, "_mesh_map_decay", None)
         if states is None:
             states = self._mesh_map_decay = {}
+        eligible = getattr(self, "_mesh_map_eligible_nodes", None)
+        if eligible is None:
+            eligible = self._mesh_map_eligible_nodes = set(getattr(self, "_mesh_session_nodes", ()))
         protocols = ("meshcore", "meshtastic")
         getter = getattr(self, "_active_lora_protocol", None)
         physical = getter() if callable(getter) else ""
@@ -5894,15 +5904,19 @@ class WatchDogsGame:
             # Remove already expired display objects before resuming reception;
             # switching ON alone cannot replay them from saved contact history.
             if decay.active:
+                eligible.difference_update({key for key in eligible
+                    if key[0] == protocol and not decay.visible(f"{key[0]}:{key[1]}")})
                 self.markers[:] = [marker for marker in self.markers
                     if marker.type != protocol or decay.visible(
                         getattr(marker, "mesh_key", id(marker)))]
             if protocol in active:
                 decay.clear()
             elif protocol in previous and not decay.active:
-                observations = [(getattr(marker, "mesh_key", id(marker)), marker.lat, marker.lon)
-                                for marker in self.markers if marker.type == protocol]
-                decay.freeze(observations, receiver=receiver)
+                observations = {f"{kind}:{node_id}": (None, None)
+                                for kind, node_id in eligible if kind == protocol}
+                observations.update({getattr(marker, "mesh_key", id(marker)): (marker.lat, marker.lon)
+                                     for marker in self.markers if marker.type == protocol})
+                decay.freeze([(key, *point) for key, point in observations.items()], receiver=receiver)
         self._mesh_map_previous_active = active.intersection(protocols)
 
     def _update_mesh_marker(self, protocol, data):

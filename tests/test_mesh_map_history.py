@@ -52,7 +52,7 @@ startup = ast.FunctionDef(name="restore_startup", args=ast.arguments(
     kw_defaults=[], kwarg=None, defaults=[]), decorator_list=[],
     body=initializer_range("_mc_nodes", "_flipper") + initializer_range("xp", "particles"))
 methods = {"_register_mesh_node", "_assign_missing_mesh_gps", "_update_mesh_marker",
-           "_sync_mesh_map_visibility"}
+           "_sync_mesh_map_visibility", "_record_mesh_map_observation"}
 harness = ast.ClassDef(name="MapGame", bases=[], keywords=[], decorator_list=[],
                       body=[startup] + [copy.deepcopy(node) for node in NATIVE_GAME.body
                                         if isinstance(node, ast.FunctionDef) and node.name in methods])

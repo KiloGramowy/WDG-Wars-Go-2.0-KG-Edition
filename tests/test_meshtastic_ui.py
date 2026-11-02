@@ -49,7 +49,7 @@ METHODS = {
     "_active_lora_protocol", "_stop_radio_owner", "_switch_lora_protocol",
     "_toggle_lora", "_update_lora_protocol_picker", "_draw_lora_protocol_picker",
     "_update_mt_profile_picker", "_draw_mt_profile_picker", "_register_mesh_node",
-    "_update_mesh_marker", "_sync_mesh_map_visibility",
+    "_update_mesh_marker", "_sync_mesh_map_visibility", "_record_mesh_map_observation",
     "_on_mt_node", "_on_mt_text", "_on_mt_status", "_on_mt_tx",
     "_poll_meshtastic", "_meshtastic_view", "_update_mt_screen", "_draw_mt_screen",
     "_update_mc_screen", "_update_mc_nodes_panel", "_mesh_contact_actions", "_draw_mc_screen",

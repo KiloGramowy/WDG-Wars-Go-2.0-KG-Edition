@@ -2,6 +2,7 @@
 import copy
 from contextlib import contextmanager
 import tempfile
+from types import SimpleNamespace
 import unittest
 from unittest.mock import patch
 
@@ -104,6 +105,35 @@ class MeshOffVisibilityTests(unittest.TestCase):
             self.assertEqual(restarted.markers, [])
             self.assertEqual(len(restarted._mc_nodes) + len(restarted._mt_view["nodes"]), 6)
             self.assertEqual(restarted.xp, XP)
+
+    def test_late_gps_cannot_restore_expired_unlocated_nodes_without_new_reception(self):
+        for protocol, node_id in (("meshcore", "00000001"), ("meshtastic", "!00000001")):
+            with self.subTest(protocol=protocol), tempfile.TemporaryDirectory() as root, \
+                    patch("time.monotonic", return_value=1000) as clock:
+                legacy(root, positioned=False)
+                gps = SimpleNamespace(radio_fix=lambda **kwargs: None)
+                with loot_at(root, gps) as loot:
+                    game = game_for(loot)
+                    game._mesh_map_adapter_protocols = {protocol}
+                    receive(game, protocol, node_id, positioned=False)
+                    self.assertEqual(game.markers, [])
+                    self.assertEqual(game._mesh_map_eligible_nodes, {(protocol, node_id)})
+                    game._mesh_map_adapter_protocols.clear()
+                    game._sync_mesh_map_visibility()
+                    clock.return_value = 1701
+                    game._sync_mesh_map_visibility()
+                    self.assertEqual(game._mesh_map_eligible_nodes, set())
+                    self.assertEqual(game._mesh_session_nodes, {(protocol, node_id)})
+                    game._mesh_map_adapter_protocols = {protocol}
+                    gps.radio_fix = lambda **kwargs: dict(lat=51.2, lon=18,
+                        observed_at=kwargs["now"] - 0.1, quality=1, sats=8, hdop=0.8)
+                    game._assign_missing_mesh_gps()
+                    self.assertEqual(game.markers, [])
+                    self.assertEqual(game.xp, XP)
+                    receive(game, protocol, node_id)
+                    self.assertEqual(len(game.markers), 1)
+                    self.assertEqual(game._mesh_map_eligible_nodes, {(protocol, node_id)})
+                    self.assertEqual(game.xp, XP)
 
 
 if __name__ == "__main__":
