@@ -10,6 +10,7 @@ The updater lives in **SYSTEM → Update Game**. Its menu row retains the origin
 - The notice is remembered per immutable repository ID, release channel and stable release ID across restarts. Editing notes, renaming the repository or pushing a development commit does not create a new notice.
 - **Update Game** stays white while a confirmed update is available, including after dismissal.
 - In the update window, use **Up / Down**, **Page Up / Page Down**, **Home / End** to read all notes, **R** to check again and **Esc** to return.
+- Version 0.9.18 shows numbered uppercase change titles in yellow and descriptions in white. The older 0.9.17 window retains plain text, including the numbered sections and blank lines, until its renderer is updated.
 - **O** opens the verified update source on GitHub.
 - When an approved update is available, **Enter** prepares it. A separate **Y / N** confirmation is required before applying it.
 

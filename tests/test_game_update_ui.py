@@ -304,6 +304,34 @@ class GameUpdateUiTests(unittest.TestCase):
         self.press(g, PX.KEY_PAGEUP)
         self.assertEqual(g._gameupd_scroll, 0)
 
+    def test_numbered_change_titles_are_yellow_and_fact_lines_stay_white(self):
+        g = game()
+        notes = ('1. XP AND PLAYER DATA\nBefore: old saves could lose XP.\n'
+                 'Changed: preserve XP and create a backup.\n\n'
+                 '2. BLE SCAN COMPLETION\nBefore: bridge scan timed out.\n'
+                 'Changed: accept its final completion marker.')
+        self.available(g, release(notes=notes))
+        g._draw_gameupd_screen()
+        colors = {args[2]: args[3] for args in self.texts()}
+        self.assertEqual(colors['1. XP AND PLAYER DATA'], ENV['C_WARNING'])
+        self.assertEqual(colors['2. BLE SCAN COMPLETION'], ENV['C_WARNING'])
+        self.assertEqual(colors['Before: old saves could lose XP.'], ENV['C_TEXT'])
+        self.assertEqual(colors['Changed: preserve XP and create a backup.'], ENV['C_TEXT'])
+        self.assert_above_output()
+        g._game_updates.prepare.assert_not_called()
+        g._game_updates.install.assert_not_called()
+
+    def test_scrolled_change_title_keeps_yellow_color(self):
+        g = game()
+        notes = 'Body line.\n' * 12 + '\n3. MESHCORE CONTACT LIST\nChanged: show empty list.'
+        self.available(g, release(notes=notes))
+        g._gameupd_scroll = 13
+        g._draw_gameupd_screen()
+        colors = {args[2]: args[3] for args in self.texts()}
+        self.assertEqual(colors['3. MESHCORE CONTACT LIST'], ENV['C_WARNING'])
+        self.assertEqual(colors['Changed: show empty list.'], ENV['C_TEXT'])
+        self.assertEqual(' '.join(g._gameupd_note_lines()).split(), notes.split())
+
     def test_notes_confirmation_notice_and_logs_fit_above_output(self):
         for state in ("notes", "confirm", "log", "notice"):
             with self.subTest(state=state):

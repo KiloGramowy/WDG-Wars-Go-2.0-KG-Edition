@@ -1,63 +1,38 @@
 WatchDogsGo 0.9.18
 Original game by LOCOSP. Modified by KiloGramowy.
 
-1. KEEP YOUR EXISTING XP AND PLAYER DATA
-Before: loading LOCOSP's older v1 loot database could rebuild the database
-and lose saved XP, badges, contacts and discovery history. Explicitly saved
-zero XP could also be recalculated from loot.
-After: migration preserves saved XP, level, badges, contacts, discovery
-history and session counts, including counters whose logs were removed.
-Saved zero stays zero and repeated launches do not grant duplicate XP.
-A byte-for-byte private backup is kept beside loot_db.json before the
-atomic migration. An unsafe read/write stops startup rather than showing
-an empty player. RF, scoring rates and upload behavior are unchanged.
+1. XP, LEVEL AND SAVED DATA
+Before: an old v1 save could lose XP, badges, contacts and history.
+Changed: preserve saved progress and counters; create a backup before
+migration. Saved zero stays zero. Unsafe migration stops startup.
+For a separate clone, run.sh accepts the old installation root as its
+data argument. Already erased XP requires an intact save or backup.
 
-SEPARATE CLONE, EXISTING DATA
-A new folder has its own loot directory. Launch the new run.sh with the
-old installation root as its data argument to use the existing save:
-./run.sh /absolute/path/to/old/WatchDogsGo
-Use the installation root, not the loot folder, and close the old game.
-Project-local account/plugin settings are separate from that data option.
-Read docs/UPGRADING_FROM_LOCOSP.md before moving or restoring saves.
-If an earlier build already overwrote the save, keep current data and look
-for an intact old copy/backup. Exact erased XP cannot be guessed from logs
-or the WDGWars server score. Separate saves are not blindly merged.
+2. BLE SCAN COMPLETION
+Before: Linux bridge results could end with a false scan timeout.
+Changed: accept its final BLE scan done marker. Keep XIAO/projectZero
+Summary support and save/STOP checks. Adapter warnings pause scanning;
+late replies cannot restart a cancelled schedule.
 
-2. BLE BRIDGE SCAN COMPLETION
-Before: BT Wardrive expected Summary while the Linux WiFi/BLE bridge ended
-with BLE scan done. Results could arrive and then trigger a false timeout.
-After: the exact final bridge marker completes the scan; projectZero/XIAO
-Summary remains supported. Save checks, the pause and confirmed STOP are
-still required for scan handover. Adapter warnings pause the schedule.
-Late markers cannot restart a cancelled schedule. Compatible adapters,
-drivers and an already configured bridge are still required.
+3. MESHCORE CONTACT LIST
+Before: Ctrl+H hid an empty list; keys still reached the chat.
+Changed: show CONTACTS (0), block chat input while the panel is open,
+and close the empty panel with Esc without leaving chat. Keep the panel
+visible after deleting the final contact.
 
-3. MESHCORE AND MESHTASTIC CONTACTS - CTRL+H
-Before: an empty list hid the panel, so Ctrl+H appeared inactive in both
-chats. In MeshCore, keys could still edit/send a draft and Esc could leave
-chat. Deleting the last contact also made the panel disappear.
-After: both chats show CONTACTS (0) and a clear message. Esc closes the
-empty panel while chat and its receiver stay active. The panel captures
-input, so Enter does not send a draft. A first recognized contact appears
-in the open panel; deleting the final one leaves it visible. MeshCore and
-Meshtastic keep separate lists and panel states. Opening contacts does
-not send an advert or start a scan; raw packets are not invented nodes.
+4. MESHTASTIC CONTACT LIST
+Before: Ctrl+H hid the panel when no contacts were saved.
+Changed: show CONTACTS (0) and the empty-list message. Keep MeshCore and
+Meshtastic contacts and panel states separate.
 
-4. DEAUTH NETWORK LIST - SAME POPUP AS EVIL TWIN
-Before: BSSID and channel had to be typed into the form.
-After: the shared scan-table popup opens in single-network form mode and
-shows SSID, BSSID, channel and RSSI. Same-name networks remain separate by
-BSSID. Opening it uses previous results from the current session and does
-not run a command. UP/DOWN selects a row; Enter fills the original form.
-The form still needs its separate normal submission. M opens empty manual
-input, R refreshes WiFi scanning and Esc cancels. Refresh uses the existing
-STOP confirmation barrier and cancels a selected wardrive schedule. Pending
-refresh blocks row selection; failed scans allow retry/manual input. Late
-results cannot reopen a cancelled popup. Whitelisted networks stay blocked.
-Evil Twin keeps its existing multi-select and portal behavior.
+5. DEAUTH WIFI NETWORK LIST
+Before: BSSID and channel had to be entered manually.
+Changed: use the Evil Twin scan-table popup for a single network choice.
+Show SSID, BSSID, channel and RSSI. Enter fills the form; M opens manual
+input, R refreshes the scan and Esc cancels. Selection does not execute
+the form. Keep whitelist checks and the scanner STOP barrier.
 
-VALIDATION SCOPE
-Software tests distinguish parser/UI behavior from physical RF operation.
-No new AC1200 RF/bridge validation or over-the-air Deauth test is claimed.
-The network-list change does not alter firmware or transmit behavior.
-Player data, settings, identities, keys and saved channels are retained.
+6. UPDATE NOTES
+Before: change descriptions used one text color.
+Changed: separate each correction with a numbered yellow title and blank
+line; keep the factual description in white.

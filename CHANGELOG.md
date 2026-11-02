@@ -8,6 +8,7 @@
 - Accept the Linux WiFi/BLE bridge's exact final `BLE scan done` marker while retaining projectZero/XIAO completion, save/STOP checks and the two-second handover. Adapter warnings pause the schedule; late replies cannot restart a cancelled scan.
 - Display an empty contacts panel in MeshCore and Meshtastic instead of hiding it until the first node appears. In MeshCore, the empty panel captures input and Esc closes it without leaving chat; deleting the final contact keeps the panel visible. Protocol states remain separate.
 - Open the existing WiFi scan-table popup for Deauth in single-network form mode. Previously BSSID and channel had to be typed; Enter now fills the original form from one selected row, M retains manual entry and R refreshes the scan. Selection does not execute the form. Preserve whitelist checks, scanner STOP barriers and the Evil Twin multi-select/portal flow; failed or cancelled scans cannot leave an endless pending popup or reopen it later.
+- Separate update-note corrections with numbered yellow titles, white factual descriptions and blank lines. Existing 0.9.17 readers retain the same plain-text section boundaries until the renderer is updated.
 
 ---
 
