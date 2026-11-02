@@ -27,6 +27,29 @@ class ReleaseNoteFilterTests(unittest.TestCase):
         self.assertEqual(filter_release_notes(notes, "0.9.19", "0.9.100"), PREAMBLE + newest)
         self.assertEqual(filter_release_notes(notes, "0.9.18", "0.9.100"), PREAMBLE + newest + LATEST)
 
+    def test_four_component_microfix_shows_only_missing_release_sections(self):
+        microfix = "RELEASE 0.9.19.1 - ADS-B SNAPSHOT MICROFIX\nUpdated aircraft lifetime.\n\n"
+        notes = PREAMBLE + microfix + LATEST + PREVIOUS
+        for installed, expected in (
+                ("0.9.17", microfix + LATEST + PREVIOUS),
+                ("0.9.18", microfix + LATEST),
+                ("0.9.19", microfix),
+                ("0.9.19.0", microfix),
+                ("0.9.19.1", microfix)):
+            with self.subTest(installed=installed):
+                self.assertEqual(filter_release_notes(notes, installed, "0.9.19.1"),
+                                 PREAMBLE + expected)
+
+    def test_four_component_microfix_versions_compare_numerically(self):
+        first = "RELEASE 0.9.19.1 - FIRST MICROFIX\nFirst change.\n\n"
+        second = "RELEASE 0.9.19.2 - SECOND MICROFIX\nSecond change.\n\n"
+        tenth = "RELEASE 0.9.19.10 - TENTH MICROFIX\nTenth change.\n\n"
+        notes = PREAMBLE + tenth + second + first + LATEST
+        self.assertEqual(filter_release_notes(notes, "0.9.19.2", "0.9.19.10"),
+                         PREAMBLE + tenth)
+        self.assertEqual(filter_release_notes(notes, "0.9.19.1", "0.9.19.10"),
+                         PREAMBLE + tenth + second)
+
     def test_legacy_unstructured_notes_are_unchanged(self):
         notes = "1. XP AND PLAYER DATA\nBefore: old state.\nChanged: new state.\n"
         self.assertEqual(filter_release_notes(notes, "0.9.18", "0.9.19"), notes)

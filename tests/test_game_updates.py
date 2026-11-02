@@ -158,6 +158,49 @@ class GameUpdateTests(unittest.TestCase):
         for name, value in self.player_files.items():
             self.assertEqual((self.root / name).read_bytes(), value, name)
 
+    def microfix_history(self):
+        """Extend this test's isolated source, retaining every preceding fix."""
+        sources = {"0.9.17": self.target}
+        for version, feature in (("0.9.18", "fix_018"), ("0.9.19", "fix_019"),
+                                 ("0.9.19.1", "fix_0191")):
+            write(self.remote, "watchdogs/__init__.py", f'__version__ = "{version}"\n')
+            write(self.remote, f"watchdogs/{feature}.py", f'RELEASE = "{version}"\n')
+            git(self.remote, "add", "watchdogs")
+            git(self.remote, "commit", "-qm", "Code for " + version)
+            sources[version] = git(self.remote, "rev-parse", "HEAD").stdout.decode().strip()
+        return sources
+
+    def install_microfix_from(self, installed):
+        sources = self.microfix_history()
+        if installed != "0.9.17":
+            self.publish(version=installed, release_id="v" + installed,
+                         source_commit=sources[installed])
+        baseline = self.manager.prepare(self.release())
+        self.manager.install(baseline, quiescent=True)
+        self.manager.discard(baseline)
+        self.assertEqual(self.manager.installed_version(), installed)
+
+        self.publish(version="0.9.19.1", release_id="v0.9.19.1",
+                     source_commit=sources["0.9.19.1"])
+        release = self.release()
+        self.assertEqual(release.version, "0.9.19.1")
+        self.assertEqual(release.source_commit, sources["0.9.19.1"])
+        self.assertTrue(self.manager.notice_pending(release))
+        plan = self.manager.prepare(release)
+        receipt = self.manager.install(plan, quiescent=True)
+        self.manager.discard(plan)
+        self.assertEqual(receipt.version, "0.9.19.1")
+        self.assertEqual(self.manager.installed_version(), "0.9.19.1")
+        self.assertEqual(self.manager.installed_commit(), sources["0.9.19.1"])
+        for feature, version in (("fix_018", "0.9.18"), ("fix_019", "0.9.19"),
+                                 ("fix_0191", "0.9.19.1")):
+            self.assertEqual((self.root / f"watchdogs/{feature}.py").read_text(),
+                             f'RELEASE = "{version}"\n')
+        self.assertEqual(self.manager.check().status, "current")
+        self.assertEqual(git(self.root, "rev-parse", "HEAD").stdout.decode().strip(), self.legacy)
+        self.assert_player_kept()
+        return sources, receipt
+
     def test_check_uses_fixed_fork_and_manifest_not_legacy_origin_or_head(self):
         release = self.release()
         self.assertEqual(self.manager.installed_commit(), self.base)
@@ -306,6 +349,35 @@ class GameUpdateTests(unittest.TestCase):
         self.assertEqual(self.manager.check().status, "error")
         self.publish(version="0.9.16")
         self.assertEqual(self.manager.check().status, "error")
+
+    def test_four_component_microfix_installs_cumulatively_from_017(self):
+        self.install_microfix_from("0.9.17")
+
+    def test_four_component_microfix_installs_cumulatively_from_018(self):
+        self.install_microfix_from("0.9.18")
+
+    def test_four_component_microfix_installs_from_019_and_reports_current(self):
+        self.install_microfix_from("0.9.19")
+
+    def test_local_microfix_cannot_be_overwritten_by_older_public_feed(self):
+        sources, _ = self.install_microfix_from("0.9.19")
+        older = self.publish(version="0.9.19", release_id="v0.9.19",
+                             source_commit=sources["0.9.19"])
+        before = snapshot(self.root)
+        checked = self.manager.check()
+        self.assertEqual(checked.status, "error")
+        self.assertIsNone(checked.release)
+        self.assertIn("newer or unrelated installation", checked.message)
+        with self.assertRaisesRegex(updates.UpdateError, "newer or unrelated installation"):
+            self.manager.prepare(updates.GameUpdates._release(older))
+        self.assertEqual(snapshot(self.root), before)
+        self.assertEqual(self.manager.installed_version(), "0.9.19.1")
+        self.assert_player_kept()
+        # Publishing the exact preview source later requires no reinstall.
+        self.publish(version="0.9.19.1", release_id="v0.9.19.1",
+                     source_commit=sources["0.9.19.1"])
+        self.assertEqual(self.manager.check().status, "current")
+        self.assertEqual(snapshot(self.root), before)
 
     def test_corrupt_installed_manifest_is_not_replaced_by_legacy_git_fallback(self):
         write(self.root, updates.MANIFEST_PATH, '{"source_commit":"wrong"}')
