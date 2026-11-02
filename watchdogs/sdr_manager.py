@@ -18,6 +18,8 @@ from functools import wraps
 from queue import Queue
 from typing import Callable, Optional
 
+from .map_visibility import OffScanDecay
+
 log = logging.getLogger(__name__)
 
 
@@ -137,9 +139,10 @@ class SDRManager:
         # ADS-B state
         self.aircraft: dict[str, Aircraft] = {}  # icao -> Aircraft
         self.total_aircraft_seen: int = 0
-        # OFF freezes the last view. A resumed receiver gets one reception
-        # window before deciding that previously visible aircraft have left.
+        # OFF retains the last view, with a distance-ordered 5–10 minute
+        # display timeout. Resume allows a fresh receiver-range window.
         self._adsb_resumed_at: float = 0.0
+        self._adsb_off_decay = OffScanDecay()
 
         # 433 MHz state
         self.sensors: dict[str, Sensor433] = {}  # sid -> Sensor433
@@ -242,6 +245,10 @@ class SDRManager:
         t.start()
         self._threads.append(t)
 
+        # Remove expired OFF markers before resetting their display schedule;
+        # a new scan must not resurrect observations already faded away.
+        self._prune_aircraft(time.time())
+        self._adsb_off_decay.clear()
         self.running = True
         self.mode = "adsb"
         self._adsb_resumed_at = time.time()
@@ -560,9 +567,16 @@ class SDRManager:
         the SDR on that result. The finite wait budget also permits retry.
         """
         deadline = time.monotonic() + 5
-        # Freeze the currently visible observations, without resurrecting
-        # already expired entries between the app's periodic prune calls.
+        # Freeze only the visible observations, without resurrecting already
+        # expired entries between the app's periodic prune calls. The OFF
+        # intent starts display expiry even if reader shutdown needs retry.
         self._prune_aircraft(time.time())
+        if self._adsb_receiving():
+            self._adsb_off_decay.freeze(
+                [(ac.icao, ac.lat, ac.lon) for ac in self.visible_aircraft()
+                 if self._owns_aircraft(ac)],
+                receiver=(getattr(self, "_gps_lat", None),
+                          getattr(self, "_gps_lon", None)))
         self._stop_requested = True
         self._stop_event.set()
         if not self._lifecycle_lock.acquire(timeout=0.5):
@@ -616,8 +630,8 @@ class SDRManager:
 
             self.emergency_active = False
             self.network_present = False
-            # Keep the last scan visible while OFF. This in-memory snapshot
-            # is not replayed from saved history when the game restarts.
+            # The last scan gradually fades while OFF; nothing is replayed
+            # from saved history when the game restarts.
             self.running = False
             self.mode = ""
             complete = True
@@ -667,16 +681,16 @@ class SDRManager:
                 now - max(seen, self._adsb_resumed_at) <= ADSB_TIMEOUT)
 
     def _prune_aircraft(self, now: float):
-        if not self._adsb_receiving():
-            return  # OFF, shutdown, and non-ADS-B modes keep the last scan.
+        receiving = self._adsb_receiving()
         for key, aircraft in list(self.aircraft.items()):
             if (self._owns_aircraft(aircraft) and
-                    not self._aircraft_in_range(aircraft, now) and
+                    not (self._aircraft_in_range(aircraft, now) if receiving
+                         else self._adsb_off_decay.visible(key)) and
                     self.aircraft.get(key) is aircraft):
                 self.aircraft.pop(key, None)
 
     def visible_aircraft(self, now: float | None = None) -> list[Aircraft]:
-        """Return the active reception view, or the frozen last scan while OFF.
+        """Return active reception, or the distance-decaying last scan while OFF.
 
         Map and small radar use the same view. Receiving any message keeps
         the last valid coordinates visible; new coordinates move the marker.
@@ -686,7 +700,8 @@ class SDRManager:
         receiving = self._adsb_receiving()
         return [ac for ac in list(self.aircraft.values())
                 if (self._owns_aircraft(ac) and
-                    (not receiving or self._aircraft_in_range(ac, now)) and
+                    (self._aircraft_in_range(ac, now) if receiving
+                     else self._adsb_off_decay.visible(ac.icao)) and
                     math.isfinite(ac.lat) and math.isfinite(ac.lon) and
                     -90 <= ac.lat <= 90 and -180 <= ac.lon <= 180 and
                     ac.has_position)]
