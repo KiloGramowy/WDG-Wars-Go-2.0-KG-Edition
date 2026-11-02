@@ -26,11 +26,11 @@ Release metadata uses schema 2 and includes the immutable repository ID, reposit
 
 ## Cumulative installation and versioned notes
 
-One confirmation installs the latest complete approved code, including missing changes from skipped releases. Once 0.9.19.1 is approved and published, a 0.9.17, 0.9.18 or 0.9.19 installation can update directly to it. Current player data and settings stay outside the code replacement set.
+One confirmation installs the latest complete approved code, including missing changes from skipped releases. A 0.9.17, 0.9.18 or 0.9.19 installation can update directly to 0.9.19.1. Current player data and settings stay outside the code replacement set.
 
 Published notes use `RELEASE 0.9.19.1 - ADS-B LAST SCAN` style headings within the existing notes string. Four-part numeric versions are supported by the existing updater. The 0.9.19 reader selects sections newer than the installed version; an already current installation can still read its latest section. It keeps the shared introduction and displays unrecognized formats in full.
 
-The existing 0.9.17 and 0.9.18 readers cannot select sections before their first upgrade. For this transition both show the shared description, with 0.9.19 first and an explicitly marked 0.9.18 catch-up section. The feed schema, approval source and installation confirmation are unchanged.
+The existing 0.9.17 and 0.9.18 readers cannot select sections before their first upgrade. Both show the cumulative description with 0.9.19.1 first, followed by historical 0.9.19 and 0.9.18 sections. The new section explicitly supersedes the older ADS-B and mesh OFF policies. A 0.9.19 reader selects only the missing 0.9.19.1 section. The feed schema, approval source and installation confirmation are unchanged.
 
 ZIP source archives do not contain Git history and cannot use the current in-game installer. Use a genuine clone and preserve the existing data/configuration as described in [the migration guide](UPGRADING_FROM_LOCOSP.md); do not create artificial Git metadata or bypass the updater's source checks.
 
