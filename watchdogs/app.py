@@ -50,6 +50,7 @@ from .proximity_manager import ProximityManager
 from .portals import get_all_portals, upload_html_to_esp32
 from . import upload_manager
 from .game_updates import GameUpdates
+from .game_restart import restart_game
 
 # ---------------------------------------------------------------------------
 # Constants
@@ -9042,6 +9043,12 @@ class WatchDogsGame:
         self._gameupd_install_frame = -1
         self._gameupd_closed_for_install = False
         self._gameupd_source_opening = False
+        self._gameupd_restart_at = None
+        self._gameupd_restart_frame = -1
+        self._gameupd_restart_error = False
+        self._gameupd_restart_root = Path(__file__).resolve().parent.parent
+        self._gameupd_restart_arguments = tuple(sys.argv[1:])
+        self._gameupd_restart_executable = sys.executable
         self._gameupd_avatar = None
         try:
             from . import __version__
@@ -9069,7 +9076,7 @@ class WatchDogsGame:
             if event == "check":
                 self._game_update_checking = False
                 self._game_update_status = value.status
-                self._game_update_message = value.message
+                self._game_update_message = "UP TO DATE" if value.status == "current" else value.message
                 self._game_installed_version = value.installed_version
                 if value.status in ("available", "current", "unpublished"):
                     self._game_update_release = value.release
@@ -9287,7 +9294,16 @@ class WatchDogsGame:
             return
         if self._gameupd_running:
             return
+        if self._gameupd_restart_at is not None:
+            if (pyxel.frame_count > self._gameupd_restart_frame and
+                    time.monotonic() >= self._gameupd_restart_at):
+                self._gameupd_restart_at = None
+                self._gameupd_restart_process()
+            return
         if self._gameupd_done and self._gameupd_closed_for_install:
+            if self._gameupd_ok and self._gameupd_restart_error and pyxel.btnp(pyxel.KEY_RETURN):
+                self._gameupd_restart_process()
+                return
             if pyxel.btnp(pyxel.KEY_ESCAPE) or pyxel.btnp(pyxel.KEY_RETURN) or pyxel.btnp(pyxel.KEY_Q):
                 pyxel.quit()
             return
@@ -9374,7 +9390,11 @@ class WatchDogsGame:
             self._gameupd_ok = True
             self._game_update_available = False
             self._gameupd_log_add(f"[UPD] Updated to v{receipt.version}. Backup saved.")
-            self._gameupd_log_add("[UPD] Settings and progress kept. Relaunch to apply.")
+            self._game_update_message = "Updated. Restarting..."
+            self._gameupd_log_add("[UPD] Updated. Restarting...")
+            self._gameupd_restart_error = False
+            self._gameupd_restart_frame = pyxel.frame_count
+            self._gameupd_restart_at = time.monotonic() + 1.0
         except Exception as exc:
             logging.getLogger(__name__).exception("Game update installation failed")
             self._gameupd_ok = False
@@ -9384,6 +9404,26 @@ class WatchDogsGame:
             self._gameupd_discard_plan()
             self._gameupd_running = False
             self._gameupd_done = True
+
+    def _gameupd_restart_process(self):
+        """Replace only a successfully updated game whose devices are closed."""
+        self._gameupd_restart_at = None
+        try:
+            if (not self._gameupd_done or not self._gameupd_ok or
+                    not self._gameupd_closed_for_install or
+                    not getattr(self, "_cleanup_done", False) or self._cleanup_errors):
+                raise RuntimeError("A clean, completed update is required before restart.")
+            restart_game(self._gameupd_restart_root,
+                         arguments=self._gameupd_restart_arguments,
+                         executable=self._gameupd_restart_executable)
+            raise RuntimeError("The game process was not restarted.")
+        except Exception:
+            # Installation already succeeded. Keep its receipt and current
+            # player data; neither a restart failure nor retry rolls them back.
+            logging.getLogger(__name__).exception("Updated game could not restart")
+            self._gameupd_restart_error = True
+            self._game_update_message = "Update installed. Automatic restart failed."
+            self._gameupd_log_add("[UPD] ENTER: retry restart. ESC: close and relaunch manually.")
 
     def _draw_gameupd_screen(self):
         import textwrap
@@ -9443,7 +9483,11 @@ class WatchDogsGame:
             pyxel.text(dx + 12, dy + 169, "Settings and progress will be kept. Backup first.", C_TEXT)
             pyxel.text(dx + 12, dy + 186, "[Y] Update    [N/ESC] Cancel", C_DIM)
             return
-        if self._gameupd_running:
+        if self._gameupd_restart_at is not None:
+            hint = "Updated. Restarting..."
+        elif self._gameupd_ok and self._gameupd_restart_error:
+            hint = "ENTER retry restart  ESC/Q close - relaunch manually"
+        elif self._gameupd_running:
             hint = "Please wait..."
         elif self._gameupd_closed_for_install:
             hint = "ENTER/ESC close - relaunch the game"

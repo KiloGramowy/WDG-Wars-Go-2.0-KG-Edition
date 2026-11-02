@@ -303,6 +303,7 @@ class GameUpdateTests(unittest.TestCase):
         result = self.manager.check()
         self.assertEqual(result.status, "current", result.message)
         self.assertEqual(result.installed_version, "0.9.17")
+        self.assertEqual(result.message, "UP TO DATE")
 
     def test_same_version_descendant_with_different_runtime_is_not_called_current(self):
         release = self.release()
@@ -334,6 +335,7 @@ class GameUpdateTests(unittest.TestCase):
         result = self.manager.check()
         self.assertEqual(result.status, "current", result.message)
         self.assertEqual(result.installed_version, "0.9.16")
+        self.assertEqual(result.message, "UP TO DATE")
 
     def test_malformed_and_foreign_release_metadata_is_rejected(self):
         for changes in ({"repository": "Other/Fork"}, {"channel": "testing"},

@@ -500,7 +500,7 @@ class GameUpdates:
             release = self._release(json.loads(text))
             available = self._validate_release(release, fetched)
             return UpdateResult("available" if available else "current", version, release,
-                                "An update is available." if available else "Your game is up to date.")
+                                "An update is available." if available else "UP TO DATE")
         except UpdateError as error:
             return UpdateResult("error", version, message=str(error))
         except (OSError, ValueError, TypeError, UnicodeError, subprocess.SubprocessError):

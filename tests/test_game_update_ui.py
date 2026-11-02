@@ -70,11 +70,12 @@ METHODS = {"_init_game_updates", "_check_game_update", "_request_game_update_che
            "_poll_game_update_events", "_game_update_notice_allowed", "_maybe_show_game_update_notice",
            "_update_game_update_notice", "_draw_game_update_notice", "_start_game_update",
            "_gameupd_note_lines", "_update_gameupd_screen", "_gameupd_prepare", "_gameupd_log_add",
-           "_gameupd_do", "_gameupd_discard_plan", "_draw_gameupd_screen", "_draw_menu", "_draw_boot_screen",
+           "_gameupd_do", "_gameupd_restart_process", "_gameupd_discard_plan", "_draw_gameupd_screen", "_draw_menu", "_draw_boot_screen",
            "_gameupd_source_info", "_gameupd_open_source", "_gameupd_open_source_worker",
            "update", "_draw_inner", "draw"}
 ENV = dict(__name__="watchdogs.update_ui_test", __package__="watchdogs", __file__=str(SOURCE),
-           Path=Path, Queue=Queue, pyxel=PX, logging=logging, random=random, re=re, time=time,
+           Path=Path, Queue=Queue, pyxel=PX, logging=logging, random=random, re=re, time=time, sys=sys,
+           restart_game=Mock(side_effect=AssertionError("Unexpected real restart request")),
            threading=SimpleNamespace(Thread=RecordedThread), GameUpdates=lambda **kwargs: FakeUpdates())
 for statement in TREE.body:
     if isinstance(statement, ast.Assign):
@@ -274,6 +275,20 @@ class GameUpdateUiTests(unittest.TestCase):
         self.assertTrue(g._game_update_available)
         self.assertIs(g._game_update_release, previous)
         self.assertNotIn("up to date", g._game_update_message.lower())
+
+    def test_verified_current_displays_exact_up_to_date_and_cannot_install(self):
+        g = game()
+        self.available(g)
+        g._game_update_events.put(("check", result("current")))
+        g._poll_game_update_events()
+        self.assertEqual(g._game_update_message, "UP TO DATE")
+        self.assertFalse(g._game_update_available)
+        g._draw_gameupd_screen()
+        self.assertIn("UP TO DATE", [args[2] for args in self.texts()])
+        self.press(g, PX.KEY_RETURN)
+        g._game_updates.prepare.assert_not_called()
+        g._game_updates.install.assert_not_called()
+        self.assertIsNone(g._gameupd_restart_at)
 
     def test_unpublished_preview_cannot_prepare_install(self):
         g = game()
@@ -680,6 +695,92 @@ class GameUpdateUiTests(unittest.TestCase):
         self.assertTrue(g._gameupd_closed_for_install)
         self.assertFalse(g._gameupd_ok)
         self.assertTrue(any("relaunch" in line for line in g._gameupd_log))
+        self.assertIsNone(g._gameupd_restart_at)
+
+    def complete_update(self, g):
+        self.available(g)
+        g._start_game_update()
+        g._gameupd_confirm = True
+        g._gameupd_plan = "verified-plan"
+        self.press(g, PX.KEY_Y)
+        PX.frame_count += 1
+        g._update_gameupd_screen()
+
+    def test_success_restarts_only_after_new_frame_and_one_second(self):
+        with patch.object(sys, "argv", ["watchdogs", "/dev/ttyTEST", "my loot"]):
+            g = game()
+        restart = Mock(side_effect=SystemExit("process replaced"))
+        with patch.dict(ENV, restart_game=restart), patch("time.monotonic", return_value=100) as clock:
+            self.complete_update(g)
+            self.assertEqual(g._gameupd_restart_at, 101)
+            self.assertTrue(g._cleanup_done)
+            self.assertTrue(g._gameupd_done and g._gameupd_ok)
+            g._draw_gameupd_screen()
+            self.assertIn("Updated. Restarting...", [args[2] for args in self.texts()])
+            clock.return_value = 102
+            g._update_gameupd_screen()  # No new frame has painted yet.
+            restart.assert_not_called()
+            PX.frame_count += 1
+            clock.return_value = 100.99
+            g._update_gameupd_screen()
+            restart.assert_not_called()
+            clock.return_value = 101
+            with self.assertRaisesRegex(SystemExit, "process replaced"):
+                g._update_gameupd_screen()
+        restart.assert_called_once_with(SOURCE.parent.parent,
+            arguments=("/dev/ttyTEST", "my loot"), executable=sys.executable)
+        g._game_updates.install.assert_called_once_with("verified-plan", quiescent=True)
+
+    def test_failed_install_does_not_schedule_restart(self):
+        g = game()
+        g._game_updates.install.side_effect = RuntimeError("write failed")
+        restart = Mock()
+        with patch.dict(ENV, restart_game=restart), self.assertLogs(level="ERROR"):
+            self.complete_update(g)
+        self.assertFalse(g._gameupd_ok)
+        self.assertIsNone(g._gameupd_restart_at)
+        restart.assert_not_called()
+        self.assertTrue(any("Update failed" in row for row in g._gameupd_log))
+
+    def test_restart_failure_can_retry_without_reinstall_or_rollback(self):
+        g = game()
+        g._game_updates.rollback = Mock(side_effect=AssertionError("Restart cannot roll back data"))
+        with patch("time.monotonic", return_value=100):
+            self.complete_update(g)
+        restart = Mock(side_effect=OSError("exec refused"))
+        with patch.dict(ENV, restart_game=restart), patch("time.monotonic", return_value=102):
+            PX.frame_count += 1
+            with self.assertLogs(level="ERROR"):
+                g._update_gameupd_screen()
+            self.assertTrue(g._gameupd_ok)
+            self.assertTrue(g._gameupd_restart_error)
+            self.assertIsNone(g._gameupd_restart_at)
+            self.assertIn("Automatic restart failed", g._game_update_message)
+            g._draw_gameupd_screen()
+            self.assertTrue(any("ENTER retry restart" in row[2] for row in self.texts()))
+            restart.side_effect = SystemExit("retry replaced process")
+            with self.assertRaisesRegex(SystemExit, "retry replaced process"):
+                self.press(g, PX.KEY_RETURN)
+        self.assertEqual(restart.call_count, 2)
+        g._game_updates.install.assert_called_once()
+        self.assertEqual(g._cleanup.call_count, 1)
+        g._game_updates.rollback.assert_not_called()
+
+    def test_restart_guard_rejects_unfinished_or_unclean_update(self):
+        for done, ok, closed, cleaned, errors in (
+                (False, True, True, True, []), (True, False, True, True, []),
+                (True, True, False, True, []), (True, True, True, False, []),
+                (True, True, True, True, ["radio still owned"])):
+            with self.subTest(done=done, ok=ok, closed=closed, cleaned=cleaned, errors=errors):
+                g = game()
+                g._gameupd_done, g._gameupd_ok = done, ok
+                g._gameupd_closed_for_install, g._cleanup_done = closed, cleaned
+                g._cleanup_errors = errors
+                restart = Mock()
+                with patch.dict(ENV, restart_game=restart), self.assertLogs(level="ERROR"):
+                    g._gameupd_restart_process()
+                restart.assert_not_called()
+                self.assertTrue(g._gameupd_restart_error)
 
     def test_closed_transports_are_not_polled_after_install_cleanup(self):
         g = game()
