@@ -705,7 +705,7 @@ class GameUpdateUiTests(unittest.TestCase):
         g.particles, g.msgs = [], []
         g._loot_points_ts = time.time()
         for name in ('_poll_serial', '_poll_gps', '_assign_missing_mesh_gps',
-                     '_poll_lora', '_poll_reticulum', '_poll_sdr', '_poll_subghz',
+                     '_poll_lora', '_sync_mesh_map_visibility', '_poll_reticulum', '_poll_sdr', '_poll_subghz',
                      '_poll_watch', '_poll_wpasec_result', '_poll_proximity',
                      '_dispatch_pending_esp_command', '_update_hack',
                      '_update_wardriving_loop'):
@@ -717,6 +717,7 @@ class GameUpdateUiTests(unittest.TestCase):
         g._update_gameupd_screen.assert_called_once_with()
         g._poll_serial.assert_called_once_with()
         g._poll_lora.assert_called_once_with()
+        g._sync_mesh_map_visibility.assert_called_once_with()
         g._cleanup.assert_not_called()
 
     def test_prepare_error_does_not_stop_hardware(self):
