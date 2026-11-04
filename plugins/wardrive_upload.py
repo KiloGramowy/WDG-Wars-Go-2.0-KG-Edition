@@ -243,6 +243,16 @@ class WardriveUpload(PluginBase):
         self._url_input = ""
         self._entering_key = False
         self._entering_url = False
+        self._pending_browser = False
+        self._pending_rows: list[dict] = []
+        self._pending_sel = 0
+        self._pending_scroll = 0
+        self._pending_page_rows = 17
+        self._pending_delete = None
+        self._pending_message = ""
+        self._pending_from_sync = False
+        self._pending_open_frame = -1
+        self._pending_confirm_frame = -1
         # Auth push — PIN display
         self._auth_pin = ""
         self._auth_pin_expiry = 0
@@ -259,6 +269,7 @@ class WardriveUpload(PluginBase):
     def menu_items(self) -> list[PluginMenuItem]:
         return [
             PluginMenuItem("w", "Watch Dogs Go Wars Sync", "open_overlay"),
+            PluginMenuItem("l", "Pending Upload Logs", "open_pending_logs"),
         ]
 
     def on_load(self, app) -> None:
@@ -293,6 +304,8 @@ class WardriveUpload(PluginBase):
         self._menu_sel = 0
         self._entering_key = False
         self._entering_url = False
+        self._pending_browser = False
+        self._pending_delete = None
         if not self._api_key:
             self._log_add("Set your API key to start syncing", 10)
             self._log_add("  Register on the community server to get your key", 13)
@@ -308,12 +321,20 @@ class WardriveUpload(PluginBase):
             self._log_add(f"{self._mesh_gps_wait} mesh log(s) waiting for receiver GPS", 10)
 
     def on_update(self) -> None:
-        if self.app and time.monotonic() >= self._next_cleanup:
+        if not self._pending_browser and self.app and time.monotonic() >= self._next_cleanup:
             self._next_cleanup = time.monotonic() + 2.0
             self._pending_sessions()
         if not self._overlay_active:
             return
         import pyxel
+
+        if self._pending_browser:
+            # The game dismisses a PIN before returning input to this browser.
+            # In particular, a PIN's Y/Esc cannot confirm/cancel file deletion.
+            if self._auth_pin_active():
+                return
+            self._update_pending_logs()
+            return
 
         # Key input mode
         if self._entering_key:
@@ -383,6 +404,12 @@ class WardriveUpload(PluginBase):
             return
         import pyxel
 
+        if self._pending_browser:
+            self._draw_pending_logs(w, h)
+            if self._auth_pin_active():
+                self._draw_auth_pin(w, h)
+            return
+
         pyxel.rect(0, 0, w, h, 0)
 
         # Title bar
@@ -446,6 +473,187 @@ class WardriveUpload(PluginBase):
         if self._auth_pin_active():
             self._draw_auth_pin(w, h)
 
+    def open_pending_logs(self):
+        """Open local file management without an upload level or API key."""
+        self._open_pending_logs(from_sync=False)
+
+    def _open_pending_logs(self, *, from_sync):
+        import pyxel
+        self._overlay_active = self._pending_browser = True
+        self._pending_from_sync = from_sync
+        self._entering_key = self._entering_url = False
+        self._pending_delete = None
+        self._pending_message = ""
+        self._pending_open_frame = pyxel.frame_count
+        self._refresh_pending_logs()
+
+    def _refresh_pending_logs(self):
+        """Take a read-only catalog snapshot; never prune while browsing."""
+        previous = (self._pending_rows[self._pending_sel]
+                    if 0 <= self._pending_sel < len(self._pending_rows) else {})
+        key = previous.get("session"), previous.get("filename")
+        try:
+            self._pending_rows = self.list_pending_logs()
+        except (OSError, ValueError):
+            self._pending_rows = []
+            self._pending_message = "Could not read pending logs. Press R to retry."
+        self._pending_sel = next((index for index, item in enumerate(self._pending_rows)
+            if (item.get("session"), item.get("filename")) == key),
+            min(self._pending_sel, max(0, len(self._pending_rows) - 1)))
+        self._pending_scroll = min(self._pending_scroll, self._pending_sel)
+
+    def _consume_pending_escape(self):
+        import pyxel
+        if self.app:
+            self.app._esc_consumed_frame = pyxel.frame_count
+
+    def _pending_can_delete(self, item):
+        return (not self._uploading and bool(item.get("can_delete"))
+                and not item.get("active") and not item.get("confirmed")
+                and item.get("status") in ("ready", "waiting_gps", "empty_invalid"))
+
+    def _update_pending_logs(self):
+        import pyxel
+        if pyxel.frame_count == self._pending_open_frame:
+            return
+        if self._pending_delete is not None:
+            if pyxel.frame_count == self._pending_confirm_frame:
+                return
+            if pyxel.btnp(pyxel.KEY_N) or pyxel.btnp(pyxel.KEY_ESCAPE):
+                self._pending_delete = None
+                self._pending_message = "Deletion cancelled."
+                if pyxel.btnp(pyxel.KEY_ESCAPE):
+                    self._consume_pending_escape()
+            elif pyxel.btnp(pyxel.KEY_Y):
+                item, self._pending_delete = self._pending_delete, None
+                if self._uploading:
+                    self._pending_message = "Upload in progress. Nothing was deleted."
+                else:
+                    try:
+                        result = self.delete_pending_log(item["session"], item["filename"], item["token"])
+                        self._pending_message = ("Deleted " + item["filename"] + "." if result.get("deleted")
+                                                 else result.get("reason") or "Log changed. Refresh and review it again.")
+                    except (OSError, ValueError):
+                        self._pending_message = "Could not delete this log. Refresh and try again."
+                self._refresh_pending_logs()
+            return
+        if pyxel.btnp(pyxel.KEY_ESCAPE):
+            self._pending_browser = False
+            self._overlay_active = bool(self._pending_from_sync)
+            self._consume_pending_escape()
+            return
+        if pyxel.btnp(pyxel.KEY_R):
+            self._pending_message = ""
+            self._refresh_pending_logs()
+            return
+        size = len(self._pending_rows)
+        if not size:
+            return
+        if pyxel.btnp(pyxel.KEY_HOME):
+            self._pending_sel = 0
+        elif pyxel.btnp(pyxel.KEY_END):
+            self._pending_sel = size - 1
+        elif pyxel.btnp(pyxel.KEY_PAGEUP):
+            self._pending_sel = max(0, self._pending_sel - self._pending_page_rows)
+        elif pyxel.btnp(pyxel.KEY_PAGEDOWN):
+            self._pending_sel = min(size - 1, self._pending_sel + self._pending_page_rows)
+        elif pyxel.btnp(pyxel.KEY_UP):
+            self._pending_sel = max(0, self._pending_sel - 1)
+        elif pyxel.btnp(pyxel.KEY_DOWN):
+            self._pending_sel = min(size - 1, self._pending_sel + 1)
+        if pyxel.btnp(pyxel.KEY_D):
+            item = self._pending_rows[self._pending_sel]
+            if not self._pending_can_delete(item):
+                self._pending_message = ("Upload in progress. Wait before deleting logs." if self._uploading
+                    else item.get("reason") or "This log is protected and cannot be deleted.")
+                return
+            # Keep the exact reviewed file/token even if the list later changes.
+            self._pending_delete = dict(item)
+            self._pending_confirm_frame = pyxel.frame_count
+
+    @staticmethod
+    def _pending_count(value):
+        value = max(0, int(value or 0))
+        return str(value) if value <= 999999 else "999999+"
+
+    @staticmethod
+    def _pending_size(value):
+        value = max(0, int(value or 0))
+        if value < 1024:
+            return f"{value} B"
+        if value < 1024 * 1024:
+            return f"{value / 1024:.1f} KB"
+        return f"{value / (1024 * 1024):.1f} MB"
+
+    def _draw_pending_logs(self, w, h):
+        import pyxel
+        import textwrap
+        pyxel.rect(0, 0, w, h, 0)
+        pyxel.rect(0, 0, w, 12, 1)
+        pyxel.text(4, 3, "PENDING UPLOAD LOGS", 3)
+        pyxel.text(4, 18, "Local file management - no API key required", 13)
+        total = len(self._pending_rows)
+        count = f"{self._pending_sel + 1 if total else 0}/{total}"
+        pyxel.text(w - 4 - len(count) * 5, 18, count, 13)
+        for x, label in ((6, "SESSION"), (112, "LOG FILE"), (226, "TYPE"),
+                         (280, "STATUS"), (366, "ROWS"), (424, "READY / NO GPS"), (510, "SIZE")):
+            pyxel.text(x, 33, label, 3)
+        self._pending_page_rows = max(1, (h - 152) // 12)
+        self._pending_scroll = min(self._pending_scroll, max(0, total - self._pending_page_rows))
+        if self._pending_sel < self._pending_scroll:
+            self._pending_scroll = self._pending_sel
+        elif self._pending_sel >= self._pending_scroll + self._pending_page_rows:
+            self._pending_scroll = self._pending_sel - self._pending_page_rows + 1
+        statuses = {"ready": "READY", "waiting_gps": "WAIT GPS", "empty_invalid": "EMPTY/INVALID",
+                    "confirmed": "CONFIRMED", "active": "ACTIVE", "unreadable": "UNREADABLE"}
+        kinds = {"wardriving.csv": "WIFI/BLE", "adsb_aircraft.csv": "ADS-B",
+                 "meshcore_nodes.csv": "MC", "meshtastic_nodes.csv": "MT"}
+        for index, item in enumerate(self._pending_rows[self._pending_scroll:
+                self._pending_scroll + self._pending_page_rows], self._pending_scroll):
+            y = 46 + (index - self._pending_scroll) * 12
+            selected = index == self._pending_sel
+            if selected:
+                pyxel.rect(3, y - 1, w - 6, 10, 1)
+            color = 7 if selected else 13
+            values = ((6, str(item.get("session", ""))[:19]),
+                (112, str(item.get("filename", ""))[:21]),
+                (226, kinds.get(item.get("filename"), str(item.get("kind", ""))[:8].upper())),
+                (280, statuses.get(item.get("status"), "UNKNOWN")),
+                (366, self._pending_count(item.get("records"))),
+                (424, (self._pending_count(item.get("eligible")) + "/" +
+                       self._pending_count(item.get("no_gps")))[:15]),
+                (510, self._pending_size(item.get("bytes"))[:12]))
+            for x, text in values:
+                pyxel.text(x, y, text, color)
+        if not total:
+            pyxel.text(6, 54, "No pending upload logs.", 13)
+        pyxel.line(4, h - 94, w - 5, h - 94, 1)
+        if total:
+            item = self._pending_rows[self._pending_sel]
+            pyxel.text(4, h - 82, (str(item.get("session", "")) + " / " +
+                       str(item.get("filename", "")))[:124], 7)
+            reason = item.get("reason") or ("D: review deletion of this one export. Saved progress stays."
+                if self._pending_can_delete(item) else "This log is protected.")
+            for index, line in enumerate(textwrap.wrap(reason, width=max(1, (w - 8) // 5))[:2]):
+                pyxel.text(4, h - 70 + index * 9, line, 13)
+        for index, line in enumerate(textwrap.wrap(self._pending_message, width=max(1, (w - 8) // 5))[:2]):
+            pyxel.text(4, h - 42 + index * 9, line, 10)
+        pyxel.text(4, h - 12, "UP/DOWN select  PgUp/PgDn page  D delete  R refresh  Esc back", 13)
+        if self._pending_delete is not None:
+            item = self._pending_delete
+            bx, by, bw, bh = (w - 520) // 2, (h - 118) // 2, 520, 118
+            pyxel.rect(bx, by, bw, bh, 0)
+            pyxel.rectb(bx, by, bw, bh, 10)
+            pyxel.text(bx + 12, by + 8, "DELETE THIS UPLOAD LOG?", 10)
+            pyxel.text(bx + 12, by + 25, str(item["session"])[:90], 7)
+            pyxel.text(bx + 12, by + 37, str(item["filename"])[:90], 7)
+            detail = (f"Records: {item.get('records', 0)}  Ready: {item.get('eligible', 0)}"
+                      f"  No GPS: {item.get('no_gps', 0)}")
+            pyxel.text(bx + 12, by + 52, detail[:98], 13)
+            pyxel.text(bx + 12, by + 68, "Only this CSV export is deleted.", 7)
+            pyxel.text(bx + 12, by + 80, "Saved XP, device history and contacts stay.", 7)
+            pyxel.text(bx + 12, by + 102, "[Y] Delete    [N/ESC] Cancel", 10)
+
     @property
     def overlay_active(self) -> bool:
         return self._overlay_active
@@ -460,7 +668,7 @@ class WardriveUpload(PluginBase):
             ("sync_badges", "Sync Badges"),
             ("set_key", "Set API Key"),
             ("test_api", "Test API Connection"),
-            ("show_pending", "Show Pending Sessions"),
+            ("show_pending", "Manage Pending Logs"),
             ("reset", "Reset Upload History"),
         ]
         return items
@@ -483,11 +691,7 @@ class WardriveUpload(PluginBase):
         elif action == "test_api":
             self._test_api()
         elif action == "show_pending":
-            pending = self._pending_sessions()
-            for s in pending:
-                self._log_add(f"  {s.name}", 13)
-            if not pending: self._log_add("No pending uploads", 13)
-            self._show_cleanup_count()
+            self._open_pending_logs(from_sync=True)
         elif action == "reset":
             previous = (self._uploaded_sessions.copy(), self._uploaded_meshtastic_sessions.copy(), self._upload_receipts.copy())
             self._uploaded_sessions.clear()
@@ -502,6 +706,184 @@ class WardriveUpload(PluginBase):
     # ------------------------------------------------------------------
     # Upload via API
     # ------------------------------------------------------------------
+    @staticmethod
+    def _upload_log_specs():
+        return {"wardriving.csv": ("Wi-Fi/BLE", "_parse_csv"),
+                "adsb_aircraft.csv": ("ADS-B", "_parse_adsb"),
+                "meshcore_nodes.csv": ("MeshCore", "_parse_meshcore"),
+                "meshtastic_nodes.csv": ("Meshtastic", "_parse_meshtastic")}
+
+    def _upload_queue_lock(self):
+        return self.__dict__.setdefault("_local_upload_queue_lock", threading.RLock())
+
+    @staticmethod
+    def _upload_log_token(path):
+        before = path.stat()
+        content = path.read_bytes()
+        after = path.stat()
+        stamp = (before.st_dev, before.st_ino, before.st_mtime_ns, before.st_size)
+        if stamp != (after.st_dev, after.st_ino, after.st_mtime_ns, after.st_size):
+            raise OSError("Log changed while reading")
+        digest = hashlib.sha256(content).hexdigest()
+        token = hashlib.sha256(json.dumps([*stamp, digest]).encode()).hexdigest()
+        return token, digest, content
+
+    def _inspect_pending_log(self, session_dir, filename, *, receipts=True):
+        import csv
+        import io
+        from watchdogs.loot_manager import LootManager
+        kind, parser = self._upload_log_specs()[filename]
+        path = session_dir / filename
+        entry = dict(session=session_dir.name, filename=filename, kind=kind, status="unreadable",
+                     records=0, eligible=0, no_gps=0, bytes=0, active=False, confirmed=False,
+                     can_delete=False, token="", reason="Cannot safely read this log.")
+        try:
+            if path.is_symlink() or not path.is_file():
+                return entry
+            token, digest, content = self._upload_log_token(path)
+            text = content.decode("utf-8")
+            ready = set()
+            no_gps = 0
+            records = 0
+            if filename == "wardriving.csv":
+                rows = [fields for line in text.splitlines()
+                        if (fields := LootManager._wardrive_fields(line)) is not None]
+                samples = [(fields[0], fields[6], fields[7], fields[8] or "0") for fields in rows]
+            elif filename == "adsb_aircraft.csv":
+                rows = list(csv.reader(io.StringIO(text)))[1:]
+                samples = [(row[1], row[3], row[4], "0") for row in rows if len(row) >= 8 and row[1]]
+            else:
+                rows = list(csv.DictReader(io.StringIO(text)))
+                samples = [(str(row.get("node_id") or row.get("id") or "").strip().lower().lstrip("!"),
+                            row.get("lat") or "0", row.get("lon") or "0", "0") for row in rows]
+                samples = [sample for sample in samples if re.fullmatch(r"[a-f0-9]{8,16}", sample[0])]
+            records = len(rows)
+            for identity, raw_lat, raw_lon, raw_alt in samples:
+                try:
+                    lat, lon, alt = float(raw_lat), float(raw_lon), float(raw_alt)
+                except (ValueError, TypeError):
+                    continue
+                if not (all(math.isfinite(value) for value in (lat, lon, alt))
+                        and -90 <= lat <= 90 and -180 <= lon <= 180):
+                    continue
+                if lat == 0 and lon == 0:
+                    no_gps += 1
+                else:
+                    ready.add(identity)
+            # Independent stable-field checks above protect positioned records
+            # even if an older upload parser cannot represent that row.
+            eligible = max(len(ready), len(getattr(self, parser)(path)))
+            confirmed = session_dir.name in (self._uploaded_meshtastic_sessions
+                if filename == "meshtastic_nodes.csv" else self._uploaded_sessions)
+            if receipts and eligible and not confirmed:
+                payload = {"networks": self._parse_csv(session_dir / "wardriving.csv"),
+                    "aircraft": self._parse_adsb(session_dir / "adsb_aircraft.csv"),
+                    "meshcore_nodes": self._merge_mesh_nodes(
+                        self._parse_meshcore(session_dir / "meshcore_nodes.csv"),
+                        self._parse_meshtastic(session_dir / "meshtastic_nodes.csv"))}
+                confirmed = self._cached_receipt(payload) is not None or self._cached_mesh_verification(payload)
+            if self._upload_log_token(path)[0] != token:
+                raise OSError("Log changed while inspecting")
+            active = session_dir.name == self._active_session_name()
+            status = "ready" if eligible else "waiting_gps" if no_gps else "empty_invalid"
+            reason = "Delete this local export only; saved progress and contacts stay."
+            can_delete = True
+            if eligible and confirmed:
+                status, can_delete, reason = "confirmed", False, "Confirmed upload data is protected."
+            if active:
+                status, can_delete, reason = "active", False, "Active session: close/restart before deleting its export."
+            elif self._uploading:
+                can_delete, reason = False, "Upload in progress; wait until it finishes."
+            entry.update(status=status, records=records, eligible=eligible, no_gps=no_gps,
+                         bytes=len(content), token=token, active=active,
+                         confirmed=bool(confirmed and eligible), can_delete=can_delete, reason=reason)
+        except (OSError, ValueError, TypeError, UnicodeError, csv.Error):
+            pass
+        return entry
+
+    def list_pending_logs(self) -> list[dict]:
+        """Read-only per-export catalog, including logs waiting for GPS."""
+        if not self.app or not self.app.loot:
+            return []
+        base = Path(self.app.loot._base).resolve()
+        if not base.is_dir():
+            return []
+        entries = []
+        for session in sorted(base.iterdir()):
+            if not session.is_dir() or session.is_symlink() or session.resolve().parent != base:
+                continue
+            for filename in self._upload_log_specs():
+                path = session / filename
+                if path.exists() or path.is_symlink():
+                    entries.append(self._inspect_pending_log(session, filename))
+        return entries
+
+    def _delete_pending_log(self, session, filename, token, *, automatic=False):
+        result = dict(deleted=False, reason="No log was deleted; refresh the list and try again.",
+                      session=session, filename=filename)
+        if not self.app or not self.app.loot or self._uploading:
+            result["reason"] = "Upload in progress or local loot is unavailable."
+            return result
+        if (filename not in self._upload_log_specs() or not isinstance(session, str)
+                or not session or Path(session).name != session or session in (".", "..")):
+            return result
+        loot = self.app.loot
+        base = Path(loot._base).resolve()
+        directory = base / session
+        path = directory / filename
+        if (directory.is_symlink() or directory.resolve().parent != base or path.is_symlink()
+                or not path.is_file() or session == self._active_session_name()):
+            result["reason"] = "Active, linked or unavailable logs cannot be deleted."
+            return result
+        lock = getattr(loot, "_db_lock", None)
+        with self._upload_queue_lock(), (lock if lock is not None else nullcontext()):
+            try:
+                if self._uploading or directory.is_symlink() or path.is_symlink():
+                    return result
+                entry = self._inspect_pending_log(directory, filename)
+                if not entry["can_delete"] or not token or entry["token"] != token:
+                    result["reason"] = entry["reason"] if not entry["can_delete"] else "Log changed; refresh and confirm it again."
+                    return result
+                if automatic and (entry["eligible"] or not entry["no_gps"]):
+                    result["reason"] = "This log contains positioned records or is not a no-GPS log."
+                    return result
+                current_token, digest, _ = self._upload_log_token(path)
+                if current_token != token:
+                    return result
+                preserve = getattr(loot, "prepare_upload_log_discard", None)
+                if preserve is None or not preserve(directory, filename, digest):
+                    result["reason"] = "Cannot preserve local discovery history; log kept."
+                    return result
+                if self._upload_log_token(path)[0] != token or path.is_symlink() or directory.is_symlink():
+                    result["reason"] = "Log changed; refresh and confirm it again."
+                    return result
+                path.unlink()
+                self._upload_log_checks.pop(str(path), None)
+                self._pending_log_checks.pop(str(directory), None)
+                loot._gps_points_cache = None
+                result.update(deleted=True, reason="Local log deleted. Saved progress and contacts kept.")
+            except (OSError, ValueError, TypeError, UnicodeError):
+                result["reason"] = "Cannot safely delete this log; no deletion was confirmed."
+        return result
+
+    def delete_pending_log(self, session: str, filename: str, token: str) -> dict:
+        return self._delete_pending_log(session, filename, token)
+
+    def cleanup_no_gps_logs(self) -> dict:
+        """After an upload attempt, discard only closed, wholly unlocated logs."""
+        result = dict(deleted=0, skipped=0, errors=0)
+        if self._uploading:
+            return result
+        for entry in self.list_pending_logs():
+            if entry["eligible"] or not entry["no_gps"] or not entry["can_delete"]:
+                result["skipped"] += 1
+                continue
+            outcome = self._delete_pending_log(entry["session"], entry["filename"], entry["token"], automatic=True)
+            result["deleted" if outcome["deleted"] else "errors"] += 1
+        if result["deleted"]:
+            self._sync_log(f"Removed {result['deleted']} inactive no-GPS upload log(s); progress and contacts kept", 13)
+        return result
+
     def _pending_sessions(self) -> list[Path]:
         if not self.app or not self.app.loot:
             return []
@@ -566,17 +948,19 @@ class WardriveUpload(PluginBase):
         revalidate after acquiring it so a newly received position is retained.
         Valid exports are checked once per file version, not once per frame.
         """
-        if not self.app or not self.app.loot: return 0
+        if not self.app or not self.app.loot or self._uploading: return 0
         session_dir = Path(session_dir)
         base = Path(self.app.loot._base).resolve()
-        if session_dir.is_symlink() or not session_dir.resolve().is_relative_to(base): return 0
+        if (session_dir.is_symlink() or session_dir.resolve().parent != base
+                or session_dir.name == self._active_session_name()): return 0
         removed = 0
         parsers = (("wardriving.csv", self._parse_csv, False),
                    ("adsb_aircraft.csv", self._parse_adsb, False),
                    ("meshcore_nodes.csv", self._parse_meshcore, False),
                    ("meshtastic_nodes.csv", self._parse_meshtastic, True))
         lock = getattr(self.app.loot, "_db_lock", None)
-        with lock if lock is not None else nullcontext():
+        with self._upload_queue_lock(), (lock if lock is not None else nullcontext()):
+            if self._uploading: return 0
             for filename, parse, is_mt in parsers:
                 done = self._uploaded_meshtastic_sessions if is_mt else self._uploaded_sessions
                 if session_dir.name in done: continue
@@ -597,6 +981,9 @@ class WardriveUpload(PluginBase):
                     # Readability failures are not evidence of invalid data.
                     with path.open('rb') as stream: stream.read(1)
                     valid = parse(path)
+                    inspection = self._inspect_pending_log(session_dir, filename, receipts=False)
+                    if inspection["status"] == "unreadable": continue
+                    valid = valid or inspection["eligible"] > 0
                     after = path.stat()
                     if stamp != (after.st_ino, after.st_mtime_ns, after.st_size): continue
                     if valid:
@@ -607,8 +994,17 @@ class WardriveUpload(PluginBase):
                         # its export when a fresh measured fix becomes available.
                         self._mesh_gps_wait = getattr(self, "_mesh_gps_wait", 0) + 1
                     else:
+                        preserve = getattr(self.app.loot, "prepare_upload_log_discard", None)
+                        digest = hashlib.sha256(path.read_bytes()).hexdigest()
+                        if preserve is None or not preserve(session_dir, filename, digest):
+                            continue
+                        latest = path.stat()
+                        if stamp != (latest.st_ino, latest.st_mtime_ns, latest.st_size) or path.is_symlink():
+                            continue
                         path.unlink()
                         self._upload_log_checks.pop(str(path), None)
+                        self._pending_log_checks.pop(str(session_dir), None)
+                        self.app.loot._gps_points_cache = None
                         removed += 1
                         log.info("Sync: removed empty/invalid upload log %s/%s", session_dir.name, filename)
                 except OSError:
@@ -784,17 +1180,20 @@ class WardriveUpload(PluginBase):
         networks = []
         try:
             import csv as _csv
+            from watchdogs.loot_manager import LootManager
             with open(csv_path, "r", encoding="utf-8", newline="") as f:
                 # Skip WiGLE pre-header line
                 first = f.readline()
                 if not first:
                     return []
-                reader = _csv.reader(f)
-                header = next(reader, None)
+                header = f.readline()
                 if not header:
                     return []
-                for parts in reader:
-                    if len(parts) < 11:
+                for line in f:
+                    parts = next(_csv.reader([line]))
+                    if len(parts) != 11:
+                        parts = LootManager._wardrive_fields(line)
+                    if parts is None or len(parts) < 11:
                         continue
                     try:
                         lat = float(parts[6]) if parts[6] else 0.0
@@ -948,26 +1347,30 @@ class WardriveUpload(PluginBase):
         return list(nodes.values())
 
     def _start_upload(self, all_sessions: bool = True):
-        if not self._api_url:
-            self._log_add("Set server URL first!", 8)
-            return
-        if not self._api_key:
-            self._log_add("Set API key first!", 8)
-            return
-        if self._uploading:
-            self._log_add("Upload in progress...", 10)
-            return
-        sessions = self._pending_sessions()
-        self._show_cleanup_count()
-        if not all_sessions and sessions:
-            sessions = sessions[-1:]
-        if not sessions:
-            self._log_add("Nothing to upload", 10)
-            return
-        self._uploading = True
-        threading.Thread(
-            target=self._upload_worker, args=(sessions,),
-            daemon=True).start()
+        with self._upload_queue_lock():
+            if self._uploading:
+                self._log_add("Upload in progress...", 10)
+                return
+            sessions = self._pending_sessions()
+            self._show_cleanup_count()
+            if not all_sessions and sessions:
+                sessions = sessions[-1:]
+            if not sessions:
+                self.cleanup_no_gps_logs()
+                self._log_add("Nothing to upload", 10)
+                return
+            if not self._api_url:
+                self.cleanup_no_gps_logs()
+                self._log_add("Set server URL first!", 8)
+                return
+            if not self._api_key:
+                self.cleanup_no_gps_logs()
+                self._log_add("Set API key first!", 8)
+                return
+            self._uploading = True
+            threading.Thread(
+                target=self._upload_worker, args=(sessions,),
+                daemon=True).start()
 
     def _upload_worker(self, sessions: list[Path]):
         import time as _time
@@ -996,7 +1399,7 @@ class WardriveUpload(PluginBase):
                     if any(self._mesh_parse_stats.get(protocol, {}).get("no_gps", 0)
                            for protocol in ("meshcore", "meshtastic")):
                         waiting_for_gps += 1
-                        report(f"[{i+1}/{total}] {session_dir.name}: waiting for receiver GPS; mesh data retained", 10)
+                        report(f"[{i+1}/{total}] {session_dir.name}: no positioned records; local cleanup checked after upload", 10)
                     else:
                         local_only += 1
                         report(f"[{i+1}/{total}] {session_dir.name}: removed {removed} empty/invalid upload log(s)", 13)
@@ -1083,6 +1486,10 @@ class WardriveUpload(PluginBase):
             report(f"  Upload error: {type(exc).__name__}; left pending", 8)
         finally:
             self._uploading = False
+            try:
+                self.cleanup_no_gps_logs()
+            except (OSError, ValueError, TypeError):
+                report("Local no-GPS cleanup could not finish; remaining logs kept", 10)
         self._last_upload_summary = dict(ready=ready, confirmed=uploaded, reused=reused,
                                          verified=verified, local_only=local_only, pending=ready-uploaded-verified,
                                          waiting_for_gps=waiting_for_gps, new_networks=total_nets)

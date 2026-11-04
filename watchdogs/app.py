@@ -7557,9 +7557,14 @@ class WatchDogsGame:
             colors_snap = list(self._terminal_colors)
         total = len(lines_snap)
 
+        header_char_w = 5 if self._font is not None else 4
+        count_label = f"L:{total}"
+        count_x = W - 4 - len(count_label) * header_char_w
+        pyxel.text(count_x, TERM_Y + 1, count_label, C_DIM)
         if self.term_scroll > 0:
-            pyxel.text(W - 60, TERM_Y + 1, f"SCROLL +{self.term_scroll}", C_DIM)
-        pyxel.text(W - 30, TERM_Y + 1, f"L:{total}", C_DIM)
+            scroll_label = f"SCROLL +{self.term_scroll}"
+            scroll_x = count_x - 8 - len(scroll_label) * header_char_w
+            pyxel.text(scroll_x, TERM_Y + 1, scroll_label, C_DIM)
 
         # Spleen 5x8 — set as global default via monkey-patch, so pyxel.text
         # calls below render with it even without an explicit font arg.

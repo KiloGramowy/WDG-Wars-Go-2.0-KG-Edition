@@ -1,55 +1,69 @@
 RELEASE 0.9.19.2 - CLEAN MAP. SAME LOOT.
 
-Fresh session, familiar cyberdeck. We cleared the old map clutter, taught BLE to recognise an old acquaintance, and persuaded UP TO DATE to remember its day job.
+Fresh session, familiar cyberdeck. Less map clutter, better BLE memory, and an updater that remembers doing its homework.
 
-## 🧭 New session. Clean map. Your loot stays.
+## 🧭 Fresh map. Your loot stays.
 
 **Before:** Wi-Fi/BLE points from earlier sessions could reappear on the map.
-**Now:** each launch starts with a clean Wi-Fi/BLE map. Receive a device again, new or known, and it can appear in this session. Repeat receptions update the same observation. Points stay until you close the game, including after STOP and scheduled Wi-Fi/BLE switches. **No valid position, no map point.**
+**Now:** every launch starts with a clean Wi-Fi/BLE map. New receptions bring back both new and known devices; repeats update the same session observation. Points stay until you close the game, including after STOP and scheduled Wi-Fi/BLE switches. **No valid position means no map point.**
 
-**Saved loot, logs, pending uploads, XP, levels, achievements and settings stay.** Your cyberdeck remembers the loot. The map is allowed to forget.
+**A fresh map does not erase saved loot, logs, pending uploads, XP, levels, achievements or settings.** Your cyberdeck remembers the loot. The map is allowed to forget.
 
 ## 🧷 BLE: nice try, we've met
 
-**Before:** some saved BLE addresses were not recognised after restarting, so an old acquaintance could collect the full 10 XP welcome bonus again. Names containing commas or unmatched quotation marks could confuse older CSV entries, hide following records or mix up names and positions in the history view. Some history scans also left CSV readers open.
-**Now:** saved BLE identities are recognised correctly after restarting. Those names keep their correct protocol, and following entries are read separately. The history view reads saved names, signal strength and positions correctly, without rewriting old logs, and closes its files after reading. Known BLE devices get the existing **1 XP** repeat award; genuinely new BLE devices still get **10 XP**. A known device appears on the clean session map only after a new reception with a valid position.
+**Before:** some saved BLE addresses were missed after restarting, so an old acquaintance could collect the full 10 XP welcome bonus again. Commas or unmatched quotes in names could also confuse CSV entries, hide following records or scramble names and positions in the history view. Some history reads left files open.
+**Now:** supported current and older history entries retain their correct identities, names, signal strength and positions. Following records stay separate, and readers close their files. Old logs are not rewritten. Known BLE devices get **1 XP**; genuinely new BLE devices still get **10 XP**. A known device joins the clean map only after a new reception with a valid position.
 
 Rebooting is not a witness protection programme.
 
-## 📇 One address, two separate records
+## 📇 One address, two records
 
-**Before:** when Wi-Fi and BLE shared the same address, saving a repeat could update the other protocol's entry in the WiGLE export.
-**Now:** Wi-Fi and BLE keep separate saved records, even when their addresses match. A stronger signal refreshes only its own protocol's exported entry; a weaker or equal signal leaves that saved entry intact. Neither overwrites the other protocol's record.
+**Before:** Wi-Fi and BLE sharing the same address could overwrite or suppress each other's WiGLE export entry.
+**Now:** each protocol keeps its own record. A stronger signal updates only that protocol's row; a weaker or equal signal leaves it intact. The other protocol's row stays untouched.
 
-The XP rules stay **15 XP for new Wi-Fi**, **10 XP for new BLE** and **1 XP for repeats**. Previously earned XP is neither recalculated nor taken away. Existing history, logs and pending uploads stay intact.
+The XP rules remain **15 XP for new Wi-Fi, 10 XP for new BLE and 1 XP for repeats**. Previously earned XP is neither recalculated nor taken away. Reading and deduplicating history does not rewrite old logs or remove pending uploads.
+
+## 🧹 Pending logs: take out the packet trash
+
+**Before:** exports without usable GPS could hang around after an upload attempt, with no way to remove a selected pending file in the game.
+**Now:** **PLUGINS → Pending Upload Logs** lists individual Wi-Fi, ADS-B, MeshCore and Meshtastic export files. Select one, press **D**, then **Y** to delete it or **N / Esc** to cancel. The list is available without an upload API key.
+
+After an upload attempt, inactive export files with **no usable GPS records** are cleaned up automatically, without another question. Files containing any usable GPS records stay. Active sessions, uploads in flight and files that change during the operation are protected.
+
+Deletion removes the selected export, not your progress: **XP, levels, achievements, contacts and known Wi-Fi/BLE identities stay**. Known devices still earn repeat XP after restarting. Discarding an old mesh export does not erase a newer reception or invent an upload receipt.
+
+Some packets never found themselves. They do not need a permanent room in your log folder.
 
 ## 🗺️ Mesh: the last packet gets a seat
 
 **Before:** a MeshCore/Meshtastic reception waiting to be processed just before OFF or a protocol switch could disappear from the map immediately.
-**Now:** those waiting receptions are included in the OFF snapshot. Valid Node GPS or the existing **[RX GPS]** fallback places a marker. A later credible fix can fill a missing position for a node heard this session. Restarting keeps contacts and progress, while starting a fresh mesh map.
+**Now:** waiting receptions are included in the OFF snapshot. Valid Node GPS or the existing **[RX GPS]** fallback places a marker. A later credible fix can fill a missing position for a node heard this session. Restarting keeps contacts and progress while starting a fresh mesh map.
 
-The existing OFF rule stays: **mesh markers disappear between 5 and 10 minutes, farther first**. Repeated STOP does not extend their deadlines; the other active protocol keeps its markers.
+The existing OFF rule stays: **mesh markers disappear between 5 and 10 minutes, farther first**. Repeated STOP does not extend deadlines; the other active protocol keeps its markers. This fixes a reproduced software edge case; it does not establish the cause of earlier radio reports.
 
-This fixes a reproduced software edge case. The radio behaviour reported in the photos still needs device testing.
+## 📡 MC / MT: this session's roll call
 
-## 📡 MC / MT: who's been here this session
+**Before:** the public main HUD had no MC/MT counters.
+**Now:** **MC:** and **MT:** count unique nodes successfully registered this session: new or known, with or without coordinates. Repeat packets do not add another node. **Both counters stay visible**, so changing protocols keeps the session's earlier work in view. OFF and protocol switches retain the counts; restarting resets them.
 
-**Before:** the main HUD had no MC/MT counters.
-**Now:** **MC:** and **MT:** count unique nodes successfully registered this session, whether new or known, with or without coordinates. Repeat packets do not add another node. OFF and protocol switches keep the counts; restarting resets them.
-
-Saved contacts, nodes heard this session and visible map markers are different numbers. The ready-radio icon and familiar WDG styling stay.
+Saved contacts, session counters and visible map markers are different numbers. The ready-radio icon and familiar WDG styling stay.
 
 ## ✅ UP TO DATE has a memory now
 
 **Before:** a verified **UP TO DATE** result was lost after restarting the game.
-**Now:** it survives reopening the update window and restarting, tied to the installed version and code. **R** and the startup check still work. A newer release replaces the status. Network failures stay errors; any retained earlier success is labelled **last verified**. New-release notices still appear only once per release.
+**Now:** it survives reopening the update window and restarting, tied to the installed version and code. **R** and the startup check still work. A newer release replaces the status. Network failures remain errors; any retained earlier success is labelled **last verified**. New-release notices still appear only once per release.
 
 One less thing on the cyberdeck with the memory of a goldfish.
 
 ## 🖥️ Release notes, now fluent in cyberdeck
 
-**Before:** Update Game could display raw Markdown markers and emoji its font could not draw.
-**Now:** the same English description is adapted automatically for the original WDG window: readable text, numbered yellow headings, dark title strips and spacing. The original font, colours, window and **nine visible rows** stay. GitHub and Discord keep their emoji and formatting.
+**Before:** Update Game could display raw Markdown and emoji its font could not draw.
+**Now:** the shared English description is adapted automatically for WDG: readable text, numbered yellow headings, dark title strips and spacing. The original font, colours, window and **nine visible rows** stay. GitHub and Discord keep their emoji and formatting.
+
+## ↕️ Fn+U: give those labels some elbow room
+
+**Before:** scrolling the terminal with **Fn+U / Page Up** could make the scroll indicator overlap the line count.
+**Now:** both labels have separate space in the header, including longer counts. Same terminal, fewer typographical pile-ups.
 
 ## 🔄 The first restart still needs a human
 
@@ -59,14 +73,12 @@ If the running updater is **0.9.17, 0.9.18 or 0.9.19**, the first upgrade still 
 
 Updates performed by **0.9.19.1 or later** restart automatically after successful installation, including **0.9.19.1 → 0.9.19.2**. Preparation, cancellation and failure do not restart the game.
 
-## 🧪 Checked in software. Still a candidate.
+## 🧪 Checked on the cyberdeck
 
-Software regressions cover BLE history after restart, existing XP rules, native note rendering and version filtering, session maps, mesh queues, counters, persistent update status and saved-data preservation.
+Software regressions cover history reopening, the **15 / 10 / 1 XP** rules, saved-data preservation, safe pending-log deletion and cleanup, mesh queues, counters, persistent update status and note rendering. Recorded Meshtastic replays and real driver-code contracts use controlled inputs. The original Pyxel renderer is also checked on the uConsole.
 
-The full software suite passed on our uConsole: **808/808, zero errors, failures or skips**, including both recorded Meshtastic replays and the real driver-code contracts with simulated transports. The original Pyxel renderer also passed **25 controlled scenes on the device screen**. Windows passed **802/808**, with six platform-dependent skips and no errors or failures.
+**Natural Wi-Fi/BLE reception with GPS and Meshtastic reception were observed in the running 0.9.19.2 game on our uConsole.** Fresh startup maps and retained points after Wi-Fi/BLE switching and STOP were also checked. Software checks cover history reopening, XP rules, saved-data preservation, mesh queues, counters, update status and note rendering.
 
-**Physical RF reception has not been verified for this candidate.** Replays, software tests and synthetic screen scenes do not prove new radio reception.
-
-**0.9.19.2 is a review candidate. Public Release and stable OTA publication await approval.**
+**MeshCore reception remains unconfirmed by this device run. Physical RF reception has not been verified for every profile or hardware setup.** Recorded replays and simulated transports do not prove new radio reception on other setups.
 
 Original game by LOCOSP. Modified by KiloGramowy.

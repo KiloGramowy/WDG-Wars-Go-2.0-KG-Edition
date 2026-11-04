@@ -42,7 +42,8 @@ class UploadRecoveryTests(unittest.TestCase):
             plugin = WardriveUpload()
         plugin._state_file = lambda: self.state_path
         plugin.app = SimpleNamespace(
-            loot=SimpleNamespace(_base=str(self.base), session_dir=str(self.base / active)),
+            loot=SimpleNamespace(_base=str(self.base), session_dir=str(self.base / active),
+                                 prepare_upload_log_discard=lambda *_args: True),
             _term_add=lambda *args, **kwargs: None)
         plugin._badge_sync_worker = Mock()
         plugin._handle_upload_badges = Mock()
@@ -324,7 +325,7 @@ class UploadRecoveryTests(unittest.TestCase):
         self.assertNotIn(self.session.name, p._uploaded_meshtastic_sessions)
         self.assertEqual(p._pending_sessions(), [])
 
-    def test_valid_no_gps_mesh_log_waits_without_request_or_success_mark(self):
+    def test_inactive_no_gps_mesh_log_is_cleaned_after_attempt_without_request_or_success_mark(self):
         self.write_mesh(no_gps=True)
         original = (self.session / "meshtastic_nodes.csv").read_bytes()
         p = self.plugin
@@ -333,7 +334,7 @@ class UploadRecoveryTests(unittest.TestCase):
         network.assert_not_called()
         self.assertNotIn(self.session.name, p._uploaded_sessions)
         self.assertNotIn(self.session.name, p._uploaded_meshtastic_sessions)
-        self.assertEqual((self.session / "meshtastic_nodes.csv").read_bytes(), original)
+        self.assertFalse((self.session / "meshtastic_nodes.csv").exists())
         self.assertEqual(p._pending_sessions(), [])
         text = "\n".join(line for line, _ in p._log)
         self.assertNotRegex(text.lower(), r"upload error|upload failed|http [45]\d\d")
@@ -648,15 +649,14 @@ class UploadRecoveryTests(unittest.TestCase):
         self.assertTrue(self.session.is_dir())
         self.assertEqual(p._pending_sessions(), [])
 
-    def test_no_gps_backlog_is_zero_with_valid_mesh_waiting_and_legacy_logs_removed(self):
+    def test_no_gps_backlog_is_cleaned_after_explicit_upload_attempt(self):
         self.write_upload_csvs(mixed=True)
         p = self.plugin
         with patch("plugins.wardrive_upload._open") as network:
             self.assertEqual(p._pending_sessions(), [])
             p._start_upload(all_sessions=True)
         network.assert_not_called()
-        self.assertEqual({p.name for p in self.session.glob("*.csv")},
-                         {"meshcore_nodes.csv", "meshtastic_nodes.csv"})
+        self.assertEqual({p.name for p in self.session.glob("*.csv")}, set())
         self.assertEqual(p._overlay_items()[0][0], "upload_all")
         self.assertIn("(0 ", p._overlay_items()[0][1])
         self.assertNotIn(self.session.name, p._uploaded_sessions)
@@ -923,7 +923,7 @@ class UploadRecoveryTests(unittest.TestCase):
         self.assertIsNone(p._cached_receipt(self.payload(p)))
         self.assertEqual(p._pending_sessions(), [self.session])
 
-    def test_active_wifi_and_adsb_cleanup_defers_to_main_thread(self):
+    def test_active_wifi_and_adsb_cleanup_is_refused_on_worker_and_main_thread(self):
         self.write_upload_csvs(mixed=True)
         for filename in ("meshtastic_nodes.csv", "meshcore_nodes.csv"):
             (self.session / filename).unlink()
@@ -942,7 +942,9 @@ class UploadRecoveryTests(unittest.TestCase):
         self.assertEqual(removed, [0])
         for filename in ("wardriving.csv", "adsb_aircraft.csv"):
             self.assertTrue((self.session / filename).is_file())
-        self.assertEqual(p._prune_upload_logs(self.session), 2)
+        self.assertEqual(p._prune_upload_logs(self.session), 0)
+        for filename in ("wardriving.csv", "adsb_aircraft.csv"):
+            self.assertTrue((self.session / filename).is_file())
         self.assertEqual(p._pending_sessions(), [])
 
 

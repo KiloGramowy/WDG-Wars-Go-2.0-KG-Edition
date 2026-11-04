@@ -18,7 +18,8 @@ class UploadTests(unittest.TestCase):
     def plugin(self, base):
         with patch.object(WardriveUpload, "_load_state"):
             p = WardriveUpload()
-        p.app = SimpleNamespace(loot=SimpleNamespace(_base=base, session_path=Path(base)/"active"),
+        p.app = SimpleNamespace(loot=SimpleNamespace(_base=base, session_path=Path(base)/"active",
+                                prepare_upload_log_discard=lambda *_args: True),
                                 _term_add=lambda *args, **kwargs: None)
         p._api_url = "https://example.invalid/api/upload/"
         p._api_key = "test-only"
@@ -124,7 +125,7 @@ class UploadTests(unittest.TestCase):
             self.assertEqual({n["node_id"] for n in merged}, {"12345678"})
             self.assertEqual(mc[0]["type"], "MESHCORE")
 
-    def test_no_gps_valid_mesh_log_waits_for_receiver_gps_without_api_call(self):
+    def test_inactive_no_gps_mesh_log_is_cleaned_after_upload_attempt_without_api_call(self):
         with tempfile.TemporaryDirectory() as base:
             session = Path(base)/"closed"
             session.mkdir()
@@ -134,7 +135,7 @@ class UploadTests(unittest.TestCase):
                 p._upload_worker([session])
                 network.assert_not_called()
             self.assertNotIn("closed", p._uploaded_meshtastic_sessions)
-            self.assertTrue((session / "meshtastic_nodes.csv").is_file())
+            self.assertFalse((session / "meshtastic_nodes.csv").is_file())
             self.assertEqual(p._pending_sessions(), [])
 
     def test_rejected_or_unknown_mesh_receipt_cannot_clear_session(self):

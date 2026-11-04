@@ -713,6 +713,7 @@ class LootManager:
                 key, _ = self._mesh_namespace(protocol)
                 for node_id, contact in next_db.get(key, {}).items():
                     if mesh_position(contact) is not None: continue
+                    if self._mesh_upload_discarded(next_db, protocol, node_id): continue
                     contact.setdefault("id", node_id)
                     contact["receiver_position"] = dict(observation)
                     changed[protocol].append(copy.deepcopy(contact))
@@ -721,7 +722,10 @@ class LootManager:
             # Exports share the discovery transaction lock and are reconstructible
             # from authoritative contacts. No discovery/XP API is invoked here.
             for protocol, contacts in changed.items():
-                for contact in contacts: self._upsert_mesh_node_csv(protocol, contact)
+                for contact in contacts:
+                    self._upsert_mesh_node_csv(protocol, contact)
+                    generation = next_db.get("mesh_observation_generations", {}).get(protocol, {}).get(contact["id"], 0)
+                    next_db.setdefault("mesh_export_generations", {}).setdefault(self._session_key, {}).setdefault(protocol, {})[contact["id"]] = generation
             if self._session_active:
                 next_db.setdefault("sessions", {})[self._session_key] = self._scan_session_dir(self._session)
                 self._recalc_totals(next_db)
@@ -772,6 +776,11 @@ class LootManager:
             contacts[node_id] = contact
             base_xp = next_db.get("xp", 0) if current_xp is None else int(current_xp)
             next_db["xp"] = int(base_xp) + award
+            generations = next_db.setdefault("mesh_observation_generations", {}).setdefault(protocol, {})
+            generations[node_id] = int(generations.get(node_id, 0)) + 1
+            next_db.setdefault("discarded_mesh_uploads", {}).setdefault(protocol, {}).pop(node_id, None)
+            if self._session_active:
+                next_db.setdefault("mesh_export_generations", {}).setdefault(self._session_key, {}).setdefault(protocol, {})[node_id] = generations[node_id]
             # CSV is an export; loot_db is authoritative for contacts and XP.
             # Write export first so a failed DB commit never reports paid XP.
             self._upsert_mesh_node_csv(protocol, contact)
@@ -893,6 +902,13 @@ class LootManager:
             value = value.strip().upper()
             return value if re.fullmatch(r"(?:[0-9A-F]{2}:){5}[0-9A-F]{2}", value) else ""
 
+        identities = getattr(self, "_db", {}).get("known_device_identities", {})
+        if isinstance(identities, dict):
+            for key, target in (("ble", ble_macs), ("wifi", wifi_bssids)):
+                for value in identities.get(key, []):
+                    if isinstance(value, str) and (mac := valid_mac(value)):
+                        target.add(mac)
+
         if not self._base.is_dir():
             return ble_macs, wifi_bssids
 
@@ -941,6 +957,93 @@ class LootManager:
                     pass
 
         return ble_macs, wifi_bssids
+
+    def _mesh_upload_discarded(self, database: dict, protocol: str, node_id: str) -> bool:
+        marker = database.get("discarded_mesh_uploads", {}).get(protocol, {}).get(node_id)
+        if not isinstance(marker, dict):
+            return False
+        generation = database.get("mesh_observation_generations", {}).get(protocol, {}).get(node_id, 0)
+        if marker.get("generation") != generation:
+            return False
+        # The marker is committed before unlink. A failed unlink must leave the
+        # existing export usable; a successfully deleted observation stays out
+        # of automatic GPS backfill until a fresh committed reception arrives.
+        source = self._base / marker["session"] / marker["filename"]
+        return not source.exists() and not source.is_symlink()
+
+    def prepare_upload_log_discard(self, session_dir: Path, filename: str, expected_sha256: str) -> bool:
+        """Durably retain identities/generations before a queue export is removed.
+
+        Does not unlink, recalculate progress, award XP or manufacture an upload
+        receipt. Caller holds this same RLock through final validation/unlink.
+        """
+        allowed = {"wardriving.csv", "adsb_aircraft.csv", "meshcore_nodes.csv", "meshtastic_nodes.csv"}
+        session_dir = Path(session_dir)
+        base = self._base.resolve()
+        path = session_dir / filename
+        if (filename not in allowed or session_dir.is_symlink() or path.is_symlink()
+                or session_dir.resolve().parent != base
+                or session_dir.resolve() == self._session.resolve() or not path.is_file()):
+            return False
+        with self._db_lock:
+            content = path.read_bytes()
+            if hashlib.sha256(content).hexdigest() != expected_sha256:
+                return False
+            text = content.decode("utf-8")
+            next_db = copy.deepcopy(self._db)
+            if filename == "wardriving.csv":
+                identities = next_db.setdefault("known_device_identities", {})
+                known = {key: set(identities.get(key, [])) for key in ("ble", "wifi")}
+                for line in text.splitlines():
+                    record = self._wardrive_record(line)
+                    if record is not None:
+                        kind, mac, _ = record
+                        known["ble" if kind == "BLE" else "wifi"].add(mac)
+                identities.update({key: sorted(values) for key, values in known.items()})
+            elif filename in ("meshcore_nodes.csv", "meshtastic_nodes.csv"):
+                protocol = "meshcore" if filename == "meshcore_nodes.csv" else "meshtastic"
+                contact_key, _ = self._mesh_namespace(protocol)
+                contacts = next_db.get(contact_key, {})
+                by_id = {str(key).lower().lstrip("!"): key for key in contacts}
+                markers = next_db.setdefault("discarded_mesh_uploads", {}).setdefault(protocol, {})
+                generations = next_db.get("mesh_observation_generations", {}).get(protocol, {})
+                exports = next_db.get("mesh_export_generations", {})
+                source_generations = exports.get(session_dir.name, {}).get(protocol, {})
+                for row in csv.DictReader(io.StringIO(text)):
+                    raw_id = str(row.get("node_id") or row.get("id") or "").strip().lower().lstrip("!")
+                    if not re.fullmatch(r"[a-f0-9]{8,16}", raw_id):
+                        continue
+                    node_id = by_id.get(raw_id, raw_id)
+                    current_generation = generations.get(node_id, 0)
+                    source_generation = source_generations.get(node_id)
+                    if source_generation is None and current_generation != 0:
+                        continue  # Legacy export cannot cancel a newer recorded RX.
+                    if source_generation is not None and source_generation != current_generation:
+                        continue
+                    retained_source = False
+                    for other in self._base.iterdir():
+                        if (not other.is_dir() or other.is_symlink() or other.resolve() == session_dir.resolve()):
+                            continue
+                        other_path = other / filename
+                        if not other_path.is_file() or other_path.is_symlink():
+                            continue
+                        other_generation = exports.get(other.name, {}).get(protocol, {}).get(node_id)
+                        if other_generation != current_generation and not (other_generation is None and current_generation == 0):
+                            continue
+                        with other_path.open(encoding="utf-8", newline="") as stream:
+                            retained_source = any(str(item.get("node_id") or item.get("id") or "").strip().lower().lstrip("!") == raw_id
+                                                  for item in csv.DictReader(stream))
+                        if retained_source:
+                            break
+                    if retained_source:
+                        continue
+                    markers[node_id] = dict(generation=current_generation,
+                        session=session_dir.name, filename=filename)
+            if next_db != self._db:
+                if not self._save_db(next_db):
+                    return False
+                self._db = next_db
+            return True
 
     # ------------------------------------------------------------------
     # Full serial log
@@ -1611,6 +1714,8 @@ class LootManager:
             return
         try:
             with self._db_lock:
+                if self._mesh_upload_discarded(self._db, "meshcore", self._mesh_node_id(node_id)):
+                    return
                 contact = self._merge_mesh_contact("meshcore", node_id,
                     self._db.get("mc_contacts", {}).get(node_id, {}),
                     {"type": node_type, "name": name, "lat": lat, "lon": lon,
@@ -1627,6 +1732,8 @@ class LootManager:
             return
         node_id = self._mesh_node_id(node_id)
         with self._db_lock:
+            if self._mesh_upload_discarded(self._db, "meshtastic", node_id):
+                return
             contact = self._merge_mesh_contact("meshtastic", node_id,
                 self._db.get("mt_contacts", {}).get(node_id, {}),
                 {"type": node_type, "name": name, "lat": lat, "lon": lon,

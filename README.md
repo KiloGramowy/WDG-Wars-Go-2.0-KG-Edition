@@ -28,7 +28,7 @@ The edit combines recorded uConsole footage with a current native UI tour. Exter
 | 🧰 **From LOCOSP** | WDGWars Chat and Reticulum/LoRa, Monster RF SubGHz, Emergency Radio, Proximity Radar, CRISIS, sound controls, visual polish and the original in-game updater. |
 | 🛠️ **From KiloGramowy** | Meshtastic integration beside MeshCore, local AUTO GPS, persistent mesh discoveries, alternating WiFi/BLE wardriving, upload/startup fixes, clean shutdown and the expanded release updater. |
 
-**2.0 is the edition name; the prepared candidate software version is 0.9.19.2; the stable feed remains on 0.9.19.1 pending approval.** Original authorship and the upstream fork relationship are retained.
+**2.0 is the edition name; the software version is 0.9.19.2.** Original authorship and the upstream fork relationship are retained. See the [0.9.19.2 release notes](docs/UPDATE_PREVIEW.txt) for clean session maps, reliable BLE history, upload-log controls and the latest small-screen fixes.
 
 💾 **Coming from LOCOSP's version?** 0.9.18 preserves saved XP, level, badges and contacts when upgrading the older loot database. A separate clone needs your existing data folder: [keep your progress when upgrading](docs/UPGRADING_FROM_LOCOSP.md).
 
@@ -270,6 +270,10 @@ Collecting pending uploads should not be an extra side quest. 🧾
 - 🔢 **Pending counts sessions, not nodes.** New observations in an open session can create another pending payload.
 - ⭐ **Local XP and server credit stay separate.** Known nodes and cooldown handling do not become new imports or first-finder ownership.
 
+**🗑️ Pending logs, without the souvenir collection.** Open **PLUGINS → Pending Upload Logs** to inspect each session's Wi-Fi/BLE, ADS-B, MeshCore and Meshtastic export, including files waiting for GPS. This local browser does not need an API key or the network-sync level unlock. Select a log, press **D**, then **Y** to delete that file or **N / Esc** to cancel. **R** refreshes the list; arrow keys and **Page Up / Page Down / Home / End** navigate it.
+
+After an upload attempt, closed-session logs with no usable GPS records are removed automatically, without a confirmation popup. Files containing positioned records are retained, including mixed files with both positioned and unpositioned entries. Active sessions, uploads in flight and confirmed positioned exports are protected. Deleting an export keeps saved XP, levels, achievements, contacts and known Wi-Fi/BLE identities; the next reception of a known device still earns the normal repeat award. Deletion does not count as an upload or grant server credit.
+
 *The image is the original dated upload confirmation, not a new upload performed for this README.*
 
 ---
@@ -299,6 +303,10 @@ The game checks this fork in the background at each launch. A published release 
 Opening the notes never installs an update. Installation needs a separate confirmation, stops game-owned operations, saves final data and creates a code backup. Local edits and dependency changes are checked before applying code; settings, keys, contacts, logs and player progress are preserved. A failed network check is shown as a failed check.
 
 🔗 **Know your update source:** the window shows the verified repository; press **O** to open it on GitHub. The updater follows its permanent repository ID across repository renames. Installed release notes remain available offline. See [Updating](docs/UPDATING.md) for the release and recovery contract.
+
+With **0.9.19.2**, a verified **UP TO DATE** result survives reopening the window and restarting, tied to the installed version and code. **R** still performs a fresh check. Failed checks remain errors, with any earlier success labelled **last verified**. Updates from **0.9.19.1 or later** restart automatically after successful installation; the first upgrade made by **0.9.17, 0.9.18 or 0.9.19** still needs one manual relaunch after **Enter or Esc** closes the game.
+
+**Small-screen housekeeping:** Wi-Fi/BLE maps start fresh on launch while saved progress stays. Both **MC:** and **MT:** count unique nodes heard this session, so switching mesh protocols keeps both tallies visible. The terminal's line count and scroll indicator now have separate space when using **Fn+U / Page Up**. Even a cyberdeck needs elbow room.
 
 
 ## 🎞️ The original MeshCore + Meshtastic demo
@@ -424,7 +432,7 @@ Optional driver sources/private replay fixtures can cause skips. Software checks
 - 🧪 [Validation and hardware evidence](docs/VALIDATION.md)
 - 🛠️ [Inherited WDG guide](docs/GUIDE.md)
 - 🎞️ [Demo provenance, privacy edits and music credit](docs/media/README.md)
-- 📦 [Private release preparation](docs/RELEASE_PREPARATION.md)
+- 📦 [0.9.19.2 release notes](docs/UPDATE_PREVIEW.txt)
 - 🙏 [Third-party notices](THIRD_PARTY_NOTICES.md)
 
 ### 🎵 Soundtrack in both films
