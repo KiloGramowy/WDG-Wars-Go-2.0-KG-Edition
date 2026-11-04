@@ -83,6 +83,7 @@ class UpdateResult:
     installed_version: str
     release: Optional[Release] = None
     message: str = ""
+    last_verified_current: bool = False
 
 
 @dataclass(frozen=True)
@@ -488,6 +489,7 @@ class GameUpdates:
             fetched = self._fetch()
             entry = self._required("ls-tree", fetched, "--", FEED_PATH, timeout=10).strip()
             if not entry:
+                self._remember_current(None)
                 return UpdateResult("unpublished", version,
                                     message="No published update is available.")
             # Only a regular text blob is a release feed; never follow a link.
@@ -499,14 +501,71 @@ class GameUpdates:
             text = self._required("show", f"{fetched}:{FEED_PATH}", timeout=10)
             release = self._release(json.loads(text))
             available = self._validate_release(release, fetched)
+            self._remember_current(None if available else release)
             return UpdateResult("available" if available else "current", version, release,
                                 "An update is available." if available else "UP TO DATE")
         except UpdateError as error:
-            return UpdateResult("error", version, message=str(error))
+            return UpdateResult("error", version, message=str(error),
+                                last_verified_current=self.cached_current() is not None)
         except (OSError, ValueError, TypeError, UnicodeError, subprocess.SubprocessError):
             # No raw subprocess diagnostics, command lines, private URLs or tokens.
             return UpdateResult("error", version,
-                                message="Cannot check for updates. Check network and GitHub access.")
+                                message="Cannot check for updates. Check network and GitHub access.",
+                                last_verified_current=self.cached_current() is not None)
+
+    def _current_identity(self):
+        """Bind a remembered success to this checkout's actual installed code.
+
+        The deployment receipt can identify a newer source than Git HEAD.
+        Validate its runtime files too, so a version string alone cannot restore
+        a successful status after a partial install or local source change.
+        This reads local files/Git objects only and never starts a network check.
+        """
+        commit = self.installed_commit()
+        files = {}
+        for name, entry in self._tree(commit).items():
+            path = self._target(name)
+            actual = _regular(path)
+            if actual is None or _blob(path.read_bytes()) != entry["oid"]:
+                raise UpdateError("The installed game files changed; check the installation before updating.")
+            files[name] = actual["sha256"]
+        return dict(root=str(self.root), version=self.installed_version(),
+                    source_commit=commit, runtime_sha256=_digest(_encoded(files)))
+
+    def _remember_current(self, release):
+        """Store only a fresh successful check, preserving notification history."""
+        identity = self._current_identity() if release is not None else None
+        with self._thread_lock:
+            try:
+                data = self._seen()
+            except UpdateError:
+                if release is None:
+                    return  # An unreadable history cannot restore a cached success.
+                raise
+            if release is not None:
+                data["current"] = dict(identity=identity, release=asdict(release))
+            elif "current" in data:
+                del data["current"]
+            else:
+                return
+            try:
+                _atomic(self.state_path, _encoded(data), private=True)
+            except OSError:
+                raise UpdateError("Cannot save the verified update status; check again after fixing storage.") from None
+
+    def cached_current(self):
+        """Restore a prior verified result only for the same installed runtime."""
+        try:
+            record = self._seen().get("current")
+            if not isinstance(record, dict) or record.get("identity") != self._current_identity():
+                return None
+            release = self._release(record.get("release"))
+            if release.version != record["identity"]["version"]:
+                return None
+            return UpdateResult("current", release.version, release, "UP TO DATE (last verified)")
+        except (UpdateError, OSError, ValueError, TypeError, UnicodeError, subprocess.SubprocessError):
+            # A missing/corrupt cache or changed checkout is never a new success.
+            return None
 
     def _seen(self):
         if _regular(self.state_path) is None:

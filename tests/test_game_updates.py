@@ -337,6 +337,94 @@ class GameUpdateTests(unittest.TestCase):
         self.assertEqual(result.installed_version, "0.9.16")
         self.assertEqual(result.message, "UP TO DATE")
 
+    def test_verified_current_survives_restart_without_fetching_or_losing_seen_notices(self):
+        seen = self.release()
+        self.manager.acknowledge(seen)
+        self.publish(source_commit=self.base, version="0.9.16", release_id="v0.9.16")
+        self.assertEqual(self.manager.check().status, "current")
+        prior_seen = json.loads(self.manager.state_path.read_text())["seen"]
+        restarted = updates.GameUpdates(self.root, self.home, git=self.transport,
+                                        metadata=self.source_metadata)
+        self.calls.clear()
+        cached = restarted.cached_current()
+        self.assertEqual(cached.status, "current")
+        self.assertEqual(cached.installed_version, "0.9.16")
+        self.assertIn("last verified", cached.message)
+        self.assertFalse(any(call[0] == "fetch" for call in self.calls))
+        self.assertEqual(json.loads(self.manager.state_path.read_text())["seen"], prior_seen)
+        self.assertFalse(restarted.notice_pending(seen))
+        self.assert_player_kept()
+
+    def test_cached_current_requires_matching_root_version_receipt_and_runtime(self):
+        self.publish(source_commit=self.base, version="0.9.16", release_id="v0.9.16")
+        self.assertEqual(self.manager.check().status, "current")
+        changes = (("watchdogs/__init__.py", b'__version__ = "0.9.17"\n'),
+                   ("watchdogs/app.py", b'VALUE = "changed locally"\n'),
+                   (updates.MANIFEST_PATH, updates._encoded(dict(self.manifest, source_commit=self.legacy))))
+        for name, replacement in changes:
+            with self.subTest(name=name):
+                path = self.root / name
+                original = path.read_bytes()
+                path.write_bytes(replacement)
+                self.assertIsNone(self.manager.cached_current())
+                self.fail_fetch = True
+                failed = self.manager.check()
+                self.assertEqual(failed.status, "error")
+                self.assertFalse(failed.last_verified_current)
+                self.fail_fetch = False
+                path.write_bytes(original)
+        second = self.directory_path / "another-installation"
+        git(self.directory_path, "clone", "--no-hardlinks", str(self.root), str(second))
+        for name, data in self.base_files.items():
+            write(second, name, data)
+        write(second, updates.MANIFEST_PATH, updates._encoded(self.manifest))
+        elsewhere = updates.GameUpdates(second, self.home)
+        self.assertIsNone(elsewhere.cached_current())
+        self.assertEqual(self.manager.cached_current().status, "current")
+
+    def test_network_error_keeps_previous_success_without_creating_a_new_one(self):
+        self.fail_fetch = True
+        self.assertEqual(self.manager.check().status, "error")
+        self.assertIsNone(self.manager.cached_current())
+        self.assertFalse(self.manager.state_path.exists())
+        self.fail_fetch = False
+        self.publish(source_commit=self.base, version="0.9.16", release_id="v0.9.16")
+        self.assertEqual(self.manager.check().status, "current")
+        before = self.manager.state_path.read_bytes()
+        self.fail_fetch = True
+        failed = self.manager.check()
+        self.assertEqual(failed.status, "error")
+        self.assertTrue(failed.last_verified_current)
+        self.assertEqual(self.manager.state_path.read_bytes(), before)
+        self.assertIn("last verified", self.manager.cached_current().message)
+
+    def test_newer_or_unpublished_feed_replaces_persisted_current_status(self):
+        self.publish(source_commit=self.base, version="0.9.16", release_id="v0.9.16")
+        self.assertEqual(self.manager.check().status, "current")
+        self.publish()
+        self.assertEqual(self.manager.check().status, "available")
+        self.assertIsNone(self.manager.cached_current())
+        self.publish(source_commit=self.base, version="0.9.16", release_id="v0.9.16")
+        self.assertEqual(self.manager.check().status, "current")
+        git(self.remote, "rm", updates.FEED_PATH)
+        git(self.remote, "commit", "-qm", "Withdraw feed")
+        self.assertEqual(self.manager.check().status, "unpublished")
+        self.assertIsNone(self.manager.cached_current())
+
+    def test_current_check_does_not_verify_modified_code_or_claim_a_failed_status_write(self):
+        self.publish(source_commit=self.base, version="0.9.16", release_id="v0.9.16")
+        original = (self.root / "watchdogs/app.py").read_bytes()
+        write(self.root, "watchdogs/app.py", "CHANGED = True\n")
+        self.assertEqual(self.manager.check().status, "error")
+        self.assertIsNone(self.manager.cached_current())
+        write(self.root, "watchdogs/app.py", original)
+        with patch.object(updates, "_atomic", side_effect=OSError("disk full")):
+            result = self.manager.check()
+        self.assertEqual(result.status, "error")
+        self.assertIn("Cannot save", result.message)
+        self.assertIsNone(self.manager.cached_current())
+        self.assert_player_kept()
+
     def test_malformed_and_foreign_release_metadata_is_rejected(self):
         for changes in ({"repository": "Other/Fork"}, {"channel": "testing"},
                         {"release_id": "../traversal"}, {"version": "KG 1.0"},

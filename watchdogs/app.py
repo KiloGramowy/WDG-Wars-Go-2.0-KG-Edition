@@ -849,6 +849,8 @@ class WatchDogsGame:
                     self.loot.save_xp(self.xp)
         self.ble_devices: list[BleDevice] = []
         self.wifi_networks: list[WifiNetwork] = []
+        # Map eligibility is session-only and independent of discovery XP/history.
+        self._session_scan_points: dict[tuple[str, str], dict] = {}
         self.markers: list[MapMarker] = []
         # Contact history is persistent; map observations start with this session.
         self._mesh_session_nodes: set[tuple[str, str]] = set()
@@ -5539,17 +5541,13 @@ class WatchDogsGame:
             name = (m.group(3) or "").strip() or "?"
             tag_type = (m.group(4) or "").strip()  # [AirTag] or [SmartTag]
             mac_upper = mac.upper()
+            point = self._record_scan_map_observation("bt", mac_upper, name, rssi, auth="[BLE]")
             is_new = mac_upper not in self._known_ble
             if is_new:
                 self._known_ble.add(mac_upper)
-                if self.gps_fix:
-                    _dlat = (random.random()-0.5) * 0.002
-                    _dlon = (random.random()-0.5) * 0.002
-                else:
-                    _dlat = _dlon = 0.0
                 d = BleDevice(
-                    self.player_lat + _dlat,
-                    self.player_lon + _dlon,
+                    point["lat"] if point else 0.0,
+                    point["lon"] if point else 0.0,
                     mac, name, rssi)
                 d.spawn_frame = pyxel.frame_count
                 self.ble_devices.append(d)
@@ -5557,6 +5555,11 @@ class WatchDogsGame:
                 self.gain_xp(10)  # new device: full XP
             else:
                 self.gain_xp(1)   # duplicate: minimal XP
+                for d in self.ble_devices:
+                    if d.mac.upper() == mac_upper:
+                        d.name, d.rssi = name[:18], rssi
+                        if point: d.lat, d.lon = point["lat"], point["lon"]
+                        break
             # Always save to loot (dedup + RSSI update handled by loot_manager)
             if self.loot:
                 try:
@@ -5583,6 +5586,8 @@ class WatchDogsGame:
                 # Keep full Network objects for Evil Twin target selection
                 self.state.networks.append(net)
                 bssid_upper = bssid.upper()
+                point = self._record_scan_map_observation("wifi", bssid_upper, net.ssid,
+                    net.rssi, channel=net.channel, auth=net.auth)
                 is_new = bssid_upper not in self._known_wifi
                 if is_new:
                     self._known_wifi.add(bssid_upper)
@@ -5594,14 +5599,9 @@ class WatchDogsGame:
                         rssi_v = int(net.rssi)
                     except (ValueError, TypeError):
                         rssi_v = -80
-                    if self.gps_fix:
-                        _dlat = (random.random()-0.5) * 0.002
-                        _dlon = (random.random()-0.5) * 0.002
-                    else:
-                        _dlat = _dlon = 0.0
                     n = WifiNetwork(
-                        self.player_lat + _dlat,
-                        self.player_lon + _dlon,
+                        point["lat"] if point else 0.0,
+                        point["lon"] if point else 0.0,
                         bssid, net.ssid, ch, rssi_v)
                     n.spawn_frame = pyxel.frame_count
                     self.wifi_networks.append(n)
@@ -5609,6 +5609,15 @@ class WatchDogsGame:
                     self.gain_xp(15)  # new network: full XP
                 else:
                     self.gain_xp(1)   # duplicate: minimal XP
+                    for n in self.wifi_networks:
+                        if n.bssid.upper() == bssid_upper:
+                            n.ssid = net.ssid[:18]
+                            try: n.rssi = int(net.rssi)
+                            except (ValueError, TypeError): pass
+                            try: n.channel = int(net.channel)
+                            except (ValueError, TypeError): pass
+                            if point: n.lat, n.lon = point["lat"], point["lon"]
+                            break
                 # Always save to loot (dedup + RSSI update handled by loot_manager)
                 if self.loot:
                     try:
@@ -5825,7 +5834,7 @@ class WatchDogsGame:
         if any(result["contacts"].values()): self._load_loot_totals()
 
     def _register_mesh_node(self, protocol, node_id, ntype, name, lat, lon, rssi, snr, pubkey=None,
-                            receiver_position=None, received_at=None):
+                            receiver_position=None, received_at=None, map_event_sequence=None):
         nodes = self._mc_nodes if protocol == "meshcore" else self._mt_view["nodes"]
         known_contact = any(n["id"] == node_id for n in nodes)
         data = {"id": node_id, "protocol": protocol, "type": ntype, "name": name,
@@ -5858,8 +5867,8 @@ class WatchDogsGame:
         else:
             existing.clear()
             existing.update(data)
-        self._record_mesh_map_observation(protocol, data["id"])
-        self._update_mesh_marker(protocol, data)
+        if self._record_mesh_map_observation(protocol, data["id"], map_event_sequence, data):
+            self._update_mesh_marker(protocol, data)
         self._load_loot_totals()
         if protocol == "meshtastic":
             self._mt.set_known_nodes(nodes)
@@ -5873,19 +5882,41 @@ class WatchDogsGame:
         else:
             self.state.mc_nodes = len(nodes)
 
-    def _record_mesh_map_observation(self, protocol, node_id):
+    def _record_mesh_map_observation(self, protocol, node_id, event_sequence=None, contact=None):
         """Make a newly persisted observation eligible for the current map."""
-        self._sync_mesh_map_visibility()
+        self._sync_mesh_map_visibility(pending_protocol=protocol, pending_contact=contact)
         self._mesh_session_nodes.add((protocol, node_id))
+        # A paused UI may persist an old queued RX after its entire OFF window.
+        # Count/save it, but only a subsequent reception may restore its marker.
+        expired = getattr(self, "_mesh_map_expired_batches", {}).get(protocol, -1)
+        expired = max(expired, getattr(self, "_mesh_map_expired_nodes", {}).get((protocol, node_id), -1))
+        if event_sequence is not None and event_sequence <= expired:
+            return False
+        batch = self._mesh_map_off_batches.get(protocol)
+        if event_sequence is not None and batch is not None:
+            cutoff = batch["cutoff"]
+            if cutoff is None or event_sequence <= cutoff:
+                if not self._mesh_map_decay[protocol].visible(f"{protocol}:{node_id}"):
+                    return False
+                self._mesh_map_eligible_nodes.add((protocol, node_id))
+                return True
         self._mesh_map_eligible_nodes.add((protocol, node_id))
+        # RX can reach the main queue after the worker has already stopped.
+        # It still belongs to the OFF snapshot, even without an earlier ready poll.
+        # A successful RX also proves resumption if an entire ON/OFF was missed.
+        self._mesh_map_decay[protocol].clear()
+        self._mesh_map_off_batches.pop(protocol, None)
+        self._mesh_map_previous_active.add(protocol)
+        return True
 
-    def _sync_mesh_map_visibility(self):
+    def _sync_mesh_map_visibility(self, pending_protocol=None, pending_contact=None):
         """Expire map-only mesh observations five to ten minutes after OFF.
 
         Saved contacts, log records and discovery/XP identities are untouched.
         The distance order uses the receiver position at the OFF transition.
         """
         from watchdogs.map_visibility import OffScanDecay
+        from watchdogs.mesh_position import mesh_position, node_position
         states = getattr(self, "_mesh_map_decay", None)
         if states is None:
             states = self._mesh_map_decay = {}
@@ -5898,10 +5929,29 @@ class WatchDogsGame:
         active = set(getattr(self, "_mesh_map_adapter_protocols", ()))
         if physical in protocols:
             active.add(physical)
+        # Capture a finite OFF batch once. New status/text events cannot keep
+        # delaying its snapshot, and processing that batch is spread over frames.
+        batches = self.__dict__.setdefault("_mesh_map_off_batches", {})
+        drained = self.__dict__.setdefault("_mesh_map_drained_events", {})
+        expired_batches = self.__dict__.setdefault("_mesh_map_expired_batches", {})
+        expired_nodes = self.__dict__.setdefault("_mesh_map_expired_nodes", {})
+        queues = {"meshcore": getattr(self, "_mc_event_queue", None),
+                  "meshtastic": getattr(self, "_mt_event_queue", None)}
+        pending = set()
         previous = getattr(self, "_mesh_map_previous_active", set())
         receiver = (getattr(self, "player_lat", None), getattr(self, "player_lon", None))
         for protocol in protocols:
             decay = states.setdefault(protocol, OffScanDecay())
+            batch = batches.get(protocol)
+            if batch is not None and batch["cutoff"] is not None:
+                cutoff = batch["cutoff"]
+                # Keep expiry evidence for preview-only nodes as well: an ON
+                # transition must not replay an already expired queued packet.
+                for identity in batch["nodes"]:
+                    if not decay.visible(f"{identity[0]}:{identity[1]}"):
+                        expired_nodes[identity] = max(expired_nodes.get(identity, -1), cutoff)
+                if time.monotonic() >= batch["stopped_at"] + decay.last_after:
+                    expired_batches[protocol] = max(expired_batches.get(protocol, -1), cutoff)
             # Remove already expired display objects before resuming reception;
             # switching ON alone cannot replay them from saved contact history.
             if decay.active:
@@ -5912,13 +5962,72 @@ class WatchDogsGame:
                         getattr(marker, "mesh_key", id(marker)))]
             if protocol in active:
                 decay.clear()
+                batches.pop(protocol, None)
             elif protocol in previous and not decay.active:
+                if protocol not in batches:
+                    batches[protocol] = dict(cutoff=None, stopped_at=time.monotonic(),
+                                             receiver=receiver, nodes=set())
+                batch = batches[protocol]
+                queue = queues[protocol]
+                if queue is not None:
+                    # Never wait on a producer or on the queue becoming empty.
+                    # Copy only metadata under the lock; merge/rank after release.
+                    if not queue.mutex.acquire(False):
+                        pending.add(protocol)
+                        continue
+                    try:
+                        events = tuple(queue.queue)
+                    finally:
+                        queue.mutex.release()
+                else:
+                    events = ()
+                if protocol == pending_protocol and pending_contact is None:
+                    pending.add(protocol)
+                    continue
                 observations = {f"{kind}:{node_id}": (None, None)
                                 for kind, node_id in eligible if kind == protocol}
                 observations.update({getattr(marker, "mesh_key", id(marker)): (marker.lat, marker.lon)
                                      for marker in self.markers if marker.type == protocol})
-                decay.freeze([(key, *point) for key, point in observations.items()], receiver=receiver)
-        self._mesh_map_previous_active = active.intersection(protocols)
+                nodes = self._mc_nodes if protocol == "meshcore" else self._mt_view["nodes"]
+                preview = {node["id"]: dict(node) for node in nodes}
+                identities = {key for key in eligible if key[0] == protocol}
+                queued_identities = set()
+                # An already-popped RX has been persisted before this call.
+                # Include it without creating eligibility for any queued node.
+                if protocol == pending_protocol and pending_contact is not None:
+                    preview[pending_contact["id"]] = dict(pending_contact)
+                    queued_identities.add((protocol, pending_contact["id"]))
+                for event in events:
+                    if event[0] != "node":
+                        continue
+                    node_id = event[1]
+                    incoming = dict(lat=event[4], lon=event[5])
+                    contact = preview.setdefault(node_id, {})
+                    if node_position(incoming) is not None:
+                        contact.update(incoming)
+                    if event[9] is not None:
+                        contact["receiver_position"] = event[9]
+                    queued_identities.add((protocol, node_id))
+                identities.update(queued_identities)
+                for identity in queued_identities:
+                    position = mesh_position(preview.get(identity[1], {}))
+                    key = f"{identity[0]}:{identity[1]}"
+                    if position is not None:
+                        observations[key] = (position["lat"], position["lon"])
+                    else:
+                        observations.setdefault(key, (None, None))
+                batch["cutoff"] = drained.get(protocol, 0) + len(events)
+                batch["nodes"] = identities
+                decay.freeze([(key, *point) for key, point in observations.items()],
+                             receiver=batch["receiver"], now=batch["stopped_at"])
+                # A retried snapshot can already be past some deadlines.
+                # Apply it before this same draw/update can use old markers.
+                eligible.difference_update({key for key in eligible
+                    if key[0] == protocol and not decay.visible(f"{key[0]}:{key[1]}")})
+                self.markers[:] = [marker for marker in self.markers
+                    if marker.type != protocol or decay.visible(
+                        getattr(marker, "mesh_key", id(marker)))]
+        self._mesh_map_previous_active = active.intersection(protocols) | (previous & pending)
 
     def _update_mesh_marker(self, protocol, data):
         from watchdogs.mesh_position import mesh_position
@@ -5956,13 +6065,16 @@ class WatchDogsGame:
         self._mt_event_queue.put(("tx", token, success, error))
 
     def _poll_meshtastic(self):
-        while not self._mt.queue.empty():
+        for _ in range(min(64, self._mt.queue.qsize())):
             text, attr = self._mt.queue.get_nowait()
             self._term_add(f"[MT] {text}", raw=True)
-        while not self._mt_event_queue.empty():
+        for _ in range(min(32, self._mt_event_queue.qsize())):
             event = self._mt_event_queue.get_nowait()
+            drained = self.__dict__.setdefault("_mesh_map_drained_events", {})
+            drained["meshtastic"] = drained.get("meshtastic", 0) + 1
             if event[0] == "node":
-                self._register_mesh_node("meshtastic", *event[1:])
+                self._register_mesh_node("meshtastic", *event[1:],
+                                         map_event_sequence=drained["meshtastic"])
             elif event[0] == "text":
                 _, node_id, name, text, rssi, hops, channel = event
                 message = f"{name or node_id}: {text}"
@@ -6088,7 +6200,7 @@ class WatchDogsGame:
         self.state.lora_running = bool(active)
         self.state.lora_mode = active
         try:
-            while not self._lora.queue.empty():
+            for _ in range(min(64, self._lora.queue.qsize())):
                 text, attr = self._lora.queue.get_nowait()
                 # Telemetry goes to terminal only, not chat
                 self._term_add(f"[LoRa] {text}", raw=True)
@@ -6096,8 +6208,10 @@ class WatchDogsGame:
             pass
         # Process thread-safe event queue from callbacks
         try:
-            while not self._mc_event_queue.empty():
+            for _ in range(min(32, self._mc_event_queue.qsize())):
                 evt = self._mc_event_queue.get_nowait()
+                drained = self.__dict__.setdefault("_mesh_map_drained_events", {})
+                drained["meshcore"] = drained.get("meshcore", 0) + 1
                 if evt[0] == "msg":
                     _, channel, message, rssi, hops = evt
                     ts = time.strftime("%H:%M")
@@ -6142,7 +6256,8 @@ class WatchDogsGame:
                 elif evt[0] == "node":
                     _, node_id, ntype, name, lat, lon, rssi, snr, pubkey, rx_position, received_at = evt
                     self._register_mesh_node("meshcore", node_id, ntype, name, lat, lon, rssi, snr, pubkey,
-                                             rx_position, received_at)
+                                             rx_position, received_at,
+                                             map_event_sequence=drained["meshcore"])
                     # Node adverts go to terminal only, not chat
                     _type_names = {0: "Client", 1: "Client",
                                    2: "Repeater", 3: "Room", 4: "Sensor"}
@@ -6342,6 +6457,33 @@ class WatchDogsGame:
     # Loot points refresh
     # ------------------------------------------------------------------
 
+    def _record_scan_map_observation(self, kind, identity, label, rssi, channel="", auth=""):
+        """Update one positioned observation heard this session, without replaying history.
+
+        Use the same available/valid GPS fix as scan persistence. Neither map
+        panning, historical CSV positions nor a later fix alone create an RX.
+        """
+        from watchdogs.mesh_position import node_position
+        points = getattr(self, "_session_scan_points", None)
+        if points is None:
+            points = self._session_scan_points = {}
+        gps = getattr(self, "gps", None)
+        fix = getattr(gps, "fix", None)
+        position = None
+        if getattr(gps, "available", False) and getattr(fix, "valid", False):
+            position = node_position(dict(lat=getattr(fix, "latitude", None),
+                                          lon=getattr(fix, "longitude", None)))
+        key = (kind, identity.upper())
+        point = points.get(key)
+        if point is None:
+            if position is None: return None
+            point = points[key] = dict(type=kind, bssid=identity.upper())
+        if position is not None:
+            point.update(lat=position["lat"], lon=position["lon"])
+        point.update(label=label, rssi=rssi, channel=channel, auth=auth)
+        self._cluster_zoom = -1
+        return point
+
     def _refresh_loot_points(self):
         if not self.loot:
             return
@@ -6349,7 +6491,8 @@ class WatchDogsGame:
             pts = self.loot.get_gps_points()
             if pts:
                 self.loot_points = pts
-                self._cluster_zoom = -1  # force re-cluster
+                # This is still the complete history for loot search/statistics.
+                # Map layers use only _session_scan_points, never these CSVs.
         except Exception:
             pass
         # Load cracked passwords from potfile (for map popup)
@@ -6819,7 +6962,7 @@ class WatchDogsGame:
         geo2scr = self.proj.geo_to_screen
         vis = self.proj.screen_visible
 
-        for pt in self.loot_points:
+        for pt in self._session_scan_points.values():
             sx, sy = geo2scr(pt["lat"], pt["lon"])
             if not vis(sx, sy):
                 continue
@@ -7148,6 +7291,8 @@ class WatchDogsGame:
 
     def _draw_wifi(self):
         for net in self.wifi_networks:
+            if ("wifi", net.bssid.upper()) not in self._session_scan_points:
+                continue
             if net.lat == 0.0 and net.lon == 0.0:
                 continue  # no GPS fix when discovered — skip
             sx, sy = self.proj.geo_to_screen(net.lat, net.lon)
@@ -7169,6 +7314,8 @@ class WatchDogsGame:
 
     def _draw_ble(self):
         for d in self.ble_devices:
+            if ("bt", d.mac.upper()) not in self._session_scan_points:
+                continue
             if d.lat == 0.0 and d.lon == 0.0:
                 continue  # no GPS fix when discovered — skip
             sx, sy = self.proj.geo_to_screen(d.lat, d.lon)
@@ -7726,30 +7873,51 @@ class WatchDogsGame:
                   + self._loot_totals.get("et_captures", 0)
                   + self.state.submitted_forms
                   + len(self.state.evil_twin_captured_data))
-        # Columns sized for Spleen 5x8 + 4-digit counts (e.g. "BLE:9999"=40px).
+        # Mesh counts are unique successful observations in this session,
+        # including known/unlocated nodes, independent of saved contacts/map expiry.
+        mesh_counts = {"meshcore": 0, "meshtastic": 0}
+        for protocol, _node_id in self._mesh_session_nodes:
+            mesh_counts[protocol] += 1
         # Each counter "pops" (white flash + rising +tick) the moment it grows,
         # so finding a device/handshake/pwn gives instant visual feedback.
         _counters = [
-            ("BLE",  4,   t_bt,   C_HACK_CYAN),
-            ("WiFi", 60,  t_wifi, C_WARNING),
-            ("HS",   125, t_hs,   C_ERROR),
-            ("PWD",  170, t_pwd,  12),
-            ("PWN",  220, n_pwn,  C_SUCCESS),
+            ("BLE", t_bt, C_HACK_CYAN),
+            ("WiFi", t_wifi, C_WARNING),
+            ("HS", t_hs, C_ERROR),
+            ("PWD", t_pwd, 12),
+            ("PWN", n_pwn, C_SUCCESS),
+            ("MC", mesh_counts["meshcore"], C_HACK_CYAN),
+            ("MT", mesh_counts["meshtastic"], C_HACK_CYAN),
         ]
         _prev = self.__dict__.setdefault("_hud_counts", {})
         _flash = self.__dict__.setdefault("_hud_flash", {})
         _fc = pyxel.frame_count
-        for _k, _cx, _val, _col in _counters:
+        _cx = 4
+        for _k, _val, _col in _counters:
             if _k in _prev and _val > _prev[_k]:
                 _flash[_k] = _fc
             _prev[_k] = _val
-            _txt = f"{_k}:{_val}"
+            _count = "999999+" if _val > 999999 else str(_val)
+            _txt = f"{_k}:{_count}"
             _age = _fc - _flash.get(_k, -999)
             if 0 <= _age < 12:
                 pyxel.text(_cx, y, _txt, 7)            # white pop
                 pyxel.text(_cx + len(_txt) * 5 + 1, y - _age // 3, "+", _col)
             else:
                 pyxel.text(_cx, y, _txt, _col)
+            _cx += len(_txt) * 5 + 6
+
+        # Reserve the actual radio/GPS width, including the searching icon.
+        protocol = self._active_lora_protocol()
+        label = {"meshcore": "MeshCore", "meshtastic": "Meshtastic", "rnode": "RNode"}.get(protocol, "OFF")
+        radio_text = f"LoRa:{label}"
+        gps_x = (W - 108 if self.gps_fix else W - 120
+                 if self.gps.available and self.gps_sats_vis > 0 else W - 100
+                 if self.gps.available else W - 60)
+        radio_x = min(W - 200, gps_x - 19 - len(radio_text) * 5)
+        tools_right = radio_x - 6
+        _tools_x = max(270, _cx + 2)
+        _tools_chars = max(0, (tools_right - _tools_x) // 5)
 
         tools = []
         if self.wifi_scanning: tools.append("WiFi")
@@ -7770,15 +7938,24 @@ class WatchDogsGame:
             tools.append("MUTE")
         if tools:
             dots = "." * ((pyxel.frame_count // 10) % 4)
-            pyxel.text(270, y, " ".join(tools) + dots, 12)
+            summary = " ".join(tools) + dots
+            if len(summary) > _tools_chars:
+                summary = summary[:max(0, _tools_chars - 3)] + "." * min(3, _tools_chars)
+            if summary:
+                pyxel.text(_tools_x, y, summary, 12)
         elif not self.menu_open:
             # Keybind legend — keys highlighted, labels dim (matches menu style).
-            _kx = 270
-            for _seg, _sc in (("[TAB]", C_HACK_CYAN), ("Menu ", C_COAST),
-                              ("[`]", C_HACK_CYAN), ("Loot ", C_COAST),
-                              ("[S]", C_WARNING), ("Stop", C_COAST)):
-                pyxel.text(_kx, y, _seg, _sc)
-                _kx += len(_seg) * 5
+            _legend = (("[TAB]", C_HACK_CYAN), ("Menu ", C_COAST),
+                       ("[`]", C_HACK_CYAN), ("Loot ", C_COAST),
+                       ("[S]", C_WARNING), ("Stop", C_COAST))
+            if sum(len(segment) for segment, _ in _legend) > _tools_chars:
+                _legend = tuple((segment, color) for segment, color in _legend
+                                if segment.startswith("["))
+            _kx = _tools_x
+            for _seg, _sc in _legend:
+                if _kx + len(_seg) * 5 <= tools_right:
+                    pyxel.text(_kx, y, _seg, _sc)
+                    _kx += len(_seg) * 5
 
         # GPS status — lock-reticle icon reflects state (locked/searching/off).
         if self.gps_fix:
@@ -7809,9 +7986,7 @@ class WatchDogsGame:
         pyxel.text(g_x, y, g_txt, g_col)
 
         # The label reflects a ready radio, not merely GPIO power or a thread.
-        protocol = self._active_lora_protocol()
-        label = {"meshcore": "MeshCore", "meshtastic": "Meshtastic", "rnode": "RNode"}.get(protocol, "OFF")
-        pyxel.text(W - 200, y, f"LoRa:{label}", C_SUCCESS if protocol else C_DIM)
+        pyxel.text(radio_x, y, radio_text, C_SUCCESS if protocol else C_DIM)
 
 
     def _draw_prox_icon(self):
@@ -7974,16 +8149,6 @@ class WatchDogsGame:
                        ry+int(math.sin(_ta)*rr), _tc)
         pyxel.line(rx, ry, rx+int(math.cos(sa)*rr), ry+int(math.sin(sa)*rr), C_HACK_CYAN)
         scale = rr / max(self.proj.lon_span * 0.5, 0.001)
-        for d in self.ble_devices:
-            dx = (d.lon - self.player_lon) * scale
-            dy = (self.player_lat - d.lat) * scale
-            if abs(dx) < rr and abs(dy) < rr:
-                pyxel.pset(rx+int(dx), ry+int(dy), C_SUCCESS if d.hacked else d.color)
-        for n in self.wifi_networks:
-            dx = (n.lon - self.player_lon) * scale
-            dy = (self.player_lat - n.lat) * scale
-            if abs(dx) < rr and abs(dy) < rr:
-                pyxel.pset(rx+int(dx), ry+int(dy), C_SUCCESS if n.hacked else C_WARNING)
         for m in self.markers:
             dx = (m.lon - self.player_lon) * scale
             dy = (self.player_lat - m.lat) * scale
@@ -7992,9 +8157,7 @@ class WatchDogsGame:
         loot_colors = {"wifi": C_SUCCESS, "bt": C_HACK_CYAN,
                        "handshake": C_ERROR, "meshcore": C_WARNING,
                        "meshtastic": C_WARNING}
-        step = max(1, len(self.loot_points) // 100)
-        for i in range(0, len(self.loot_points), step):
-            pt = self.loot_points[i]
+        for pt in getattr(self, "_session_scan_points", {}).values():
             dx = (pt["lon"] - self.player_lon) * scale
             dy = (self.player_lat - pt["lat"]) * scale
             if abs(dx) < rr and abs(dy) < rr:
@@ -9025,6 +9188,7 @@ class WatchDogsGame:
         self._game_update_checking = False
         self._game_update_status = "idle"
         self._game_update_message = "Press R to check for updates."
+        self._game_update_verified_current = False
         self._game_update_release = None
         self._game_update_notice = None
         self._game_update_notice_queued = None
@@ -9056,6 +9220,17 @@ class WatchDogsGame:
         except ImportError:
             self._game_installed_version = "?"
         try:
+            cached = self._game_updates.cached_current()
+            if cached is not None:
+                self._game_update_status = cached.status
+                self._game_update_message = cached.message
+                self._game_installed_version = cached.installed_version
+                self._game_update_release = cached.release
+                self._game_update_verified_current = True
+        except Exception:
+            # Remembered UI status is optional; startup still checks normally.
+            pass
+        try:
             asset = Path(__file__).resolve().parent.parent / "assets" / "kilogramowy-avatar-32.png"
             self._gameupd_avatar = pyxel.Image.from_image(str(asset))
         except Exception:
@@ -9077,6 +9252,10 @@ class WatchDogsGame:
                 self._game_update_checking = False
                 self._game_update_status = value.status
                 self._game_update_message = "UP TO DATE" if value.status == "current" else value.message
+                self._game_update_verified_current = (value.status == "current" or
+                    (value.status == "error" and getattr(value, "last_verified_current", False)))
+                if value.status == "error" and self._game_update_verified_current:
+                    self._game_update_message += " Last verified: UP TO DATE."
                 self._game_installed_version = value.installed_version
                 if value.status in ("available", "current", "unpublished"):
                     self._game_update_release = value.release
@@ -9091,6 +9270,7 @@ class WatchDogsGame:
                 self._game_update_checking = False
                 self._game_update_status = "error"
                 self._game_update_message = value
+                self._game_update_verified_current = False
             elif event == "prepared":
                 self._gameupd_plan = value
                 self._gameupd_running = False
@@ -9189,8 +9369,8 @@ class WatchDogsGame:
                 break
 
     def _gameupd_note_lines(self):
-        import textwrap
         from watchdogs.game_updates import filter_release_notes
+        from watchdogs.release_notes import game_note_lines
         release = self._game_update_release
         if release is not None:
             content = release.notes
@@ -9201,11 +9381,7 @@ class WatchDogsGame:
                 content = "Release notes are unavailable."
         installed = getattr(self, "_game_installed_version", "")
         content = filter_release_notes(content, installed, release.version if release is not None else installed)
-        lines = []
-        for paragraph in content.splitlines():
-            lines.extend(textwrap.wrap(paragraph.expandtabs(4), width=83,
-                         break_long_words=True, break_on_hyphens=False) or [""])
-        return lines or ["No release notes provided."]
+        return game_note_lines(content)
 
     def _gameupd_source_info(self):
         """Read cached, verified source metadata without starting network I/O."""
@@ -9449,7 +9625,8 @@ class WatchDogsGame:
         pyxel.text(dx + 10, dy + 44, version, C_DIM)
         status = self._game_update_message
         if self._game_update_checking:
-            status = "Checking GitHub..."
+            status = ("UP TO DATE (last verified); checking GitHub..."
+                      if self._game_update_verified_current else "Checking GitHub...")
         status_lines = textwrap.wrap(status, width=83)[:2] or [""]
         for i, line in enumerate(status_lines):
             pyxel.text(dx + 10, dy + 56 + i * 9, line, C_WARNING if self._game_update_status == "error" else C_DIM)
@@ -9460,7 +9637,7 @@ class WatchDogsGame:
         maximum = max(0, len(lines) - 9)
         self._gameupd_scroll = min(maximum, max(0, self._gameupd_scroll))
         for i, line in enumerate(lines[self._gameupd_scroll:self._gameupd_scroll + 9]):
-            heading = (re.fullmatch(r"\d{1,2}\. [A-Z][A-Z0-9 /()+,-]*", line) or
+            heading = (re.fullmatch(r"\d{1,2}\. [A-Z][A-Z0-9 /()+,.'&:_-]*", line) or
                        re.fullmatch(r"RELEASE [0-9]+(?:\.[0-9]+){1,3}(?: - [A-Z0-9][A-Z0-9 /()+,._:-]*)?", line))
             divider = re.fullmatch(r"-{3,83}", line)
             y = dy + 94 + i * 9

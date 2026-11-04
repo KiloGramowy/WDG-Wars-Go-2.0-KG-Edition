@@ -1,127 +1,72 @@
-RELEASE 0.9.19.1 - ADS-B AND MESH OFF VISIBILITY
-----------------------------------------------
-1. AIRCRAFT AFTER ADS-B OFF
---------------------------
-Before: 0.9.19 hid aircraft when ADS-B stopped and cleared them on STOP.
-Changed: ADS-B OFF keeps the last visible aircraft on the map and small
-radar. They start disappearing after 5 minutes, farther ones first;
-the nearest disappear by 10 minutes. Repeated STOP does not reset this.
+RELEASE 0.9.19.2 - CLEAN MAP. SAME LOOT.
 
-2. MESHCORE AND MESHTASTIC AFTER OFF
-----------------------------------
-Before: mesh markers remained until the game closed, even after OFF.
-Changed: after switching a mesh protocol OFF, its markers disappear
-between 5 and 10 minutes, farther ones first. The other active protocol
-keeps its markers. Saved contacts remain available after map expiry.
+Fresh session, familiar cyberdeck. We cleared the old map clutter, taught BLE to recognise an old acquaintance, and persuaded UP TO DATE to remember its day job.
 
-3. KEEP AIRCRAFT WHILE RECEPTION CONTINUES
-----------------------------------------
-Before: a position older than 60 seconds disappeared even while other
-messages from the same aircraft were still arriving.
-Changed: with ADS-B ON, any new message keeps its last known position
-visible. New coordinates move the marker. An aircraft disappears after
-60 seconds without another message. No movement is invented.
+## 🧭 New session. Clean map. Your loot stays.
 
-4. RESUME RECEPTION AND RESTART
------------------------------
-Changed: turning reception back ON cancels the remaining OFF schedule.
-Already expired markers do not return without a new observation.
-Retained radio aircraft get 60 seconds to be heard again. The distance
-order uses the receiver location at OFF; object coordinates do not move.
-Restarting the game starts with an empty aircraft and mesh map.
-Saved XP, badges, contacts, notes and logs remain unchanged.
+**Before:** Wi-Fi/BLE points from earlier sessions could reappear on the map.
+**Now:** each launch starts with a clean Wi-Fi/BLE map. Receive a device again, new or known, and it can appear in this session. Repeat receptions update the same observation. Points stay until you close the game, including after STOP and scheduled Wi-Fi/BLE switches. **No valid position, no map point.**
 
-5. EARLIER FIXES INCLUDED
-------------------------
-This is one cumulative installation, including the earlier progress,
-BLE and contact-panel fixes. Saved mesh contacts do not reappear on the
-map merely because the game restarted. The ADS-B and mesh OFF rules
-above replace the corresponding historical 0.9.19 rules below.
+**Saved loot, logs, pending uploads, XP, levels, achievements and settings stay.** Your cyberdeck remembers the loot. The map is allowed to forget.
+
+## 🧷 BLE: nice try, we've met
+
+**Before:** some saved BLE addresses were not recognised after restarting, so an old acquaintance could collect the full 10 XP welcome bonus again. Names containing commas or unmatched quotation marks could confuse older CSV entries, hide following records or mix up names and positions in the history view. Some history scans also left CSV readers open.
+**Now:** saved BLE identities are recognised correctly after restarting. Those names keep their correct protocol, and following entries are read separately. The history view reads saved names, signal strength and positions correctly, without rewriting old logs, and closes its files after reading. Known BLE devices get the existing **1 XP** repeat award; genuinely new BLE devices still get **10 XP**. A known device appears on the clean session map only after a new reception with a valid position.
+
+Rebooting is not a witness protection programme.
+
+## 📇 One address, two separate records
+
+**Before:** when Wi-Fi and BLE shared the same address, saving a repeat could update the other protocol's entry in the WiGLE export.
+**Now:** Wi-Fi and BLE keep separate saved records, even when their addresses match. A stronger signal refreshes only its own protocol's exported entry; a weaker or equal signal leaves that saved entry intact. Neither overwrites the other protocol's record.
+
+The XP rules stay **15 XP for new Wi-Fi**, **10 XP for new BLE** and **1 XP for repeats**. Previously earned XP is neither recalculated nor taken away. Existing history, logs and pending uploads stay intact.
+
+## 🗺️ Mesh: the last packet gets a seat
+
+**Before:** a MeshCore/Meshtastic reception waiting to be processed just before OFF or a protocol switch could disappear from the map immediately.
+**Now:** those waiting receptions are included in the OFF snapshot. Valid Node GPS or the existing **[RX GPS]** fallback places a marker. A later credible fix can fill a missing position for a node heard this session. Restarting keeps contacts and progress, while starting a fresh mesh map.
+
+The existing OFF rule stays: **mesh markers disappear between 5 and 10 minutes, farther first**. Repeated STOP does not extend their deadlines; the other active protocol keeps its markers.
+
+This fixes a reproduced software edge case. The radio behaviour reported in the photos still needs device testing.
+
+## 📡 MC / MT: who's been here this session
+
+**Before:** the main HUD had no MC/MT counters.
+**Now:** **MC:** and **MT:** count unique nodes successfully registered this session, whether new or known, with or without coordinates. Repeat packets do not add another node. OFF and protocol switches keep the counts; restarting resets them.
+
+Saved contacts, nodes heard this session and visible map markers are different numbers. The ready-radio icon and familiar WDG styling stay.
+
+## ✅ UP TO DATE has a memory now
+
+**Before:** a verified **UP TO DATE** result was lost after restarting the game.
+**Now:** it survives reopening the update window and restarting, tied to the installed version and code. **R** and the startup check still work. A newer release replaces the status. Network failures stay errors; any retained earlier success is labelled **last verified**. New-release notices still appear only once per release.
+
+One less thing on the cyberdeck with the memory of a goldfish.
+
+## 🖥️ Release notes, now fluent in cyberdeck
+
+**Before:** Update Game could display raw Markdown markers and emoji its font could not draw.
+**Now:** the same English description is adapted automatically for the original WDG window: readable text, numbered yellow headings, dark title strips and spacing. The original font, colours, window and **nine visible rows** stay. GitHub and Discord keep their emoji and formatting.
+
+## 🔄 The first restart still needs a human
+
+**Before / Now:** installation and restart rules are unchanged.
+
+If the running updater is **0.9.17, 0.9.18 or 0.9.19**, the first upgrade still needs **one manual relaunch**. After installation, press **Enter or Esc** to close the game, then start it again.
+
+Updates performed by **0.9.19.1 or later** restart automatically after successful installation, including **0.9.19.1 → 0.9.19.2**. Preparation, cancellation and failure do not restart the game.
+
+## 🧪 Checked in software. Still a candidate.
+
+Software regressions cover BLE history after restart, existing XP rules, native note rendering and version filtering, session maps, mesh queues, counters, persistent update status and saved-data preservation.
+
+The full software suite passed on our uConsole: **808/808, zero errors, failures or skips**, including both recorded Meshtastic replays and the real driver-code contracts with simulated transports. The original Pyxel renderer also passed **25 controlled scenes on the device screen**. Windows passed **802/808**, with six platform-dependent skips and no errors or failures.
+
+**Physical RF reception has not been verified for this candidate.** Replays, software tests and synthetic screen scenes do not prove new radio reception.
+
+**0.9.19.2 is a review candidate. Public Release and stable OTA publication await approval.**
+
 Original game by LOCOSP. Modified by KiloGramowy.
-
-6. UPDATE STATUS AND AUTOMATIC RESTART
-------------------------------------
-Before: a current check used a longer status message, and a completed
-installation required closing and launching the game manually.
-Changed: a verified current installation shows UP TO DATE. Updates
-installed by the 0.9.19.1 updater restart the game automatically after
-saving progress, stopping devices and completing the code replacement.
-Cancelled, failed or merely prepared updates do not restart the game.
-First upgrade from 0.9.17, 0.9.18 or 0.9.19: the running old updater
-still needs one manual relaunch. After installation press ENTER or ESC
-to close the game, then launch it again. Later updates restart it for you.
-
-RELEASE 0.9.19 - MAP MICROFIX
----------------------------
-Historical notes. ADS-B and mesh OFF policies are superseded by 0.9.19.1.
-
-1. ADS-B MAP AND RADAR
----------------------
-Before: old aircraft stayed visible after ADS-B stopped; other SBS
-messages could keep an outdated position on screen.
-Changed: both map views show positions received within 60 seconds from
-an active ADS-B scan. A confirmed STOP clears the live aircraft cache.
-A pending STOP is reported honestly. Saved XP and logs remain intact.
-
-2. MESH MAP AFTER RESTART
-------------------------
-Before: startup and GPS backfill could put all saved mesh contacts on
-the map, without receiving them in the current session.
-Changed: MeshCore and Meshtastic map markers start empty after restart.
-A contact appears after reception in this session. GPS backfill alone
-does not restore historical markers. Contacts, notes, XP and logs stay
-saved. Mesh markers received this session remain until the game closes.
-
-3. CUMULATIVE UPDATE AND NOTES
------------------------------
-Before: the update window always displayed the entire published text.
-Changed: 0.9.19 can select versioned sections for missing fixes in future
-updates. One confirmation installs all missing code changes together.
-Existing 0.9.17 and 0.9.18 readers show both sections during this first
-transition. The 0.9.18 section below is for users upgrading from 0.9.17.
-
-RELEASE 0.9.18 - PREVIOUS FIXES
------------------------------
-Catch-up for users upgrading from 0.9.17. Already on 0.9.18? These fixes
-are already installed; the new changes are in the 0.9.19 section above.
-
-WatchDogsGo 0.9.18
-Original game by LOCOSP. Modified by KiloGramowy.
-
-1. XP, LEVEL AND SAVED DATA
----------------------------
-Before: an old v1 save could lose XP, badges, contacts and history.
-Changed: preserve saved progress and counters; create a backup before
-migration. Saved zero stays zero. Unsafe migration stops startup.
-For a separate clone, run.sh accepts the old installation root as its
-data argument. Already erased XP requires an intact save or backup.
-
-2. BLE SCAN COMPLETION
-----------------------
-Before: Linux bridge results could end with a false scan timeout.
-Changed: accept its final BLE scan done marker. Keep XIAO/projectZero
-Summary support and save/STOP checks. Adapter warnings pause scanning;
-late replies cannot restart a cancelled schedule.
-Validation: bridge completion handling passes software tests. AC1200
-hardware testing is pending; our own setup uses XIAO ESP32-C5.
-The fix is expected to address this completion-marker mismatch when
-the Linux adapters, drivers and bridge are already working.
-
-3. MESHCORE CONTACT LIST
-------------------------
-Before: Ctrl+H hid an empty list; keys still reached the chat.
-Changed: show CONTACTS (0), block chat input while the panel is open,
-and close the empty panel with Esc without leaving chat. Keep the panel
-visible after deleting the final contact.
-
-4. MESHTASTIC CONTACT LIST
---------------------------
-Before: Ctrl+H hid the panel when no contacts were saved.
-Changed: show CONTACTS (0) and the empty-list message. Keep MeshCore and
-Meshtastic contacts and panel states separate.
-
-5. UPDATE NOTES
----------------
-Before: change descriptions used one text color.
-Changed: use numbered yellow titles on dark strips, underlines and blank
-line; keep the factual description in white.

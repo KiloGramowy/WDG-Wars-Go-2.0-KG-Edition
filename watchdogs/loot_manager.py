@@ -416,7 +416,8 @@ class LootManager:
         emerg_file = session_path / "emergency_rf.csv"
         if emerg_file.is_file():
             try:
-                lines = sum(1 for _ in open(emerg_file, encoding="utf-8"))
+                with open(emerg_file, encoding="utf-8") as fh:
+                    lines = sum(1 for _ in fh)
                 counts["emergency"] = max(0, lines - 1)
             except OSError:
                 pass
@@ -425,20 +426,21 @@ class LootManager:
             try:
                 gps_count = 0
                 total = 0
-                for i, line in enumerate(open(bt_dev_file, encoding="utf-8")):
-                    if i == 0:
-                        continue  # skip header
-                    total += 1
-                    parts = line.strip().split(",")
-                    # lat,lon are last two columns
-                    if len(parts) >= 8:
-                        try:
-                            lat = float(parts[-2])
-                            lon = float(parts[-1])
-                            if lat != 0.0 or lon != 0.0:
-                                gps_count += 1
-                        except ValueError:
-                            pass
+                with open(bt_dev_file, encoding="utf-8") as fh:
+                    for i, line in enumerate(fh):
+                        if i == 0:
+                            continue  # skip header
+                        total += 1
+                        parts = line.strip().split(",")
+                        # lat,lon are last two columns
+                        if len(parts) >= 8:
+                            try:
+                                lat = float(parts[-2])
+                                lon = float(parts[-1])
+                                if lat != 0.0 or lon != 0.0:
+                                    gps_count += 1
+                            except ValueError:
+                                pass
                 counts["bt_devices"] = total
                 counts["bt_devices_gps"] = gps_count
             except OSError:
@@ -448,19 +450,20 @@ class LootManager:
             try:
                 total_at = 0
                 total_st = 0
-                for line in open(bt_at_file, encoding="utf-8"):
-                    if "AirTags:" in line:
-                        try:
-                            part = line.split("AirTags:")[1].split("|")[0].strip()
-                            total_at = max(total_at, int(part))
-                        except (ValueError, IndexError):
-                            pass
-                    if "SmartTags:" in line:
-                        try:
-                            part = line.split("SmartTags:")[1].strip()
-                            total_st = max(total_st, int(part))
-                        except (ValueError, IndexError):
-                            pass
+                with open(bt_at_file, encoding="utf-8") as fh:
+                    for line in fh:
+                        if "AirTags:" in line:
+                            try:
+                                part = line.split("AirTags:")[1].split("|")[0].strip()
+                                total_at = max(total_at, int(part))
+                            except (ValueError, IndexError):
+                                pass
+                        if "SmartTags:" in line:
+                            try:
+                                part = line.split("SmartTags:")[1].strip()
+                                total_st = max(total_st, int(part))
+                            except (ValueError, IndexError):
+                                pass
                 counts["bt_airtags"] = total_at
                 counts["bt_smarttags"] = total_st
             except OSError:
@@ -468,14 +471,16 @@ class LootManager:
         wd_file = session_path / "wardriving.csv"
         if wd_file.is_file():
             try:
-                lines = sum(1 for _ in open(wd_file, encoding="utf-8"))
+                with open(wd_file, encoding="utf-8") as fh:
+                    lines = sum(1 for _ in fh)
                 counts["wardriving"] = max(0, lines - 2)  # minus pre-header + header
             except OSError:
                 pass
         adsb_file = session_path / "adsb_aircraft.csv"
         if adsb_file.is_file():
             try:
-                counts["adsb"] = max(0, sum(1 for _ in open(adsb_file, encoding="utf-8")) - 1)  # minus header
+                with open(adsb_file, encoding="utf-8") as fh:
+                    counts["adsb"] = max(0, sum(1 for _ in fh) - 1)  # minus header
             except OSError:
                 pass
         mitm_dir = session_path / "mitm"
@@ -881,10 +886,12 @@ class LootManager:
 
         Returns (known_ble_macs, known_wifi_bssids).
         """
-        import csv as _csv
-
         ble_macs: set[str] = set()
         wifi_bssids: set[str] = set()
+
+        def valid_mac(value: str) -> str:
+            value = value.strip().upper()
+            return value if re.fullmatch(r"(?:[0-9A-F]{2}:){5}[0-9A-F]{2}", value) else ""
 
         if not self._base.is_dir():
             return ble_macs, wifi_bssids
@@ -893,15 +900,17 @@ class LootManager:
             if not entry.is_dir() or not entry.name[0].isdigit():
                 continue
 
-            # WiFi BSSIDs from wardriving.csv
+            # WiGLE exports contain both WiFi and BLE, with separate identities.
             wd = entry / "wardriving.csv"
             if wd.is_file():
                 try:
                     with open(wd, "r", encoding="utf-8", errors="replace") as f:
-                        reader = _csv.reader(f)
-                        for row in reader:
-                            if len(row) >= 1 and ":" in row[0]:
-                                wifi_bssids.add(row[0].strip().upper())
+                        for line in f:
+                            record = self._wardrive_record(line)
+                            if record is not None:
+                                kind, mac, _ = record
+                                target = ble_macs if kind == "BLE" else wifi_bssids
+                                target.add(mac)
                 except Exception:
                     pass
 
@@ -910,10 +919,24 @@ class LootManager:
             if bt.is_file():
                 try:
                     with open(bt, "r", encoding="utf-8", errors="replace") as f:
-                        reader = _csv.reader(f)
-                        for row in reader:
-                            if len(row) >= 1 and ":" in row[0] and row[0] != "mac":
-                                ble_macs.add(row[0].strip().upper())
+                        mac_column = None
+                        for line in f:
+                            row = next(csv.reader([line]))
+                            columns = [cell.strip().lower() for cell in row]
+                            if columns and columns[0] in ("timestamp", "mac") and "mac" in columns:
+                                mac_column = columns.index("mac")
+                                continue
+                            # Current files are timestamp,mac,...; older files
+                            # may start with mac. Honor headers when present.
+                            candidates = ([row[mac_column]] if mac_column is not None
+                                          and len(row) > mac_column else [])
+                            if mac_column is None:
+                                candidates = row[:2]
+                            for candidate in candidates:
+                                mac = valid_mac(candidate)
+                                if mac:
+                                    ble_macs.add(mac)
+                                    break
                 except Exception:
                     pass
 
@@ -1237,6 +1260,95 @@ class LootManager:
         "AccuracyMeters,Type\n"
     )
 
+    @staticmethod
+    def _wardrive_fields(line: str) -> list[str] | None:
+        """Read the eleven WiGLE fields without changing historical rows."""
+        raw = line.rstrip("\r\n").split(",")
+        try:
+            row = next(csv.reader([line]))
+        except csv.Error:
+            row = raw
+        if not row:
+            return None
+        mac = row[0].strip().upper()
+        if not re.fullmatch(r"(?:[0-9A-F]{2}:){5}[0-9A-F]{2}", mac):
+            return None
+        # Native writers did not quote names: commas move the fixed columns,
+        # and an unmatched quote can absorb the tail in a standard CSV reader.
+        # One physical record plus a raw fallback retains the stable tail and
+        # prevents a name from swallowing the next device's record.
+        for fields in (row, raw):
+            if len(fields) >= 11:
+                tail_type = fields[-1].strip().upper()
+                if tail_type == "WIFI" or (tail_type == "BLE" and fields[-9].strip().upper() == "[BLE]"):
+                    label = (row[1] if fields is row and len(row) == 11 else
+                             line.rstrip("\r\n").rsplit(",", 9)[0].partition(",")[2])
+                    return [mac, label, *fields[-9:-1], tail_type]
+        # Supported older Type-less exports are Wi-Fi, as in the old loader.
+        for tail_size in (8, 7, 6):
+            for fields in (row, raw):
+                if (len(fields) >= tail_size + 2
+                        and (re.fullmatch(r"\[.*\]", fields[-tail_size].strip())
+                             or (len(fields) == tail_size + 2
+                                 and re.fullmatch(r"\d{4}-\d{2}-\d{2}[ T]\d{2}:\d{2}:\d{2}(?:\.\d+)?",
+                                                  fields[-tail_size + 1])))):
+                    label = (row[1] if fields is row and len(row) == tail_size + 2 else
+                             line.rstrip("\r\n").rsplit(",", tail_size)[0].partition(",")[2])
+                    return [mac, label, *fields[-tail_size:], *([""] * (8 - tail_size)), "WIFI"]
+        # Preserve identity-only legacy records, but do not invent a position.
+        return [mac, row[1] if len(row) > 1 else "", "", "", "",
+                row[5] if len(row) > 5 else "", "", "", "", "", "WIFI"]
+
+    @classmethod
+    def _wardrive_record(cls, line: str) -> tuple[str, str, int] | None:
+        """Read (Type, MAC, RSSI) for protocol-specific identity/dedup."""
+        fields = cls._wardrive_fields(line)
+        if fields is None:
+            return None
+        try:
+            rssi = int(fields[5])
+        except (ValueError, TypeError):
+            rssi = -100
+        return fields[10], fields[0], rssi
+
+    @staticmethod
+    def _bt_history_record(line: str) -> dict[str, str] | None:
+        """Read current and MAC-first BLE names/positions from stable tails."""
+        text = line.rstrip("\r\n")
+        raw = text.split(",")
+        try:
+            row = next(csv.reader([line]))
+        except csv.Error:
+            row = raw
+        if not row:
+            return None
+        tail = text.rsplit(",", 4)
+        if len(tail) != 5:
+            return None
+        trailing_fields = next(csv.reader([",".join(tail[1:])]))
+        if len(trailing_fields) != 4:
+            return None
+        mac_first = re.fullmatch(r"(?:[0-9A-Fa-f]{2}:){5}[0-9A-Fa-f]{2}", row[0].strip())
+        if mac_first:
+            mac = row[0].strip().upper()
+            canonical = len(row) == 6 and row[-4:] == trailing_fields
+            label = row[1] if canonical else tail[0].partition(",")[2]
+            rssi, lat, lon = trailing_fields[-3:]
+        elif len(row) > 1 and re.fullmatch(r"\d{4}-\d{2}-\d{2}[ T]\d{2}:\d{2}:\d{2}(?:\.\d+)?", row[0]):
+            mac = row[1].strip().upper()
+            if not re.fullmatch(r"(?:[0-9A-F]{2}:){5}[0-9A-F]{2}", mac):
+                return None
+            prefix = tail[0].split(",", 3)
+            if len(prefix) != 4:
+                return None
+            canonical = len(row) == 8 and row[-4:] == trailing_fields
+            label = row[3] if canonical else prefix[3]
+            rssi = row[2] if canonical else prefix[2]
+            lat, lon = trailing_fields[-2:]
+        else:
+            return None
+        return dict(mac=mac, label=label, rssi=rssi, lat=lat, lon=lon)
+
     def _wigle_auth(self, auth: str) -> str:
         """Convert ESP32 auth string to WiGLE AuthMode format."""
         return self._AUTH_MAP.get(auth.strip(), f"[{auth}][ESS]")
@@ -1279,7 +1391,7 @@ class LootManager:
                                 temporary, exc)
 
     def save_wardriving_network(self, network: Network) -> bool:
-        """Append a geo-tagged network to wardriving.csv (WiGLE format, dedup by BSSID).
+        """Append a geo-tagged network to wardriving.csv (dedup by Type and BSSID).
 
         Returns True if the network was new or updated (stronger RSSI).
         """
@@ -1307,28 +1419,25 @@ class LootManager:
             f"{network.channel},{network.rssi},{lat},{lon},{alt},"
             f"{accuracy},WIFI\n"
         )
-        # Read existing to dedup by BSSID (MAC = column 0, RSSI = column 5)
-        existing: dict[str, tuple[int, int]] = {}  # bssid -> (line_index, rssi)
+        # Wi-Fi and BLE may share a MAC; only compare this protocol's RSSI.
+        existing: dict[tuple[str, str], tuple[int, int]] = {}
         lines: list[str] = []
         if path.is_file():
             try:
-                with open(path, "r", encoding="utf-8") as fh:
+                with open(path, "r", encoding="utf-8", newline="") as fh:
                     for i, line in enumerate(fh):
                         lines.append(line)
                         if i <= 1:
                             continue  # pre-header + header
-                        parts = line.strip().split(",")
-                        if len(parts) >= 6:
-                            bssid = parts[0]  # MAC column
-                            try:
-                                existing[bssid] = (i, int(parts[5]))
-                            except (ValueError, IndexError):
-                                existing[bssid] = (i, -100)
+                        record = self._wardrive_record(line)
+                        if record is not None:
+                            kind, mac, strength = record
+                            existing[(kind, mac)] = (i, strength)
             except (OSError, UnicodeError) as exc:
                 return self._wardrive_save_failed(path, exc)
-        bssid = network.bssid
-        if bssid in existing:
-            old_idx, old_rssi = existing[bssid]
+        identity = ("WIFI", network.bssid.strip().upper())
+        if identity in existing:
+            old_idx, old_rssi = existing[identity]
             if rssi_val <= old_rssi:
                 return False  # existing is stronger or equal
             lines[old_idx] = new_row
@@ -1340,7 +1449,7 @@ class LootManager:
             return self._commit_wardrive_csv(path, lines)
 
     def save_wardriving_bt(self, mac: str, rssi: int, name: str) -> bool:
-        """Append a geo-tagged BLE device to wardriving.csv (WiGLE format, dedup by MAC).
+        """Append a geo-tagged BLE device to wardriving.csv (dedup by Type and MAC).
 
         Uses the same CSV file as WiFi wardriving with Type=BLE.
         Returns True if the device was new or updated (stronger RSSI).
@@ -1364,26 +1473,25 @@ class LootManager:
             f",{rssi},{lat},{lon},{alt},"
             f"{accuracy},BLE\n"
         )
-        # Read existing to dedup by MAC (column 0, RSSI = column 5)
-        existing: dict[str, tuple[int, int]] = {}
+        # Names can contain commas; recover Type/MAC/RSSI from the native row.
+        existing: dict[tuple[str, str], tuple[int, int]] = {}
         lines: list[str] = []
         if path.is_file():
             try:
-                with open(path, "r", encoding="utf-8") as fh:
+                with open(path, "r", encoding="utf-8", newline="") as fh:
                     for i, line in enumerate(fh):
                         lines.append(line)
                         if i <= 1:
                             continue  # pre-header + header
-                        parts = line.strip().split(",")
-                        if len(parts) >= 6:
-                            try:
-                                existing[parts[0]] = (i, int(parts[5]))
-                            except (ValueError, IndexError):
-                                existing[parts[0]] = (i, -100)
+                        record = self._wardrive_record(line)
+                        if record is not None:
+                            kind, address, strength = record
+                            existing[(kind, address)] = (i, strength)
             except (OSError, UnicodeError) as exc:
                 return self._wardrive_save_failed(path, exc)
-        if mac in existing:
-            old_idx, old_rssi = existing[mac]
+        identity = ("BLE", mac.strip().upper())
+        if identity in existing:
+            old_idx, old_rssi = existing[identity]
             if rssi <= old_rssi:
                 return False  # existing is stronger or equal
             lines[old_idx] = new_row
@@ -1693,19 +1801,17 @@ class LootManager:
                         for i, line in enumerate(fh):
                             if i <= 1:
                                 continue  # skip pre-header + header
-                            parts = line.strip().split(",")
-                            if len(parts) >= 8:
+                            parts = self._wardrive_fields(line)
+                            if parts is not None:
                                 try:
                                     lat = float(parts[6])
                                     lon = float(parts[7])
-                                    if lat != 0.0 or lon != 0.0:
-                                        # Detect Type column (11th col = index 10)
-                                        ptype = "wifi"
-                                        if len(parts) >= 11 and parts[10].strip().upper() == "BLE":
-                                            ptype = "bt"
+                                    if (math.isfinite(lat) and math.isfinite(lon)
+                                            and -90 <= lat <= 90 and -180 <= lon <= 180
+                                            and (lat != 0.0 or lon != 0.0)):
                                         points.append({
                                             "lat": lat, "lon": lon,
-                                            "type": ptype,
+                                            "type": "bt" if parts[10] == "BLE" else "wifi",
                                             "label": parts[1],  # SSID/Name
                                             "bssid": parts[0],
                                             "auth": parts[2] if len(parts) > 2 else "",
@@ -1722,19 +1828,23 @@ class LootManager:
             if bt_file.is_file():
                 try:
                     with open(bt_file, "r", encoding="utf-8") as fh:
-                        reader = csv.DictReader(fh)
-                        for row in reader:
+                        for line in fh:
+                            row = self._bt_history_record(line)
+                            if row is None:
+                                continue
                             try:
-                                lat = float(row.get("lat", 0))
-                                lon = float(row.get("lon", 0))
-                                if lat != 0.0 or lon != 0.0:
+                                lat = float(row["lat"])
+                                lon = float(row["lon"])
+                                if (math.isfinite(lat) and math.isfinite(lon)
+                                        and -90 <= lat <= 90 and -180 <= lon <= 180
+                                        and (lat != 0.0 or lon != 0.0)):
                                     points.append({
                                         "lat": lat, "lon": lon,
                                         "type": "bt",
-                                        "label": row.get("name", row.get("mac", "?")),
-                                        "bssid": row.get("mac", ""),
+                                        "label": row["label"],
+                                        "bssid": row["mac"],
                                         "auth": "[BLE]",
-                                        "rssi": row.get("rssi", ""),
+                                        "rssi": row["rssi"],
                                         "channel": "",
                                     })
                             except (ValueError, TypeError):

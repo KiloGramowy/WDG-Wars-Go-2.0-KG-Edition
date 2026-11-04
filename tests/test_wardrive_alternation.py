@@ -14,7 +14,7 @@ for statement in base.TREE.body:
             isinstance(target, ast.Name) and target.id in ('_BLE_RE', '_AIRTAG_COUNT_RE')
             for target in statement.targets):
         exec(compile(ast.Module(body=[statement], type_ignores=[]), str(base.SOURCE), 'exec'), ENV)
-extra = {'_is_running', '_handle_serial_line', '_poll_serial'}
+extra = {'_is_running', '_handle_serial_line', '_poll_serial', '_record_scan_map_observation'}
 update = next(n for n in base.GAME.body if isinstance(n, ast.FunctionDef) and n.name == 'update')
 stop_key = next(n for n in ast.walk(update) if isinstance(n, ast.If)
                 and 'pyxel.KEY_S' in ast.unparse(n.test) and 'self._attack_mode' in ast.unparse(n.test))
@@ -57,6 +57,7 @@ class AlternationTests(unittest.TestCase):
         self.g._whitelist = SimpleNamespace(is_blocked=Mock(return_value=False))
         self.g.net_mgr = SimpleNamespace(parse_network_line=Mock(return_value=None))
         self.g.state.networks = []
+        self.g.ble_devices, self.g.wifi_networks = [], []
         self.g.gain_xp = Mock()
         self.g.loot = SimpleNamespace(active=True, wardrive_save_errors=0, log_serial=Mock(),
             save_wardriving_network=Mock(return_value=False),

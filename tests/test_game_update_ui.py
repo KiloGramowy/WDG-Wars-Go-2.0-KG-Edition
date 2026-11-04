@@ -47,6 +47,7 @@ class FakeUpdates:
             repository="KiloGramowy/WatchDogsGo-1",
             url="https://github.com/KiloGramowy/WatchDogsGo-1", verified=False))
         self.check = Mock()
+        self.cached_current = Mock(return_value=None)
         self.prepare = Mock(return_value="verified-plan")
         self.discard = Mock()
         self.install = Mock(return_value=SimpleNamespace(version="0.9.17"))
@@ -288,6 +289,70 @@ class GameUpdateUiTests(unittest.TestCase):
         self.press(g, PX.KEY_RETURN)
         g._game_updates.prepare.assert_not_called()
         g._game_updates.install.assert_not_called()
+
+    def test_verified_current_survives_window_close_and_reopen(self):
+        g = game()
+        g._game_update_events.put(("check", result("current")))
+        g._poll_game_update_events()
+        g._start_game_update()
+        self.press(g, PX.KEY_ESCAPE)
+        self.assertFalse(g._gameupd_screen)
+        g._start_game_update()
+        g._draw_gameupd_screen()
+        self.assertIn("UP TO DATE", [args[2] for args in self.texts()])
+        self.assertFalse(g._game_update_available)
+
+    def test_startup_restores_verified_status_and_still_allows_background_checks(self):
+        backend = FakeUpdates()
+        cached = result("current")
+        cached.message = "UP TO DATE (last verified)"
+        backend.cached_current.return_value = cached
+        with patch.dict(ENV, GameUpdates=lambda **kwargs: backend):
+            g = game()
+        self.assertEqual(g._game_update_status, "current")
+        self.assertEqual(g._game_update_message, cached.message)
+        self.assertFalse(g._game_check_started)
+        g._request_game_update_check()
+        self.assertEqual(len(RecordedThread.started), 1)
+        g._start_game_update()
+        g._draw_gameupd_screen()
+        self.assertIn("UP TO DATE (last verified); checking GitHub...",
+                      [args[2] for args in self.texts()])
+
+    def test_failed_recheck_labels_previous_success_then_new_release_replaces_it(self):
+        g = game()
+        g._game_update_events.put(("check", result("current")))
+        g._poll_game_update_events()
+        g._request_game_update_check()
+        failed = result("error")
+        failed.last_verified_current = True  # Worker revalidated this installation.
+        g._game_update_events.put(("check", failed))
+        g._poll_game_update_events()
+        self.assertEqual(g._game_update_status, "error")
+        self.assertEqual(g._game_update_message,
+                         "Could not check GitHub. Last verified: UP TO DATE.")
+        self.available(g)
+        self.assertFalse(g._game_update_verified_current)
+        self.assertNotIn("UP TO DATE", g._game_update_message)
+
+    def test_failed_check_cannot_reuse_current_for_changed_or_unverified_installation(self):
+        for version in ("0.9.16", "0.9.19.2"):
+            g = game()
+            g._game_update_events.put(("check", result("current")))
+            g._poll_game_update_events()
+            error = result("error")
+            error.installed_version = version
+            g._game_update_events.put(("check", error))
+            g._poll_game_update_events()
+            self.assertFalse(g._game_update_verified_current)
+            self.assertNotIn("UP TO DATE", g._game_update_message)
+        g = game()
+        g._game_update_events.put(("check", result("current")))
+        g._poll_game_update_events()
+        g._game_update_events.put(("check_error", "Could not check for updates."))
+        g._poll_game_update_events()
+        self.assertFalse(g._game_update_verified_current)
+        self.assertNotIn("UP TO DATE", g._game_update_message)
         self.assertIsNone(g._gameupd_restart_at)
 
     def test_unpublished_preview_cannot_prepare_install(self):
@@ -405,6 +470,52 @@ class GameUpdateUiTests(unittest.TestCase):
         self.assertEqual(colors['3. MESHCORE CONTACT LIST'], ENV['C_WARNING'])
         self.assertEqual(colors['Changed: show empty list.'], ENV['C_TEXT'])
         self.assertEqual(' '.join(g._gameupd_note_lines()).split(), notes.split())
+
+    def test_actual_candidate_markdown_titles_keep_native_strips_colors_and_bounds(self):
+        notes = (SOURCE.parent.parent / "docs" / "UPDATE_PREVIEW.txt").read_text(encoding="utf-8")
+        g = game()
+        item = release(notes=notes)
+        item.version = "0.9.19.2"
+        self.available(g, item)
+        g._game_installed_version = "0.9.19.1"
+        lines = g._gameupd_note_lines()
+        seen_titles = set()
+        for start in range(0, len(lines), 9):
+            PX.calls.clear()
+            g._gameupd_scroll = start
+            g._draw_gameupd_screen()
+            self.assert_above_output()
+            displayed = [(x, y, value, color) for x, y, value, color, *rest in self.texts()
+                         if 116 <= y <= 188]
+            for x, y, value, color in displayed:
+                if value.startswith("RELEASE ") or re.match(r"\d+\. ", value):
+                    seen_titles.add(value)
+                    self.assertEqual(color, ENV["C_WARNING"], value)
+                    self.assertIn(("rect", (108, y - 1, 424, 9, 1)), PX.calls)
+                else:
+                    self.assertEqual(color, ENV["C_TEXT"], value)
+                self.assertNotIn("##", value)
+                self.assertNotIn("**", value)
+                self.assertTrue(value.isascii())
+            # Original window size, font and nine-line viewport are unchanged.
+            self.assertIn(("rect", (100, 22, 440, 206, 0)), PX.calls)
+            self.assertLessEqual(len(displayed), 9)
+        self.assertEqual(seen_titles, {line for line in lines
+            if line.startswith("RELEASE ") or re.match(r"\d+\. ", line)})
+        self.assertEqual(item.notes, notes)
+        g._game_updates.prepare.assert_not_called()
+        g._game_updates.install.assert_not_called()
+
+    def test_actual_candidate_uses_same_projection_for_installed_offline_notes(self):
+        notes = (SOURCE.parent.parent / "docs" / "UPDATE_PREVIEW.txt").read_text(encoding="utf-8")
+        g = game()
+        g._game_installed_version = "0.9.19.2"
+        with patch.object(Path, "read_text", return_value=notes):
+            offline = g._gameupd_note_lines()
+        item = release(notes=notes)
+        item.version = "0.9.19.2"
+        self.available(g, item)
+        self.assertEqual(g._gameupd_note_lines(), offline)
 
     def test_notes_confirmation_notice_and_logs_fit_above_output(self):
         for state in ("notes", "confirm", "log", "notice"):
