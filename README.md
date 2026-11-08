@@ -7,6 +7,26 @@
 
 <p align="center"><em>🕶️ Pocket cyberdeck. Bigger toolbox. WatchDogsGo by LOCOSP, expanded by KiloGramowy.</em></p>
 
+<!-- latest-public-update:start -->
+## 🚀 Latest update — 0.9.19.2
+
+**👻 Fresh map. Same loot. Ghost dots evicted.**
+
+❌ **Before:** old WiFi/BLE dots could return, saved BLE identities could be missed, and a verified **UP TO DATE** result was forgotten after restarting.
+
+✅ **Now:**
+
+- 🗺️ **Clean session maps + MC/MT counters.** Start with a fresh WiFi/BLE map and count unique MeshCore/Meshtastic nodes heard this session. Saved XP, history and contacts stay.
+- 💾 **Reliable BLE history + pending-log controls.** Known devices retain their identities, and individual pending exports can be reviewed and deleted in the game.
+- 🔔 **An updater with a memory.** Verified **UP TO DATE** survives restarts, with clearer release notes and small-screen fixes.
+
+**[📦 Read the 0.9.19.2 release](https://github.com/KiloGramowy/WDG-Wars-Go-2.0-KG-Edition/releases/tag/v0.9.19.2)** · **[📝 All releases](https://github.com/KiloGramowy/WDG-Wars-Go-2.0-KG-Edition/releases)**
+
+🎮 **Update in game:** open **SYSTEM → Update Game**, then press **R** to check. See the [upgrade and restart instructions](docs/UPDATING.md) before installing.
+
+---
+<!-- latest-public-update:end -->
+
 ## 🎬 The full 2.0 feature tour
 
 https://github.com/user-attachments/assets/dc91c3e3-4e69-44af-8339-48a6277803b2
