@@ -4,7 +4,7 @@ Contributions to this uConsole fork should preserve the original LOCOSP game sty
 
 ## TL;DR
 
-- **Bug reports** → open an [issue](https://github.com/KiloGramowy/esp32-watch-dogs/issues),
+- **Bug reports** → open an [issue](https://github.com/KiloGramowy/WDG-Wars-Go-2.0-KG-Edition/issues),
   attach only reviewed, redacted excerpts from `~/.watchdogs/last_run.log` and `~/.watchdogs/launcher.log`.
 - **Feature ideas** → open an issue with the `enhancement` label first,
   let's talk before you write code.
@@ -154,5 +154,5 @@ the same license as the project (see [LICENSE](LICENSE)).
 
 ## Project contacts
 
-- **[This fork's GitHub Issues](https://github.com/KiloGramowy/esp32-watch-dogs/issues)** — bugs and feature discussions for KiloGramowy's changes.
+- **[This fork's GitHub Issues](https://github.com/KiloGramowy/WDG-Wars-Go-2.0-KG-Edition/issues)** — bugs and feature discussions for KiloGramowy's changes.
 - **[LOCOSP](https://github.com/LOCOSP)** — original WatchDogsGo author; original credits and license are retained.

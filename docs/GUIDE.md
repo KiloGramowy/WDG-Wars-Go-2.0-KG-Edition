@@ -19,11 +19,11 @@ Open-world hacking RPG for the ClockworkPi uConsole with real WiFi/BLE scanning,
 
 ### Quick Start
 
-This review repository is private and needs GitHub access. Use a separate checkout; preserve the current installation and its player/configuration data. The [README installation section](../README.md#-hardware-and-installation) is the maintained entry point.
+The public KG release is available without private GitHub access. Use a separate checkout and preserve existing player/configuration data; follow [the migration guide](UPGRADING_FROM_LOCOSP.md) before starting an existing player in another checkout. The [README installation section](../README.md#-hardware-and-installation) is the maintained entry point. For the 0.9.20 additions, use the [SOLO guide](WARDRIVING_SOLO_0.9.20.md) and [Piglet installation guide](PIGLET_COLLECTION_INSTALL.md).
 
 ```bash
-git clone --branch codex/wdg-go-wars-release --single-branch https://github.com/KiloGramowy/esp32-watch-dogs.git
-cd esp32-watch-dogs
+git clone --branch main --single-branch https://github.com/KiloGramowy/WDG-Wars-Go-2.0-KG-Edition.git WatchDogsGo-KiloGramowy
+cd WatchDogsGo-KiloGramowy
 bash setup.sh       # creates venv and installs dependencies in this separate checkout
 ./run.sh            # obtains sudo, auto-detects ESP32 and starts the game
 ```
@@ -489,7 +489,7 @@ loot/
 
 Open **SYSTEM → Update Game** for the installed numeric version, full scrollable notes and the small avatar. The startup screen retains LOCOSP’s credit and adds **Modified by KiloGramowy** underneath. Startup checks run in the background; a release notice appears once for that release, and opening it never installs code. A separate confirmation is required.
 
-This is still a private preview without a published release feed. Use the [update guide](UPDATING.md) for release-source checks, data preservation and code-only recovery. Do not use a blanket `git pull` on an installation maintained through a deployment manifest.
+The public stable feed supplies approved KG releases. Use the [update guide](UPDATING.md) for release-source checks, installation controls, data preservation and code-only recovery. Do not use a blanket `git pull` on an installation maintained through a deployment manifest.
 
 ---
 
