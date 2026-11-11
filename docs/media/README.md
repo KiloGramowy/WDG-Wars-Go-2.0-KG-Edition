@@ -95,3 +95,12 @@ The WDG Wars Go 2.0 README presents the newer LOCOSP features before KiloGramowy
 WDGWars Chat and Monster RF retain their native initial CONNECTING labels while disconnected. Proximity is shown OFF. Emergency Radio and Mute Sounds are selected menu rows, not new live receiver or audio tests. The Update Game image shows installed offline notes and a source identity validated against fresh GitHub metadata; its Press R prompt correctly indicates that no update check was run for that capture.
 
 Crops preserve the original pixels and layout. The compact chat detail and Monster panel trim unused blank space; they do not combine or rearrange UI regions. GPS/footer regions are excluded and no credentials appear in these views. Full raw captures, capture tooling and preservation records remain private; per-image source hashes and crop bounds are recorded in the supplementary manifest.
+
+## 0.9.20 native UI previews
+
+`wardriving-menu.png`, `wardriving-solo-profile.png` and `piglet-collection.png`
+come from the release candidate's real Pyxel drawing methods, executed on Linux
+in an isolated offscreen display. No game initializer, serial/radio/network/GPS,
+player history or pairing credentials were started or loaded. All radios are
+offline and Collection is stopped. These images illustrate the current controls;
+they are not evidence of physical reception. Existing accepted media remain.

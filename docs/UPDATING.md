@@ -16,9 +16,29 @@ The updater lives in **SYSTEM → Update Game**. Its menu row retains the origin
 
 Failed or offline checks are explicit. They are never presented as evidence that the installed game is current. Scanning and reception continue while a player reads notes; installation stops the game's operations and saves final records before replacing files.
 
-A successfully verified current installation displays **UP TO DATE**. In 0.9.19.2, that result survives reopening the window and restarting, and is bound to the installed version and code. A retained earlier result is labelled as last verified during a new check or network error; a newer release replaces it. **R**, the startup check and once-per-release notices are retained. The 0.9.19.1 updater and later versions automatically restart the game after a completed installation, using the same Python interpreter, launch arguments and environment. Preparation, cancellation and failures do not restart it. An unsuccessful restart keeps the installed code and saved data and offers retry or a manual relaunch.
+A successfully verified current installation displays **UP TO DATE**. Since 0.9.19.2, that result survives reopening the window and restarting, and is bound to the installed version and code. A retained earlier result is labelled as last verified during a new check or network error; a newer release replaces it. **R**, the startup check and once-per-release notices are retained. The 0.9.19.1 updater and later versions automatically restart the game after a completed installation, using the same Python interpreter, launch arguments and environment. Preparation, cancellation and failures do not restart it. An unsuccessful restart keeps the installed code and saved data and offers retry or a manual relaunch.
 
 **First upgrade from 0.9.17, 0.9.18 or 0.9.19:** that already running older updater still requires one manual relaunch. After installation, press Enter or Esc to close the game, then start it again. Automatic restart applies to subsequent updates after the 0.9.19.1 updater is running.
+
+## 📡 0.9.20 — SOLO, Piglet and maintenance
+
+The full English changelog is [RELEASE_0.9.20.md](RELEASE_0.9.20.md). The game uses
+the same facts and existing note renderer. **WARDRIVING SOLO** is a separate tab
+and requires the compatible [JanOS extension](../firmware/wardriving-solo/README.md).
+**Piglet Collection** requires the separate [supported Piglet image and pairing
+procedure](PIGLET_COLLECTION_INSTALL.md). **Updating the game flashes neither ESP32.**
+
+Collection receives/imports files locally; imported exports use the existing
+manual upload workflow. A Collection ACK is not an external-service receipt.
+Existing reward rules and player data are preserved. Uploaded-log Auto-clean is
+opt-in (**Keep all** by default); a saved existing policy is retained.
+
+0.9.20 also contains the root-staging archive preparation repair described under
+Preservation and recovery, truthful XP-save retries and stop-aware Sync workers.
+Final-save or worker-stop failures prevent installation rather than replacing
+code over unsaved data or live workers. A running older updater must first obtain
+the corrected code; reading the new notes does not replace its running process.
+ZIP installations without Git metadata still need a proper clone migration.
 
 ## 🧭 0.9.19.2 — clean map, same loot
 
@@ -26,7 +46,7 @@ A successfully verified current installation displays **UP TO DATE**. In 0.9.19.
 
 Mesh retains the existing **5-to-10-minute OFF rule, farther first**. Its OFF snapshot includes waiting observations, and queue draining is limited per frame; constructing and ranking the snapshot still scales with the queued observations and contacts. Repeated STOP does not extend deadlines, and the other active protocol keeps its markers. **MC:** and **MT:** both remain visible and count unique successfully registered nodes in this session, including unlocated nodes. Protocol switches and OFF retain those counts; restarting resets them.
 
-The canonical English description is [UPDATE_PREVIEW.txt](UPDATE_PREVIEW.txt), shared by the GitHub Release and Discord announcement. Update Game derives its bitmap-font presentation automatically from that source after version filtering: Markdown markers and unsupported emoji are removed only for display, with native numbered yellow headings, the original font and colours, the existing window geometry and **nine visible rows**.
+The canonical English description is [RELEASE_0.9.20.md](RELEASE_0.9.20.md), also supplied as [UPDATE_PREVIEW.txt](UPDATE_PREVIEW.txt) and shared by the GitHub Release and Discord announcement. Update Game derives its bitmap-font presentation automatically from that source after version filtering: Markdown markers and unsupported emoji are removed only for display, with native numbered yellow headings, the original font and colours, the existing window geometry and **nine visible rows**.
 
 **BLE history — Before:** some saved BLE addresses were missed after restart; commas or unmatched quotation marks could confuse device types, consume following entries or shift names and positions in the history view. Some CSV readers were also left open. **Now:** supported current and older entries retain their correct Wi-Fi/BLE identity, names, signal strength and coordinates, and following entries are read separately. Readers close their files. Loading history does not rewrite old logs.
 
@@ -46,17 +66,17 @@ Release metadata uses schema 2 and includes the immutable repository ID, reposit
 
 ## Cumulative installation and versioned notes
 
-One confirmation installs the latest complete approved code, including missing changes from skipped releases. A 0.9.17, 0.9.18 or 0.9.19 installation can update directly to **0.9.19.2**, subject to the first-upgrade manual relaunch described above. Current player data and settings stay outside the code replacement set.
+One confirmation installs the latest complete approved code, including missing changes from skipped releases. An installation on this approved fork ancestry can update directly to **0.9.20**, subject to the first-upgrade manual relaunch described above. Current player data and settings stay outside the code replacement set.
 
-Published notes use `RELEASE 0.9.19.2 - CLEAN MAP. SAME LOOT.` style headings within the existing notes string. Four-part numeric versions are supported by the existing updater. Readers from 0.9.19 onward select sections newer than the installed version; an already current installation can still read its latest section. The shared introduction is retained, and unrecognized formats are displayed in full.
+Published notes use `RELEASE 0.9.20 - GO SOLO. SEND THE PIG. KEEP THE LOOT.` style headings within the existing notes string. Four-part numeric versions are supported by the existing updater. Readers from 0.9.19 onward select sections newer than the installed version; an already current installation can still read its latest section. The shared introduction is retained, and unrecognized formats are displayed in full.
 
-The existing 0.9.17 and 0.9.18 readers cannot select sections before their first upgrade. Both show the cumulative description with 0.9.19.2 first, followed by historical 0.9.19.1, 0.9.19 and 0.9.18 sections. The 0.9.19 and later readers select the sections missing from the installed version. The feed's font-compatible presentation is derived from the canonical English description; GitHub and Discord retain its emoji and Markdown. The feed schema, approval source and installation confirmation are unchanged.
+The existing 0.9.17 and 0.9.18 readers cannot select sections before their first upgrade. They display the supplied notes in full. Readers from 0.9.19 onward select the supplied versioned sections newer than the installation; a current installation can still read its latest section. GitHub and Discord retain the canonical emoji and Markdown, while the game derives a font-compatible presentation. The feed schema, approval source and installation confirmation are unchanged. One confirmation installs the complete approved code regardless of how many releases were skipped.
 
 ZIP source archives do not contain Git history and cannot use the current in-game installer. Use a genuine clone and preserve the existing data/configuration as described in [the migration guide](UPGRADING_FROM_LOCOSP.md); do not create artificial Git metadata or bypass the updater's source checks.
 
 ## Edition name and repository rename
 
-**WDG Wars Go 2.0 — KG Edition** is the presentation name; the software version is **0.9.19.2**. The repository was renamed without changing its immutable ID `1442123109`, public LOCOSP parent or approved runtime source. Existing 0.9.17 builds retain their bootstrap name `KiloGramowy/WatchDogsGo-KG-Edition` and resolve the new canonical name through that ID. The feed label can follow the rename without creating a new release or another notice. No reinstall or player-data migration is required for this rename.
+**WDG Wars Go 2.0 — KG Edition** is the presentation name; the software version is **0.9.20**. The repository was renamed without changing its immutable ID `1442123109`, public LOCOSP parent or approved runtime source. Existing 0.9.17 builds retain their bootstrap name `KiloGramowy/WatchDogsGo-KG-Edition` and resolve the new canonical name through that ID. The feed label can follow the rename without creating a new release or another notice. No reinstall or player-data migration is required for this rename.
 
 ## Release source
 
@@ -84,8 +104,29 @@ Standalone installations need a controlled source migration that preserves curre
 
 ## Preservation and recovery
 
+### 0.9.20: private staging with a root launcher
+
+**Before:** when the game used root's home but the checkout belonged to another
+account, Git ran as the checkout owner and could not write its archive inside
+root's private update-staging directory. An update could be detected successfully
+but fail at preparation with a misleading network/GitHub message.
+
+**Now in 0.9.20:** the game opens a private archive file and receives Git's
+archive through its stdout. Git keeps running as the checkout owner and does not
+need access to the game's private home. Existing staging permissions, player data,
+source verification, confirmation and rollback rules stay unchanged. Preparation
+errors distinguish downloading, local Git reads and archive creation, with separate
+messages for archive write permissions and insufficient disk space.
+
+Do not make `/root` or its private staging directory public to work around this
+failure. `sudo -v` refreshes sudo authentication; it does not resolve a Git process
+running as a different account. This correction takes effect only after the fixed
+updater has been installed and the game restarted; a running older updater cannot
+repair itself by merely reading new release notes. This correction is included in 0.9.20; it does not retroactively change the
+already-running updater in an older release.
+
 Preparation verifies the pinned source, permitted runtime paths and current file hashes. Local edits, unexpected file collisions, symlinks and dependency changes fail safely rather than being overwritten or invoking an unattended installer. Player data and credentials are outside the update file set.
 
-Installation requires stopped game-owned workers and saved player state. It keeps a verified code-only backup and recovery receipt; settings, loot, XP, achievements, RF/channel preferences, keys, contacts and pending logs are not restored from an older player snapshot during rollback. Relaunch the game after installation.
+Installation requires stopped game-owned workers and saved player state. It keeps a verified code-only backup and recovery receipt; settings, loot, XP, achievements, RF/channel preferences, keys, contacts and pending logs are not restored from an older player snapshot during rollback. Updaters 0.9.19.1 and later restart after successful installation; the first upgrade from an older running updater still needs the one manual relaunch described above.
 
 Keep deployment backup paths and recovery receipts private. Update checks do not establish new RF reception, approved AUTO behavior or chat delivery.

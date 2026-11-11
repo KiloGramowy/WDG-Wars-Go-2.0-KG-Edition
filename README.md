@@ -8,21 +8,26 @@
 <p align="center"><em>🕶️ Pocket cyberdeck. Bigger toolbox. WatchDogsGo by LOCOSP, expanded by KiloGramowy.</em></p>
 
 <!-- latest-public-update:start -->
-## 🚀 Latest update — 0.9.19.2
+## 🚀 Latest update — 0.9.20
 
-**👻 Fresh map. Same loot. Ghost dots evicted.**
+**📡 Go SOLO. 🐷 Send the Pig. Keep the Loot.**
 
-❌ **Before:** old WiFi/BLE dots could return, saved BLE identities could be missed, and a verified **UP TO DATE** result was forgotten after restarting.
+❌ **Before:** repeating SNIFF scans were WDG's wardrive route, Piglet CSV needed a separate import workflow, and unchanged backgrounds and CSV repeats did unnecessary work.
 
 ✅ **Now:**
 
-- 🗺️ **Clean session maps + MC/MT counters.** Start with a fresh WiFi/BLE map and count unique MeshCore/Meshtastic nodes heard this session. Saved XP, history and contacts stay.
-- 💾 **Reliable BLE history + pending-log controls.** Known devices retain their identities, and individual pending exports can be reviewed and deleted in the game.
-- 🔔 **An updater with a memory.** Verified **UP TO DATE** survives restarts, with clearer release notes and small-screen fixes.
+- 📡 **WARDRIVING SOLO:** FULL SPECTRUM, KG SETTINGS, BLE alone or alternating Wi-Fi/BLE, confirmed START/STOP, **720-minute GPS cache**, Startup GPS Backfill and a live GPS trail. Compatible JanOS extension required.
+- 🐷 **Piglet KG Collection:** paired local delivery from `/logs` and `/uploaded`, whole-CSV background import, truthful progress, durable ACK and protected retries. **UConsole Piglet sends only to its paired uConsole; Normal Piglet retains its existing behavior.** One physical Piglet is validated; multiple devices remain unsupported.
+- 🗺️ **Less repeated work:** cached tile backgrounds and an exact CSV index, with clearer Sync preparation and **10,000-record / 6 MiB** upload batches.
+- 💾 **Safer maintenance:** XP-save retries, stop-aware Sync callbacks, flash preflight/port ownership, clearer OTA errors, opt-in uploaded-log Auto-clean and roomier HUD counters. Existing **15 / 10 / 1** Wi-Fi/BLE XP rules stay.
 
-**[📦 Read the 0.9.19.2 release](https://github.com/KiloGramowy/WDG-Wars-Go-2.0-KG-Edition/releases/tag/v0.9.19.2)** · **[📝 All releases](https://github.com/KiloGramowy/WDG-Wars-Go-2.0-KG-Edition/releases)**
+*Your CPU has enough paperwork. Let Piglet carry the CSV.* 😏
 
-🎮 **Update in game:** open **SYSTEM → Update Game**, then press **R** to check. See the [upgrade and restart instructions](docs/UPDATING.md) before installing.
+**[📦 Release 0.9.20](https://github.com/KiloGramowy/WDG-Wars-Go-2.0-KG-Edition/releases/tag/v0.9.20)** · **[📝 All releases](https://github.com/KiloGramowy/WDG-Wars-Go-2.0-KG-Edition/releases)** · **[📚 Full changelog](docs/UPDATE_PREVIEW.txt)**
+
+**[🐷 Download Piglet BIN](firmware/piglet-collection/piglet-kg-uconsole-xiao-c5-app.bin?raw=1)** · **[🔌 Piglet installation, pairing and rollback](docs/PIGLET_COLLECTION_INSTALL.md)** · **[📡 SOLO firmware guide](firmware/wardriving-solo/README.md)**
+
+🎮 **Update in game:** **TAB → SYSTEM → Update Game → R → Enter**, then **Y** to install or **N / Esc** to cancel. Updaters **0.9.19.1+ restart automatically**; running **0.9.17 / 0.9.18 / 0.9.19** needs one manual relaunch after its first upgrade. See the [update and recovery guide](docs/UPDATING.md). **Updating the game does not flash either ESP32.**
 
 ---
 <!-- latest-public-update:end -->
@@ -46,11 +51,52 @@ The edit combines recorded uConsole footage with a current native UI tour. Exter
 | | Explore the additions below |
 | --- | --- |
 | 🧰 **From LOCOSP** | WDGWars Chat and Reticulum/LoRa, Monster RF SubGHz, Emergency Radio, Proximity Radar, CRISIS, sound controls, visual polish and the original in-game updater. |
-| 🛠️ **From KiloGramowy** | Meshtastic integration beside MeshCore, local AUTO GPS, persistent mesh discoveries, alternating WiFi/BLE wardriving, upload/startup fixes, clean shutdown and the expanded release updater. |
+| 🛠️ **From KiloGramowy** | Meshtastic integration beside MeshCore, local AUTO GPS, persistent mesh discoveries, WARDRIVING SOLO, Piglet KG Collection, scan/upload fixes, clean shutdown and the expanded release updater. |
 
-**2.0 is the edition name; the software version is 0.9.19.2.** Original authorship and the upstream fork relationship are retained. See the [0.9.19.2 release notes](docs/UPDATE_PREVIEW.txt) for clean session maps, reliable BLE history, upload-log controls and the latest small-screen fixes.
+**2.0 is the edition name; the software version is 0.9.20.** Original authorship and the upstream fork relationship are retained. See the [full 0.9.20 release notes](docs/RELEASE_0.9.20.md) for WARDRIVING SOLO, Piglet KG Collection, performance and maintenance changes.
 
 💾 **Coming from LOCOSP's version?** 0.9.18 preserves saved XP, level, badges and contacts when upgrading the older loot database. A separate clone needs your existing data folder: [keep your progress when upgrading](docs/UPGRADING_FROM_LOCOSP.md).
+
+## 📡 New in 0.9.20 — WARDRIVING SOLO
+
+**SNIFF stays. SOLO gets its own WARDRIVING tab.** Choose **FULL SPECTRUM**, **KG SETTINGS**, **BLE SOLO** or alternating Wi-Fi/BLE. KG SETTINGS uses channels **1/6/11 at 110 ms**, **36/40/44/48 at 100 ms**, at least **1500 ms** between Wi-Fi cycles, and **1000 ms passive BLE after every fifth cycle** when enabled. FULL SPECTRUM uses the driver-accepted JanOS channel tiers; BLE alone keeps its existing active settings.
+
+![Native 0.9.20 WARDRIVING menu, isolated preview with all radios offline](docs/media/wardriving-menu.png)
+
+![Native SOLO FULL SPECTRUM / KG SETTINGS selector, isolated preview](docs/media/wardriving-solo-profile.png)
+
+*Current native drawing methods with isolated display state. No live scans, GPS, user observations or credentials were loaded; these previews illustrate the controls rather than prove reception.*
+
+**Startup GPS Backfill**, a **720-minute accepted-position cache** and a measured GPS trail cover the location workflow without inventing fixes. The trail works over downloaded tiles or the grid. Confirmed START/STOP and radio handover keep one owner on the embedded C5. Existing **15 XP new Wi-Fi / 10 XP new BLE / 1 XP repeat** rules, CSV/history and upload paths remain.
+
+**Requires compatible JanOS SOLO firmware.** The game update does not flash the embedded XIAO; a software bridge or familiar firmware banner alone does not prove support. [Firmware/source and build instructions](firmware/wardriving-solo/README.md) · [Full SOLO timing and GPS guide](docs/WARDRIVING_SOLO_0.9.20.md).
+
+## 🐷 New in 0.9.20 — Piglet KG Collection
+
+**Pocket the pig. Park the cyberdeck.** Open **WARDRIVING → Piglet Collection** for paired local CSV delivery from **`/logs` and `/uploaded`**, including the available historical archive. Whole files are imported in the background without per-observation map markers, terminal replay or animations. Source GPS/time stay attached; completed-file accounting and durable ACK protect retries and XP. Imported exports wait in the existing **manual upload** workflow.
+
+![Native Piglet Collection screen, isolated receiver-stopped preview with no user data](docs/media/piglet-collection.png)
+
+*Current native Collection UI with empty synthetic display state and receiver stopped. No pairing credentials or user data were created or masked for this image.*
+
+**Normal Piglet retains its existing behavior. UConsole Piglet sends CSV only to its paired uConsole.** At boot it looks for the collector for **at most about 10 seconds**, transfers when available, then follows the original **60-second WebUI / Stay: five minutes** stage and its scanning rules. Unacknowledged CSV remain protected. After ACK, existing Piglet retention applies.
+
+Copy your own console's **SSID, hotspot password, collector IPv4, port and Collection pairing token** into the five matching WebUI fields. **Start the receiver before rebooting Piglet.** The guide explains **P**, progress, status labels, cancellation and recovery. Concurrent router STA + local AP support is required; both use the same channel.
+
+**[💾 Download Piglet BIN](firmware/piglet-collection/piglet-kg-uconsole-xiao-c5-app.bin?raw=1)** · **[🔐 Checksums](firmware/piglet-collection/SHA256SUMS)** · **[🔌 Complete installation, pairing and rollback guide](docs/PIGLET_COLLECTION_INSTALL.md)**
+
+The application-only image supports the documented **XIAO ESP32-C5, 8 MiB flash / 8 MiB PSRAM, existing `default_8MB`, app0 at `0x10000`** profile. It is not a blank-board installer. **One physical Piglet is validated; multiple devices remain unsupported pending identifier correction.** Updating the game does not flash Piglet or JanOS.
+
+## 🧰 0.9.20 maintenance — less paperwork, same loot
+
+- 🗺️ **Map/CSV reuse:** cached tile backgrounds rebuild after pan, zoom or tile changes; an exact session index avoids reparsing unchanged CSV repeats. Dynamic markers and existing accepted-write behavior stay.
+- 🧭 **Sync and uploads:** background preparation, **10,000-record / 6 MiB signed-body** batches, smaller retries and saved real acknowledgements. Unconfirmed rows remain pending; memory still grows with file size.
+- 💾 **Saves/shutdown:** failed XP saves remain pending, final-save failure blocks updates, and stop-aware Sync callbacks cannot write into an uninitialized or closing terminal.
+- 🔧 **Flash/OTA:** esptool **≥ 5.0.0** preflight, exclusive port ownership, verified fresh bundles and bounded process handling; clearer root-staging/archive errors. Existing board profiles and offsets stay.
+- 🧹 **Opt-in Auto-clean:** **PLUGINS → Pending Upload Logs → A**, then **Keep all / 1 / 5 / 15 / 31 days / Custom**. Only unchanged, closed exports with complete saved upload confirmation qualify. **Default: Keep all.** XP/history/contacts remain.
+- ↔️ **UI polish:** measured-font startup credits and footer spacing preserve existing styling while larger counters get room.
+
+Full facts, test scopes, timings, update controls and remaining limitations are in the [canonical 0.9.20 changelog](docs/RELEASE_0.9.20.md).
 
 ## 🧰 Newer LOCOSP features — already on board
 
@@ -127,6 +173,8 @@ LOCOSP's newer UI adds drifting map particles, expanding sonar rings, a hologram
 Hardware improvements include better separation of the XIAO pentest board from a Monster RF board, plus a refined **SYSTEM → Flash ESP32** flow for XIAO ESP32-C5: USB power cycling, connecting during the ROM-loader window and flashing without the stub loader. The firmware tools still require a compatible board and firmware package.
 
 ![SYSTEM hardware controls and Flash ESP32 entry](docs/media/hardware-menu.png)
+
+**0.9.20 adds preflight and lifecycle hardening** to that existing flasher: esptool >= 5.0.0, exclusive port ownership, fresh bundle verification and separate write/USB/firmware-start states. The [release notes](docs/RELEASE_0.9.20.md) retain the exact profiles, offsets, timeouts and validation limits.
 
 ### 🔔 Update Game — LOCOSP's entry, our expanded release flow
 
@@ -253,9 +301,11 @@ Open **ADDONS → Meshtastic Profile** or **ADDONS → MeshCore Region**. Each p
 
 ### 🔁 5. WiFi + BLE: automatic scan intervals
 
-In **SNIFF**, turn **WiFi Wardrive ON** and **BT Wardrive ON**. One selected mode runs alone; both selected modes take turns.
+The existing **SNIFF → WiFi Sniff / BT Sniff** controls retain their repeating scan schedule. One selected mode runs alone; both selected modes take turns. **WARDRIVING SOLO is separate**, with the profiles and timing described above.
 
-![Actual SNIFF menu with WiFi Wardrive and BT Wardrive both ON](docs/media/wifi-ble-menu.png)
+![Earlier SNIFF menu with both repeating Wi-Fi/BLE modes ON; 0.9.20 calls these WiFi Sniff / BT Sniff](docs/media/wifi-ble-menu.png)
+
+*Historical menu capture retained; 0.9.20 renames these SNIFF entries and adds the separate WARDRIVING tab.*
 
 #### 📶 WiFi → 💾 save → ⏸️ pause / confirmed STOP → 🔵 BLE → 💾 save → 🔁 repeat
 
@@ -290,9 +340,13 @@ Collecting pending uploads should not be an extra side quest. 🧾
 - 🔢 **Pending counts sessions, not nodes.** New observations in an open session can create another pending payload.
 - ⭐ **Local XP and server credit stay separate.** Known nodes and cooldown handling do not become new imports or first-finder ownership.
 
+**0.9.20 upload preparation:** Sync builds its local-session snapshot in the background. Large manual uploads target **10,000 records / 6 MiB signed bodies** with bounded retry and complete acknowledgement coverage. Memory still grows with file size; unconfirmed rows remain pending.
+
 **🗑️ Pending logs, without the souvenir collection.** Open **PLUGINS → Pending Upload Logs** to inspect each session's Wi-Fi/BLE, ADS-B, MeshCore and Meshtastic export, including files waiting for GPS. This local browser does not need an API key or the network-sync level unlock. Select a log, press **D**, then **Y** to delete that file or **N / Esc** to cancel. **R** refreshes the list; arrow keys and **Page Up / Page Down / Home / End** navigate it.
 
 After an upload attempt, closed-session logs with no usable GPS records are removed automatically, without a confirmation popup. Files containing positioned records are retained, including mixed files with both positioned and unpositioned entries. Active sessions, uploads in flight and confirmed positioned exports are protected. Deleting an export keeps saved XP, levels, achievements, contacts and known Wi-Fi/BLE identities; the next reception of a known device still earns the normal repeat award. Deletion does not count as an upload or grant server credit.
+
+**0.9.20 Auto-clean:** press **A** in Pending Upload Logs for **Keep all / 1 / 5 / 15 / 31 days / Custom**. Default **Keep all** is opt-in; existing choices persist. Only unchanged, closed exports with complete saved upload confirmation qualify. See the [full retention rules](docs/RELEASE_0.9.20.md).
 
 *The image is the original dated upload confirmation, not a new upload performed for this README.*
 
@@ -324,7 +378,7 @@ Opening the notes never installs an update. Installation needs a separate confir
 
 🔗 **Know your update source:** the window shows the verified repository; press **O** to open it on GitHub. The updater follows its permanent repository ID across repository renames. Installed release notes remain available offline. See [Updating](docs/UPDATING.md) for the release and recovery contract.
 
-With **0.9.19.2**, a verified **UP TO DATE** result survives reopening the window and restarting, tied to the installed version and code. **R** still performs a fresh check. Failed checks remain errors, with any earlier success labelled **last verified**. Updates from **0.9.19.1 or later** restart automatically after successful installation; the first upgrade made by **0.9.17, 0.9.18 or 0.9.19** still needs one manual relaunch after **Enter or Esc** closes the game.
+Since **0.9.19.2**, a verified **UP TO DATE** result survives reopening the window and restarting, tied to the installed version and code. **R** still performs a fresh check. Failed checks remain errors, with any earlier success labelled **last verified**. Updates from **0.9.19.1 or later** restart automatically after successful installation; the first upgrade made by **0.9.17, 0.9.18 or 0.9.19** still needs one manual relaunch after **Enter or Esc** closes the game.
 
 **Small-screen housekeeping:** Wi-Fi/BLE maps start fresh on launch while saved progress stays. Both **MC:** and **MT:** count unique nodes heard this session, so switching mesh protocols keeps both tallies visible. The terminal's line count and scroll indicator now have separate space when using **Fn+U / Page Up**. Even a cyberdeck needs elbow room.
 
@@ -452,7 +506,9 @@ Optional driver sources/private replay fixtures can cause skips. Software checks
 - 🧪 [Validation and hardware evidence](docs/VALIDATION.md)
 - 🛠️ [Inherited WDG guide](docs/GUIDE.md)
 - 🎞️ [Demo provenance, privacy edits and music credit](docs/media/README.md)
-- 📦 [0.9.19.2 release notes](docs/UPDATE_PREVIEW.txt)
+- 📦 [0.9.20 full release notes](docs/RELEASE_0.9.20.md)
+- 📡 [WARDRIVING SOLO timing and GPS guide](docs/WARDRIVING_SOLO_0.9.20.md)
+- 🐷 [Piglet Collection installation, pairing and rollback](docs/PIGLET_COLLECTION_INSTALL.md)
 - 🙏 [Third-party notices](THIRD_PARTY_NOTICES.md)
 
 ### 🎵 Soundtrack in both films

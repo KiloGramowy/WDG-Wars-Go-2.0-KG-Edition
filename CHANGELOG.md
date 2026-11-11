@@ -1,3 +1,16 @@
+# 0.9.20 — Go SOLO. Send the pig. Keep the loot. 📡🐷
+
+❌ **Before:** wardriving relied on SNIFF, with no paired Piglet CSV workflow.
+✅ **Now:** WARDRIVING SOLO profiles and Piglet KG Collection lead this release,
+with map/CSV reuse, background Sync preparation, safer large uploads, durable saves,
+flash preparation, uploaded-log Auto-clean, startup/shutdown and UI corrections.
+Existing reward rules remain unchanged. Game updates do not flash ESP32 firmware.
+
+Read the [canonical full release notes](docs/RELEASE_0.9.20.md),
+[SOLO firmware guide](firmware/wardriving-solo/README.md) and
+[Piglet installation guide](docs/PIGLET_COLLECTION_INSTALL.md) for exact timings,
+controls, hardware compatibility and validation limits.
+
 # 0.9.19.1 — gradual ADS-B and mesh map expiry after stopping reception
 
 - While ADS-B reception is active, keep each aircraft visible until no message for its identity has arrived for 60 seconds. Callsign and speed messages keep its last known coordinates visible; the map does not extrapolate a new position.

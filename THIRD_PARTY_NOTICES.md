@@ -71,3 +71,12 @@ Keep the standalone audio, download archive and unused candidate tracks out of t
 ## Dependencies
 
 Installed third-party Python/system packages retain their own licenses and notices. Listing or installing a dependency does not place it under this project's MIT license. Keep applicable notices when building a bundled distribution rather than a source-only checkout.
+
+## Firmware included with 0.9.20
+
+The compatible JanOS SOLO and Piglet Collection applications preserve their
+upstream MIT licenses, source provenance and pinned build instructions. Their
+third-party SDK/runtime components retain separate licenses. See
+[`firmware/THIRD_PARTY_NOTICES.md`](firmware/THIRD_PARTY_NOTICES.md) and the copied
+original notices under `firmware/licenses/`; neither the firmware libraries nor
+the compiler runtime are relicensed by this repository's MIT notice.

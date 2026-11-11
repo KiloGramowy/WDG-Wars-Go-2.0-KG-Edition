@@ -146,6 +146,10 @@ class PendingLogCleanupTests(unittest.TestCase):
         self.plugin._api_key = ""
         with patch("plugins.wardrive_upload._open") as network:
             self.plugin._start_upload()
+            try:
+                self.assertTrue(self.plugin._sync_idle.wait(5), "Upload preparation did not finish")
+            finally:
+                self.assertTrue(self.plugin.on_unload(), "Upload preparation did not stop")
         network.assert_not_called()
         self.assertFalse(any((self.session / name).exists() for name in self.plugin._upload_log_specs()))
         self.assertEqual(self.loot.load_xp(), 12345)

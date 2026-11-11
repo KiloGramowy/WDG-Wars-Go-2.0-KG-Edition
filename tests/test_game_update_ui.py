@@ -79,6 +79,8 @@ ENV = dict(__name__="watchdogs.update_ui_test", __package__="watchdogs", __file_
            restart_game=Mock(side_effect=AssertionError("Unexpected real restart request")),
            threading=SimpleNamespace(Thread=RecordedThread), GameUpdates=lambda **kwargs: FakeUpdates())
 for statement in TREE.body:
+    if isinstance(statement, ast.FunctionDef) and statement.name == "_menu_tab_layout":
+        exec(compile(ast.Module(body=[statement], type_ignores=[]), str(SOURCE), "exec"), ENV)
     if isinstance(statement, ast.Assign):
         try:
             exec(compile(ast.Module(body=[statement], type_ignores=[]), str(SOURCE), "exec"), ENV)
@@ -738,16 +740,27 @@ class GameUpdateUiTests(unittest.TestCase):
         self.assertEqual(g._game_updates.acknowledge.call_count, 1)
 
     def test_boot_keeps_locosp_and_adds_modified_credit_below(self):
-        g = game()
-        g._boot_frame = 50
-        g._boot_checks = [("  Ready", ENV["C_SUCCESS"])]
-        g._draw_logo_word = Mock()
-        g._draw_boot_screen()
-        credits = {args[2]: args for args in self.texts()}
-        self.assertIn("by LOCOSP", credits)
-        self.assertIn("Modified by KiloGramowy", credits)
-        self.assertGreater(credits["Modified by KiloGramowy"][1], credits["by LOCOSP"][1])
-        self.assertFalse(any("KG Edition" in value for value in credits))
+        labels = ("by LOCOSP", "Modified by KiloGramowy")
+        # Measured from the real Spleen 5x8 Font.text_width API. The second
+        # path covers its absence and Pyxel's built-in four-pixel advance.
+        font = SimpleNamespace(text_width=Mock(side_effect=dict(zip(labels, (45, 115))).__getitem__))
+        for loaded_font, expected_x in ((font, (297, 262)), (None, (302, 274))):
+            with self.subTest(custom_font=loaded_font is not None):
+                PX.calls.clear()
+                g = game()
+                g._font = loaded_font
+                g._boot_frame = 50
+                g._boot_checks = [("  Ready", ENV["C_SUCCESS"])]
+                g._draw_logo_word = Mock()
+                g._draw_boot_screen()
+                credits = {args[2]: args for args in self.texts()}
+                for label, x in zip(labels, expected_x):
+                    self.assertIn(label, credits)
+                    self.assertEqual(credits[label][0], x)
+                self.assertGreater(credits[labels[1]][1], credits[labels[0]][1])
+                self.assertFalse(any("KG Edition" in value for value in credits))
+        self.assertEqual(font.text_width.call_args_list,
+                         [unittest.mock.call(labels[0]), unittest.mock.call(labels[1])])
 
     def test_preparation_is_not_install_and_separate_cancel_leaves_game_running(self):
         g = game()
@@ -916,7 +929,7 @@ class GameUpdateUiTests(unittest.TestCase):
         g.proj = SimpleNamespace(smooth_move=Mock(), update=Mock())
         g.particles, g.msgs = [], []
         g._loot_points_ts = time.time()
-        for name in ('_poll_serial', '_poll_gps', '_assign_missing_mesh_gps',
+        for name in ('_poll_serial', '_poll_gps', '_poll_solo', '_poll_piglet_collection', '_yield_piglet_threads', '_assign_missing_mesh_gps',
                      '_poll_lora', '_sync_mesh_map_visibility', '_poll_reticulum', '_poll_sdr', '_poll_subghz',
                      '_poll_watch', '_poll_wpasec_result', '_poll_proximity',
                      '_dispatch_pending_esp_command', '_update_hack',
@@ -943,6 +956,28 @@ class GameUpdateUiTests(unittest.TestCase):
         self.assertFalse(g._shutting_down)
         g._cleanup.assert_not_called()
         self.assertIn("Local code changed", g._gameupd_log[-1])
+
+    def test_archive_errors_are_visible_in_game_without_installing_or_restarting(self):
+        messages = (
+            "Cannot create update archive. Check free space and update-folder access.",
+            "Cannot write update archive. Check update-folder access for the game user.",
+            "Not enough free space for the update archive. Free disk space and retry.",
+        )
+        for message in messages:
+            with self.subTest(message=message):
+                g = game()
+                self.available(g)
+                g._game_updates.prepare.side_effect = RuntimeError(message)
+                with self.assertLogs(level="ERROR"):
+                    g._gameupd_prepare(release())
+                g._poll_game_update_events()
+                g._draw_gameupd_screen()
+                self.assertTrue(any(message in args[2] for args in self.texts()))
+                self.assertFalse(g._gameupd_running)
+                self.assertFalse(g._gameupd_confirm)
+                self.assertIsNone(g._gameupd_restart_at)
+                g._game_updates.install.assert_not_called()
+                g._cleanup.assert_not_called()
 
 
 if __name__ == "__main__":

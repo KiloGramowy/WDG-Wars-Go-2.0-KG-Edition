@@ -89,8 +89,8 @@
   "files": [
     {
       "path": "README.md",
-      "bytes": 10709,
-      "sha256": "55c28c427083f3bf533adcf0fe34a084d856502868ce22fcc2418b0ecdeee8f6"
+      "bytes": 11217,
+      "sha256": "c34664264b44155b9f2661489800f294eb8568eacec37bb1e7f87a692fd5eb1e"
     },
     {
       "path": "auto-save-preview.png",
@@ -382,6 +382,39 @@
         1080
       ],
       "source_kind": "Editorial title card for the new full feature tour"
+    },
+    {
+      "path": "wardriving-menu.png",
+      "bytes": 26039,
+      "sha256": "2715a67779a09c752a2c4c05431cf5210e9015d44da293adfb477a0ee0ec5dda",
+      "dimensions": [
+        1280,
+        720
+      ],
+      "source": "Native release-candidate drawing methods; isolated display fixture; no game initialization or user data",
+      "kind": "UI preview, not physical reception evidence"
+    },
+    {
+      "path": "wardriving-solo-profile.png",
+      "bytes": 22819,
+      "sha256": "1e6e82a3a8416305511d34fe08e2223b08d1ffba4d051be95c65ec030082cd94",
+      "dimensions": [
+        1280,
+        720
+      ],
+      "source": "Native release-candidate drawing methods; isolated display fixture; no game initialization or user data",
+      "kind": "UI preview, not physical reception evidence"
+    },
+    {
+      "path": "piglet-collection.png",
+      "bytes": 35410,
+      "sha256": "a398fffde91d0a96dd3f4a9f65bb6b738d3b68c89032d69e168d0fe830294bab",
+      "dimensions": [
+        1280,
+        720
+      ],
+      "source": "Native release-candidate drawing methods; isolated display fixture; no game initialization or user data",
+      "kind": "UI preview, not physical reception evidence"
     }
   ],
   "supplementary_menu_sources": "supplementary-menu-manifest.json",
@@ -391,7 +424,7 @@
     "new_update_window": "update-game.png",
     "startup_credit": "by LOCOSP / Modified by KiloGramowy",
     "version_format": "unchanged numeric format",
-    "edition_name": "WDG Wars Go 2.0 — KG Edition",
+    "edition_name": "WDG Wars Go 2.0 â€” KG Edition",
     "in_game_version": "0.9.17",
     "locosp_features_presented_first": true,
     "kg_features_presented_afterwards": true,

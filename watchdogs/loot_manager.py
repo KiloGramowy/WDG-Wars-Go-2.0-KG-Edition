@@ -26,10 +26,11 @@ import logging
 import os
 import math
 import re
+import stat
 import threading
 import time
 import tempfile
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import List, Optional
 
@@ -38,6 +39,7 @@ from .mesh_rules import mesh_contact_xp
 from .mesh_position import mesh_position, receiver_observation
 
 log = logging.getLogger(__name__)
+_OBSERVATION_POSITION_UNSET = object()
 
 
 class LootDataError(RuntimeError):
@@ -106,6 +108,10 @@ class LootManager:
         self._session_active = False
         # Monotonic CSV persistence failures, distinct from ordinary dedup skips.
         self.wardrive_save_errors = 0
+        # Only the current wardriving.csv is retained. Its on-disk identity is
+        # checked before every use, including edits/replacement outside WDG.
+        self._wardrive_csv_cache = None
+        self._wardrive_csv_last_commit = None
 
         # Handshake metadata parser state (from serial log keywords)
         self._hs_buffer: List[str] = []
@@ -146,7 +152,19 @@ class LootManager:
             log.error("Cannot create loot directory: %s", exc)
 
         # Load or build aggregate loot database
-        self._db = self._load_or_build_db()
+        try:
+            self._db = self._load_or_build_db()
+        except BaseException:
+            # A refused/corrupt save must not leak the session's open log.
+            # The backup worker has not been started at this point.
+            if self._serial_fh is not None:
+                try:
+                    self._serial_fh.close()
+                except OSError:
+                    log.warning("Cannot close the log after player-data startup failed")
+                finally:
+                    self._serial_fh = None
+            raise
 
         # Periodic background sync — protects against power loss between
         # event-driven fsyncs. Every BACKUP_INTERVAL seconds it fsyncs the
@@ -177,23 +195,31 @@ class LootManager:
                 time.sleep(1)
             self.flush_all()
 
-    def flush_all(self) -> None:
+    def flush_all(self) -> bool:
         """Force every buffered write to reach the SD card.
 
         Safe to call from any thread. Called automatically every
         BACKUP_INTERVAL seconds; also hookable for pre-shutdown flushes.
         """
+        saved = True
         fh = self._serial_fh
         if fh is not None:
             try:
                 fh.flush()
                 os.fsync(fh.fileno())
-            except (OSError, ValueError):
+            except OSError as exc:
+                log.error("Cannot flush the loot log: %s", exc)
+                saved = False
+            except ValueError:
                 pass  # Handle may be closed mid-call; ignore.
         try:
             os.sync()
         except AttributeError:
             pass  # Non-POSIX — nothing else we can do.
+        except OSError as exc:
+            log.error("Cannot sync loot storage: %s", exc)
+            saved = False
+        return saved
 
     @property
     def session_path(self) -> str:
@@ -426,24 +452,33 @@ class LootManager:
             try:
                 gps_count = 0
                 total = 0
-                with open(bt_dev_file, encoding="utf-8") as fh:
-                    for i, line in enumerate(fh):
-                        if i == 0:
-                            continue  # skip header
+                if (session_path / "collection_source.json").is_file():
+                    for row in self._iter_bt_history(bt_dev_file):
                         total += 1
-                        parts = line.strip().split(",")
-                        # lat,lon are last two columns
-                        if len(parts) >= 8:
-                            try:
-                                lat = float(parts[-2])
-                                lon = float(parts[-1])
-                                if lat != 0.0 or lon != 0.0:
-                                    gps_count += 1
-                            except ValueError:
-                                pass
+                        try:
+                            if float(row["lat"] or 0) != 0.0 or float(row["lon"] or 0) != 0.0:
+                                gps_count += 1
+                        except ValueError:
+                            pass
+                else:
+                    with open(bt_dev_file, encoding="utf-8") as fh:
+                        for i, line in enumerate(fh):
+                            if i == 0:
+                                continue  # skip header
+                            total += 1
+                            parts = line.strip().split(",")
+                            # lat,lon are last two columns
+                            if len(parts) >= 8:
+                                try:
+                                    lat = float(parts[-2])
+                                    lon = float(parts[-1])
+                                    if lat != 0.0 or lon != 0.0:
+                                        gps_count += 1
+                                except ValueError:
+                                    pass
                 counts["bt_devices"] = total
                 counts["bt_devices_gps"] = gps_count
-            except OSError:
+            except (OSError, ValueError, csv.Error):
                 pass
         bt_at_file = session_path / "bt_airtag.log"
         if bt_at_file.is_file():
@@ -471,10 +506,13 @@ class LootManager:
         wd_file = session_path / "wardriving.csv"
         if wd_file.is_file():
             try:
-                with open(wd_file, encoding="utf-8") as fh:
-                    lines = sum(1 for _ in fh)
-                counts["wardriving"] = max(0, lines - 2)  # minus pre-header + header
-            except OSError:
+                from .piglet_csv import collection_preamble
+                with open(wd_file, encoding="utf-8", newline="") as fh:
+                    marked = collection_preamble(fh.readline())
+                    fh.seek(0)
+                    counts["wardriving"] = (sum(1 for _ in self.iter_wardrive_fields(fh)) if marked
+                                             else max(0, sum(1 for _ in fh) - 2))
+            except (OSError, ValueError, csv.Error):
                 pass
         adsb_file = session_path / "adsb_aircraft.csv"
         if adsb_file.is_file():
@@ -534,14 +572,14 @@ class LootManager:
                 log.error("Cannot save loot DB: %s", exc)
                 return False
 
-    def update_session_loot(self) -> None:
+    def update_session_loot(self) -> bool:
         """Rescan current session and update aggregate DB."""
         if not self._session_active:
-            return
+            return True
         with self._db_lock:
             self._db["sessions"][self._session_key] = self._scan_session_dir(self._session)
             self._recalc_totals(self._db)
-            self._save_db(self._db)
+            return self._save_db(self._db)
 
     @property
     def loot_totals(self) -> dict:
@@ -586,12 +624,231 @@ class LootManager:
         """An explicitly saved zero is progress too, not a bootstrap request."""
         return "xp" in self._db
 
-    def save_xp(self, xp: int) -> None:
-        """Persist current XP to loot_db.json."""
+    def save_xp(self, xp: int) -> bool:
+        """Commit XP before acknowledging it or replacing the in-memory value.
+
+        A failed write leaves the previous database authoritative, so retrying
+        the same XP value cannot be mistaken for an already completed save.
+        """
         with self._db_lock:
-            if self._db.get("xp") != xp:
-                self._db["xp"] = xp
-                self._save_db(self._db)
+            if self._db.get("xp") == xp:
+                return True
+            next_db = dict(self._db)
+            next_db["xp"] = xp
+            if not self._save_db(next_db):
+                return False
+            self._db = next_db
+            return True
+
+    def collection_pending_batches(self) -> dict:
+        with self._db_lock:
+            return copy.deepcopy(self._db.get("collection_import_batches", {}))
+
+    def collection_pending_events(self, limit=20) -> list[dict]:
+        with self._db_lock:
+            events = self._db.get("collection_observation_outbox", {})
+            return copy.deepcopy(list(events.values())[:max(0, min(int(limit), 256))])
+
+    def acknowledge_collection_events(self, event_ids) -> bool:
+        """Acknowledge presentation only, without changing earned XP."""
+        with self._db_lock:
+            old = self._db.get("collection_observation_outbox", {})
+            remove = set(event_ids) & set(old)
+            if not remove:
+                return True
+            next_db = copy.deepcopy(self._db)
+            next_db["collection_observation_outbox"] = {k: v for k, v in old.items() if k not in remove}
+            if not self._save_db(next_db):
+                return False
+            self._db = next_db
+            return True
+
+    def commit_collection_batch(self, batch_id, file_sha, entries, current_xp,
+                                known_wifi, known_ble, *, source_job_id=None) -> dict:
+        """Commit base rewards, known identities and an import outbox atomically.
+
+        Only the main event queue supplies current_xp; it includes unsaved live
+        rewards. SQLite holds no authoritative player XP. The small marker is
+        retained until that index confirms the matching records durably.
+        """
+        from .scan_rules import observation_xp
+        if (not re.fullmatch(r"[0-9a-f]{32}", batch_id)
+                or not re.fullmatch(r"[0-9a-f]{64}", file_sha)
+                or type(current_xp) is not int or current_xp < 0 or not 0 < len(entries) <= 128
+                or source_job_id is not None and (not isinstance(source_job_id, str)
+                    or not re.fullmatch(r"[0-9a-f]{32}", source_job_id))):
+            raise ValueError("Invalid Collection reward transaction")
+        with self._db_lock:
+            if batch_id in self._db.get("collection_import_batches", {}):
+                return dict(committed=False, xp_total=current_xp)
+            next_db = copy.deepcopy(self._db)
+            outbox = next_db.setdefault("collection_observation_outbox", {})
+            if len(outbox) + len(entries) > 256:
+                return dict(committed=False, xp_total=current_xp, backpressure=True)
+            seen = {"wifi": set(known_wifi), "ble": set(known_ble)}
+            identities = next_db.setdefault("known_device_identities", {})
+            saved = {key: set(identities.get(key, [])) for key in ("wifi", "ble")}
+            for protocol in seen:
+                seen[protocol].update(saved[protocol])
+            marker_entries, events, award = [], [], 0
+            for entry in entries:
+                record = entry["record"]
+                protocol, mac = record["protocol"], record["mac"]
+                if (protocol not in seen or not re.fullmatch(r"(?:[0-9A-F]{2}:){5}[0-9A-F]{2}", mac)
+                        or not re.fullmatch(r"[0-9a-f]{64}", record["record_id"])):
+                    raise ValueError("Invalid Collection observation")
+                new = mac not in seen[protocol]
+                seen[protocol].add(mac)
+                saved[protocol].add(mac)
+                base_xp = observation_xp(protocol, new)
+                award += base_xp
+                event_id = record["record_id"]
+                if event_id in outbox:
+                    raise ValueError("Collection outbox identity already pending")
+                event = dict(event_id=event_id, record_id=event_id,
+                             record=copy.deepcopy(record), new_identity=new,
+                             source_file_sha256=file_sha)
+                if source_job_id is not None:
+                    event["source_job_id"] = source_job_id
+                outbox[event_id] = event
+                events.append(event)
+                marker_entries.append(dict(ordinal=entry["ordinal"], record_id=event_id,
+                                           protocol=protocol, new_identity=new, base_xp=base_xp))
+            identities.update({key: sorted(value) for key, value in saved.items()})
+            next_db["xp"] = current_xp + award
+            next_db.setdefault("collection_import_batches", {})[batch_id] = dict(
+                sha256=file_sha, entries=marker_entries)
+            if source_job_id is not None:
+                next_db["collection_import_batches"][batch_id]["source_job_id"] = source_job_id
+            if not self._save_db(next_db):
+                raise OSError("Collection base-reward transaction was not committed")
+            self._db = next_db
+            known_wifi.update(seen["wifi"])
+            known_ble.update(seen["ble"])
+            return dict(committed=True, xp_total=next_db["xp"], events=events)
+
+    def _extend_collection_file_commit(self, next_db, context):
+        """Optional local integration seam inside the same durable transaction.
+
+        Implementations may enrich the candidate only; they must not save it,
+        publish UI state, or mutate the authoritative database before success.
+        """
+
+    def commit_collection_file(self, batch_id, file_sha, groups, current_xp,
+                               known_wifi, known_ble, *, source_job_id=None,
+                               counters=None) -> dict:
+        """Settle one fully validated/exported CSV, without observation UI events.
+
+        Groups contain only exact records not already paid by an earlier import.
+        The source index retains their real record identities for crash recovery.
+        """
+        from .scan_rules import observation_xp
+        if (not re.fullmatch(r"[0-9a-f]{32}", batch_id)
+                or not re.fullmatch(r"[0-9a-f]{64}", file_sha)
+                or type(current_xp) is not int or current_xp < 0
+                or source_job_id is not None and (not isinstance(source_job_id, str)
+                    or not re.fullmatch(r"[0-9a-f]{32}", source_job_id))):
+            raise ValueError("Invalid Collection file transaction")
+        counters = dict(counters or {})
+        for key in ("records", "wifi", "ble", "new_wifi", "new_ble", "base_xp"):
+            if type(counters.get(key, 0)) is not int or counters.get(key, 0) < 0:
+                raise ValueError("Invalid Collection file counters")
+        with self._db_lock:
+            if batch_id in self._db.get("collection_import_batches", {}):
+                return dict(committed=False, xp_total=current_xp)
+            next_db = copy.deepcopy(self._db)
+            identities = next_db.setdefault("known_device_identities", {})
+            saved = {key: set(identities.get(key, [])) for key in ("wifi", "ble")}
+            seen = {"wifi": set(known_wifi) | saved["wifi"],
+                    "ble": set(known_ble) | saved["ble"]}
+            details, compact, award = [], [], 0
+            final = {key: counters.get(key, 0) for key in ("wifi", "ble", "new_wifi", "new_ble", "base_xp")}
+            unique_groups = set()
+            for group in groups:
+                record = group["record"]
+                protocol, mac = group["protocol"], group["mac"]
+                record_id, count = group["record_id"], group["count"]
+                if (protocol not in seen or not re.fullmatch(r"(?:[0-9A-F]{2}:){5}[0-9A-F]{2}", mac)
+                        or not re.fullmatch(r"[0-9a-f]{64}", record_id)
+                        or type(count) is not int or count <= 0
+                        or type(group["ordinal"]) is not int or group["ordinal"] <= 0
+                        or (record.get("protocol"), record.get("mac"), record.get("record_id")) != (protocol, mac, record_id)
+                        or (protocol, mac) in unique_groups):
+                    raise ValueError("Invalid Collection identity group")
+                unique_groups.add((protocol, mac))
+                new = mac not in seen[protocol]
+                seen[protocol].add(mac)
+                saved[protocol].add(mac)
+                points = observation_xp(protocol, new) + (count - 1) * observation_xp(protocol, False)
+                award += points
+                final[protocol] += count
+                final["new_" + protocol] += int(new)
+                final["base_xp"] += points
+                item = dict(protocol=protocol, mac=mac, count=count, ordinal=group["ordinal"],
+                            record_id=record_id, new_identity=new, base_xp=points)
+                compact.append(item)
+                details.append(dict(item, record=copy.deepcopy(record)))
+            final["duplicates"] = counters.get("records", 0) - final["wifi"] - final["ble"]
+            if final["duplicates"] < 0:
+                raise ValueError("Collection file counters do not reconcile")
+            identities.update({key: sorted(value) for key, value in saved.items()})
+            next_db["xp"] = current_xp + award
+            marker = dict(whole_file=True, sha256=file_sha, counters=final, groups=compact)
+            if source_job_id is not None:
+                marker["source_job_id"] = source_job_id
+            next_db.setdefault("collection_import_batches", {})[batch_id] = marker
+            legacy = [copy.deepcopy(event) for event in self._db.get("collection_observation_outbox", {}).values()
+                      if event.get("source_file_sha256") == file_sha]
+            context = dict(file_sha256=file_sha, source_job_id=source_job_id,
+                           file_commit_id=batch_id, base_xp=award, groups=details, legacy_events=legacy)
+            self._extend_collection_file_commit(next_db, context)
+            if type(next_db.get("xp")) is not int or next_db["xp"] < current_xp + award:
+                raise ValueError("Invalid Collection transaction extension")
+            if not self._save_db(next_db):
+                raise OSError("Collection file transaction was not committed")
+            self._db = next_db
+            known_wifi.update(seen["wifi"])
+            known_ble.update(seen["ble"])
+            return dict(committed=True, xp_total=next_db["xp"], file_sha256=file_sha)
+
+    def finalize_collection_batch(self, batch_id) -> bool:
+        """Forget a recovery marker only after the record index has fsynced."""
+        with self._db_lock:
+            if batch_id not in self._db.get("collection_import_batches", {}):
+                return True
+            next_db = copy.deepcopy(self._db)
+            next_db["collection_import_batches"].pop(batch_id)
+            if not self._save_db(next_db):
+                return False
+            self._db = next_db
+            return True
+
+    def complete_collection_file(self, file_sha, session_name, receipt) -> bool:
+        """Publish local import history; this is never an external upload receipt."""
+        with self._db_lock:
+            old = self._db.get("collection_file_receipts", {}).get(file_sha)
+            value = dict(receipt=receipt, session=session_name)
+            if old is not None:
+                if old != value:
+                    raise ValueError("Conflicting Collection completion")
+                return True
+            next_db = copy.deepcopy(self._db)
+            next_db.setdefault("collection_file_receipts", {})[file_sha] = value
+            if session_name is not None:
+                directory = self._base / session_name
+                if directory.is_symlink() or directory.resolve().parent != self._base.resolve():
+                    raise ValueError("Invalid Collection history directory")
+                next_db.setdefault("sessions", {})[session_name] = self._scan_session_dir(directory)
+                self._recalc_totals(next_db)
+            if not self._save_db(next_db):
+                return False
+            self._db = next_db
+            self._gps_points_cache = None
+            return True
+
+    def collection_file_receipt(self, file_sha):
+        with self._db_lock:
+            return copy.deepcopy(self._db.get("collection_file_receipts", {}).get(file_sha))
 
     # ------------------------------------------------------------------
     # Persistent badges
@@ -920,13 +1177,10 @@ class LootManager:
             wd = entry / "wardriving.csv"
             if wd.is_file():
                 try:
-                    with open(wd, "r", encoding="utf-8", errors="replace") as f:
-                        for line in f:
-                            record = self._wardrive_record(line)
-                            if record is not None:
-                                kind, mac, _ = record
-                                target = ble_macs if kind == "BLE" else wifi_bssids
-                                target.add(mac)
+                    with open(wd, "r", encoding="utf-8", errors="replace", newline="") as f:
+                        for fields in self.iter_wardrive_fields(f, legacy_prefix=True):
+                            target = ble_macs if fields[10] == "BLE" else wifi_bssids
+                            target.add(fields[0])
                 except Exception:
                     pass
 
@@ -934,6 +1188,9 @@ class LootManager:
             bt = entry / "bt_devices.csv"
             if bt.is_file():
                 try:
+                    if (entry / "collection_source.json").is_file():
+                        ble_macs.update(row["mac"] for row in self._iter_bt_history(bt))
+                        continue
                     with open(bt, "r", encoding="utf-8", errors="replace") as f:
                         mac_column = None
                         for line in f:
@@ -994,11 +1251,8 @@ class LootManager:
             if filename == "wardriving.csv":
                 identities = next_db.setdefault("known_device_identities", {})
                 known = {key: set(identities.get(key, [])) for key in ("ble", "wifi")}
-                for line in text.splitlines():
-                    record = self._wardrive_record(line)
-                    if record is not None:
-                        kind, mac, _ = record
-                        known["ble" if kind == "BLE" else "wifi"].add(mac)
+                for fields in self.iter_wardrive_fields(io.StringIO(text, newline=""), legacy_prefix=True):
+                    known["ble" if fields[10] == "BLE" else "wifi"].add(fields[0])
                 identities.update({key: sorted(values) for key, values in known.items()})
             elif filename in ("meshcore_nodes.csv", "meshtastic_nodes.csv"):
                 protocol = "meshcore" if filename == "meshcore_nodes.csv" else "meshtastic"
@@ -1064,6 +1318,53 @@ class LootManager:
         self._detect_handshake(line)
         # Check for pcap base64 data from start_handshake_serial
         self._detect_pcap_stream(line)
+
+    def append_wardrive_provenance(self, record: dict) -> bool:
+        """Durably append one bounded decision to the existing private RX log.
+
+        Called by the wardrive writer, never the UI. A separate O_APPEND
+        descriptor avoids sharing TextIO buffers or holding its lock across
+        fsync; the recorder must stop before LootManager is closed.
+        """
+        if not self._session_active or self._serial_fh is None or self._serial_fh.closed:
+            return False
+        try:
+            encoded = ("\n[WARDGPS] " + json.dumps(record, ensure_ascii=True, allow_nan=False,
+                separators=(",", ":")) + "\n").encode("utf-8")
+            if len(encoded) > 32 * 1024:
+                raise ValueError("Wardrive provenance exceeds its record limit")
+        except (TypeError, ValueError, UnicodeError) as exc:
+            log.error("Cannot encode wardrive provenance: %s", exc)
+            return False
+        descriptor = None
+        try:
+            path = self._session / "serial_full.log"
+            before = path.lstat()
+            original = os.fstat(self._serial_fh.fileno())
+            if not stat.S_ISREG(before.st_mode):
+                raise OSError("Wardrive provenance log is not a regular file")
+            descriptor = os.open(path, os.O_WRONLY | os.O_APPEND
+                | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_NONBLOCK", 0))
+            opened, current = os.fstat(descriptor), path.lstat()
+            if (not stat.S_ISREG(opened.st_mode) or not stat.S_ISREG(current.st_mode)
+                    or (opened.st_dev, opened.st_ino) != (original.st_dev, original.st_ino)
+                    or (current.st_dev, current.st_ino) != (opened.st_dev, opened.st_ino)):
+                raise OSError("Wardrive provenance log changed before append")
+            if os.write(descriptor, encoded) != len(encoded):
+                raise OSError("Short wardrive provenance write")
+            os.fsync(descriptor)
+            os.close(descriptor)
+            descriptor = None
+            return True
+        except (OSError, ValueError) as exc:
+            log.error("Cannot persist wardrive provenance: %s", exc)
+            return False
+        finally:
+            if descriptor is not None:
+                try:
+                    os.close(descriptor)
+                except OSError:
+                    pass
 
     # ------------------------------------------------------------------
     # Handshake detection from serial stream
@@ -1403,6 +1704,30 @@ class LootManager:
                 row[5] if len(row) > 5 else "", "", "", "", "", "WIFI"]
 
     @classmethod
+    def iter_wardrive_fields(cls, stream, *, legacy_prefix=False):
+        from .piglet_csv import native_rows
+        yield from native_rows(stream, cls._wardrive_fields, legacy_prefix=legacy_prefix)
+
+    @classmethod
+    def _iter_bt_history(cls, path):
+        with Path(path).open("r", encoding="utf-8", newline="") as stream:
+            if (Path(path).parent / "collection_source.json").is_file():
+                reader = csv.reader(stream, strict=True)
+                if next(reader, []) != ["timestamp", "mac", "rssi", "name", "airtag", "smarttag", "lat", "lon"]:
+                    raise ValueError("Invalid Collection BLE history header")
+                for row in reader:
+                    if not row:
+                        continue
+                    if len(row) != 8 or not re.fullmatch(r"(?:[0-9A-F]{2}:){5}[0-9A-F]{2}", row[1]):
+                        raise ValueError("Invalid Collection BLE history row")
+                    yield dict(mac=row[1], label=row[3], rssi=row[2], lat=row[6], lon=row[7])
+            else:
+                for line in stream:
+                    row = cls._bt_history_record(line)
+                    if row is not None:
+                        yield row
+
+    @classmethod
     def _wardrive_record(cls, line: str) -> tuple[str, str, int] | None:
         """Read (Type, MAC, RSSI) for protocol-specific identity/dedup."""
         fields = cls._wardrive_fields(line)
@@ -1456,10 +1781,146 @@ class LootManager:
         """Convert ESP32 auth string to WiGLE AuthMode format."""
         return self._AUTH_MAP.get(auth.strip(), f"[{auth}][ESS]")
 
+    @staticmethod
+    def _observation_timestamp(observed_at, separator=" ") -> str:
+        """Keep legacy local wall time unless an explicit UTC observation is supplied."""
+        if observed_at is None:
+            return datetime.now().strftime(f"%Y-%m-%d{separator}%H:%M:%S")
+        if isinstance(observed_at, datetime):
+            if observed_at.tzinfo is None or observed_at.utcoffset() is None:
+                raise ValueError("Observation datetime must be timezone-aware")
+            value = observed_at.astimezone(timezone.utc)
+        else:
+            if isinstance(observed_at, bool) or not isinstance(observed_at, (int, float)):
+                raise ValueError("Observation time must be an aware datetime or finite UTC epoch")
+            try:
+                if not math.isfinite(observed_at):
+                    raise ValueError("Non-finite observation time")
+                value = datetime.fromtimestamp(observed_at, timezone.utc)
+            except (OSError, OverflowError, ValueError) as exc:
+                raise ValueError("Observation UTC time is out of range") from exc
+        return value.replace(tzinfo=None).isoformat(
+            sep=separator, timespec="microseconds" if value.microsecond else "seconds")
+
+    @staticmethod
+    def _observation_coordinates(position):
+        """Validate assigned metres/coordinates; None explicitly means no position.
+
+        ``accuracy`` is already in metres. Raw HDOP and optional provenance
+        fields are not converted into accuracy or added to the CSV schema.
+        """
+        if position is None:
+            return 0.0, 0.0, 0.0, 0.0
+        try:
+            raw = (position["lat"], position["lon"], position.get("altitude", 0.0),
+                   position.get("accuracy", 0.0))
+            if any(isinstance(value, bool) for value in raw):
+                raise ValueError("Boolean is not a coordinate")
+            lat, lon, alt, accuracy = (float(value) for value in raw)
+        except (AttributeError, KeyError, TypeError, ValueError, OverflowError) as exc:
+            raise ValueError("Assigned position requires numeric lat/lon and metre values") from exc
+        if (not all(math.isfinite(value) for value in (lat, lon, alt, accuracy))
+                or not -90 <= lat <= 90 or not -180 <= lon <= 180 or accuracy < 0):
+            raise ValueError("Assigned position is out of range")
+        return lat, lon, alt, accuracy
+
+    @staticmethod
+    def _observation_position_missing(lat, lon) -> bool:
+        try:
+            lat, lon = float(lat), float(lon)
+        except (ValueError, TypeError, OverflowError):
+            return True
+        return (not math.isfinite(lat) or not math.isfinite(lon)
+                or not -90 <= lat <= 90 or not -180 <= lon <= 180
+                or (lat == 0.0 and lon == 0.0))
+
+    def _position_correction_input(self, mac, observed_at, position, separator):
+        if observed_at is None:
+            raise ValueError("Position correction requires the original observation time")
+        if not isinstance(mac, str) or not re.fullmatch(
+                r"(?:[0-9A-Fa-f]{2}:){5}[0-9A-Fa-f]{2}", mac.strip()):
+            raise ValueError("Position correction requires a valid MAC")
+        coords = self._observation_coordinates(position)
+        if self._observation_position_missing(*coords[:2]):
+            raise ValueError("Position correction requires an assigned position")
+        return mac.strip().upper(), self._observation_timestamp(observed_at, separator), coords
+
     def _wardrive_save_failed(self, path: Path, exc: OSError | UnicodeError) -> bool:
         self.wardrive_save_errors += 1
         log.error("Cannot persist wardrive CSV %s: %s", path, exc)
         return False
+
+    @staticmethod
+    def _wardrive_csv_signature(path: Path):
+        """Cheap invalidation without rereading and reparsing the CSV."""
+        try:
+            value = path.stat()
+        except FileNotFoundError:
+            return None
+        return (value.st_dev, value.st_ino, value.st_size,
+                value.st_mtime_ns, value.st_ctime_ns, value.st_mode,
+                value.st_uid, value.st_gid)
+
+    def _wardrive_csv_snapshot(self, path: Path):
+        """Return committed rows/index; caller holds _db_lock."""
+        signature = self._wardrive_csv_signature(path)
+        cached = self._wardrive_csv_cache
+        if cached is not None and cached[0] == path and cached[1] == signature:
+            return cached[2], cached[3]
+
+        # Never fall back to a stale snapshot after an unsuccessful reload.
+        self._wardrive_csv_cache = None
+        lines, existing = [], {}
+        if signature is not None:
+            with open(path, "r", encoding="utf-8", newline="") as fh:
+                for i, line in enumerate(fh):
+                    lines.append(line)
+                    if i > 1:
+                        record = self._wardrive_record(line)
+                        if record is not None:
+                            kind, mac, strength = record
+                            existing[(kind, mac)] = (i, strength)
+            if self._wardrive_csv_signature(path) != signature:
+                raise OSError("Wardrive CSV changed while it was being read; retry the save")
+        self._wardrive_csv_cache = (path, signature, lines, existing)
+        return lines, existing
+
+    def _save_wardrive_row(self, path: Path, identity, rssi: int, new_row: str) -> bool:
+        """Keep legacy CSV/dedup rules while avoiding repeated full reads."""
+        with self._db_lock:
+            try:
+                lines, existing = self._wardrive_csv_snapshot(path)
+            except (OSError, UnicodeError) as exc:
+                return self._wardrive_save_failed(path, exc)
+            previous = existing.get(identity)
+            if previous is not None and rssi <= previous[1]:
+                return False
+            updated = list(lines) if lines else [self._WIGLE_PRE_HEADER, self._WIGLE_HEADER]
+            index = previous[0] if previous is not None else len(updated)
+            if previous is not None:
+                updated[index] = new_row
+            else:
+                updated.append(new_row)
+            if not self._commit_wardrive_csv(path, updated):
+                return False
+            # A failed write never advances the index. If metadata cannot be
+            # read after a successful commit, keep the saved result but force
+            # the next operation to rebuild the index from disk.
+            try:
+                signature = self._wardrive_csv_signature(path)
+            except OSError:
+                self._wardrive_csv_cache = None
+            else:
+                # Cache only the inode/content version that we just wrote,
+                # not an external replacement/deletion after that commit.
+                committed = self._wardrive_csv_last_commit
+                if (signature is None or committed is None or committed[0] != path
+                        or signature[:4] + signature[5:] != committed[1]):
+                    self._wardrive_csv_cache = None
+                else:
+                    existing[identity] = (index, rssi)
+                    self._wardrive_csv_cache = (path, signature, updated, existing)
+            return True
 
     def _commit_wardrive_csv(self, path: Path, lines) -> bool:
         """Commit only wardrive/BLE CSVs after strict flush and file fsync.
@@ -1468,6 +1929,7 @@ class LootManager:
         intact, so the same discovery can be saved on a later retry.
         """
         temporary = None
+        self._wardrive_csv_last_commit = None
         try:
             previous = path.stat() if path.exists() else None
             descriptor, name = tempfile.mkstemp(prefix=f".{path.name}.", suffix=".tmp",
@@ -1481,7 +1943,13 @@ class LootManager:
                 os.chmod(temporary, previous.st_mode & 0o7777 if previous else 0o644)
                 fh.flush()
                 os.fsync(fh.fileno())
+                written = os.fstat(fh.fileno())
             temporary.replace(path)
+            # Capture the actual committed file, independent of any later
+            # replacement by another writer. Rename may change ctime.
+            self._wardrive_csv_last_commit = (path, (
+                written.st_dev, written.st_ino, written.st_size,
+                written.st_mtime_ns, written.st_mode, written.st_uid, written.st_gid))
             return True
         except (OSError, UnicodeError) as exc:
             return self._wardrive_save_failed(path, exc)
@@ -1493,24 +1961,29 @@ class LootManager:
                     log.warning("Cannot remove failed wardrive temporary file %s: %s",
                                 temporary, exc)
 
-    def save_wardriving_network(self, network: Network) -> bool:
+    def save_wardriving_network(self, network: Network, *, observed_at=None,
+                               position=_OBSERVATION_POSITION_UNSET) -> bool:
         """Append a geo-tagged network to wardriving.csv (dedup by Type and BSSID).
 
         Returns True if the network was new or updated (stronger RSSI).
+        Supplied observation time/position belong to that RX, not save time.
+        Omitted position uses legacy GPS; explicit None must not use a later fix.
         """
         if not self._session_active or not network.bssid:
             return False
         path = self._session / "wardriving.csv"
         # Get GPS coords + accuracy
         lat, lon, alt, accuracy = 0.0, 0.0, 0.0, 0.0
-        if self._gps and self._gps.available:
+        if position is not _OBSERVATION_POSITION_UNSET:
+            lat, lon, alt, accuracy = self._observation_coordinates(position)
+        elif self._gps and self._gps.available:
             fix = self._gps.fix
             if fix.valid:
                 lat = round(fix.latitude, 7)
                 lon = round(fix.longitude, 7)
                 alt = round(fix.altitude, 1)
                 accuracy = round(fix.hdop * 5.0, 1) if fix.hdop < 99 else 0.0
-        ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        ts = self._observation_timestamp(observed_at)
         try:
             rssi_val = int(network.rssi)
         except (ValueError, TypeError):
@@ -1523,35 +1996,11 @@ class LootManager:
             f"{accuracy},WIFI\n"
         )
         # Wi-Fi and BLE may share a MAC; only compare this protocol's RSSI.
-        existing: dict[tuple[str, str], tuple[int, int]] = {}
-        lines: list[str] = []
-        if path.is_file():
-            try:
-                with open(path, "r", encoding="utf-8", newline="") as fh:
-                    for i, line in enumerate(fh):
-                        lines.append(line)
-                        if i <= 1:
-                            continue  # pre-header + header
-                        record = self._wardrive_record(line)
-                        if record is not None:
-                            kind, mac, strength = record
-                            existing[(kind, mac)] = (i, strength)
-            except (OSError, UnicodeError) as exc:
-                return self._wardrive_save_failed(path, exc)
         identity = ("WIFI", network.bssid.strip().upper())
-        if identity in existing:
-            old_idx, old_rssi = existing[identity]
-            if rssi_val <= old_rssi:
-                return False  # existing is stronger or equal
-            lines[old_idx] = new_row
-            return self._commit_wardrive_csv(path, lines)
-        else:
-            if not lines:
-                lines = [self._WIGLE_PRE_HEADER, self._WIGLE_HEADER]
-            lines.append(new_row)
-            return self._commit_wardrive_csv(path, lines)
+        return self._save_wardrive_row(path, identity, rssi_val, new_row)
 
-    def save_wardriving_bt(self, mac: str, rssi: int, name: str) -> bool:
+    def save_wardriving_bt(self, mac: str, rssi: int, name: str, *, observed_at=None,
+                          position=_OBSERVATION_POSITION_UNSET) -> bool:
         """Append a geo-tagged BLE device to wardriving.csv (dedup by Type and MAC).
 
         Uses the same CSV file as WiFi wardriving with Type=BLE.
@@ -1562,14 +2011,16 @@ class LootManager:
         path = self._session / "wardriving.csv"
         # Get GPS coords + accuracy
         lat, lon, alt, accuracy = 0.0, 0.0, 0.0, 0.0
-        if self._gps and self._gps.available:
+        if position is not _OBSERVATION_POSITION_UNSET:
+            lat, lon, alt, accuracy = self._observation_coordinates(position)
+        elif self._gps and self._gps.available:
             fix = self._gps.fix
             if fix.valid:
                 lat = round(fix.latitude, 7)
                 lon = round(fix.longitude, 7)
                 alt = round(fix.altitude, 1)
                 accuracy = round(fix.hdop * 5.0, 1) if fix.hdop < 99 else 0.0
-        ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        ts = self._observation_timestamp(observed_at)
         # WiGLE row: MAC,SSID(=name),AuthMode,FirstSeen,Channel,RSSI,Lat,Lon,Alt,Accuracy,Type
         new_row = (
             f"{mac},{name},[BLE],{ts},"
@@ -1577,33 +2028,131 @@ class LootManager:
             f"{accuracy},BLE\n"
         )
         # Names can contain commas; recover Type/MAC/RSSI from the native row.
-        existing: dict[tuple[str, str], tuple[int, int]] = {}
-        lines: list[str] = []
-        if path.is_file():
-            try:
-                with open(path, "r", encoding="utf-8", newline="") as fh:
-                    for i, line in enumerate(fh):
-                        lines.append(line)
-                        if i <= 1:
-                            continue  # pre-header + header
-                        record = self._wardrive_record(line)
-                        if record is not None:
-                            kind, address, strength = record
-                            existing[(kind, address)] = (i, strength)
-            except (OSError, UnicodeError) as exc:
-                return self._wardrive_save_failed(path, exc)
         identity = ("BLE", mac.strip().upper())
-        if identity in existing:
-            old_idx, old_rssi = existing[identity]
-            if rssi <= old_rssi:
-                return False  # existing is stronger or equal
-            lines[old_idx] = new_row
-            return self._commit_wardrive_csv(path, lines)
-        else:
-            if not lines:
-                lines = [self._WIGLE_PRE_HEADER, self._WIGLE_HEADER]
-            lines.append(new_row)
-            return self._commit_wardrive_csv(path, lines)
+        return self._save_wardrive_row(path, identity, rssi, new_row)
+
+    def fill_wardriving_position(self, protocol: str, mac: str, *, observed_at, position,
+                                source_rssi=None) -> dict:
+        """Idempotently fill this session's exact unpositioned WiGLE observation.
+
+        Only GPS columns change. ``persisted`` means this file already has a
+        position for the matching observation or its correction was committed.
+        It says nothing about another file, XP, or upload acceptance.
+        """
+        if not self._session_active:
+            return {"status": "inactive", "persisted": False, "changed": False}
+        if not isinstance(protocol, str) or protocol.upper() not in ("WIFI", "BLE"):
+            raise ValueError("Position correction requires WIFI or BLE")
+        if source_rssi is not None and type(source_rssi) is not int:
+            raise ValueError("Position correction source RSSI must be an integer")
+        kind = protocol.upper()
+        mac, ts, (lat, lon, alt, accuracy) = self._position_correction_input(
+            mac, observed_at, position, " ")
+        path = self._session / "wardriving.csv"
+        with self._db_lock:
+            try:
+                lines, existing = self._wardrive_csv_snapshot(path)
+            except (OSError, UnicodeError) as exc:
+                self._wardrive_save_failed(path, exc)
+                return {"status": "io_error", "persisted": False, "changed": False}
+            previous = existing.get((kind, mac))
+            if previous is None:
+                return {"status": "missing", "persisted": False, "changed": False}
+            index = previous[0]
+            fields = self._wardrive_fields(lines[index])
+            if fields is None or fields[3] != ts:
+                # A later, stronger SNIFF write may legitimately supersede a
+                # SOLO export row. Verify current file/type/MAC/time/RSSI; do
+                # not rewrite it or claim the older RX is positioned here.
+                if fields is not None and source_rssi is not None:
+                    try:
+                        current_rssi = int(fields[5])
+                        valid_time = bool(re.fullmatch(
+                            r"\d{4}-\d{2}-\d{2}[ T]\d{2}:\d{2}:\d{2}(?:\.\d+)?", fields[3]))
+                        if valid_time:
+                            datetime.fromisoformat(fields[3])
+                        regular = stat.S_ISREG(path.lstat().st_mode)
+                        stable = self._wardrive_csv_signature(path) == self._wardrive_csv_cache[1]
+                    except (OSError, ValueError, TypeError, IndexError):
+                        valid_time = regular = stable = False
+                        current_rssi = source_rssi
+                    if (valid_time and regular and stable and fields[10] == kind
+                            and fields[0] == mac and current_rssi > source_rssi):
+                        return {"status": "superseded", "persisted": False, "changed": False,
+                                "current_observed_at": fields[3], "current_rssi": current_rssi}
+                return {"status": "observation_changed", "persisted": False, "changed": False}
+            if source_rssi is not None:
+                try:
+                    same_rssi = int(fields[5]) == source_rssi
+                except (ValueError, TypeError):
+                    same_rssi = False
+                if not same_rssi:
+                    return {"status": "observation_changed", "persisted": False, "changed": False}
+            if not self._observation_position_missing(fields[6], fields[7]):
+                return {"status": "positioned", "persisted": True, "changed": False}
+            body = lines[index].rstrip("\r\n")
+            tail = body.rsplit(",", 5)
+            if len(tail) != 6 or tail[-1].strip().strip('"').upper() != kind:
+                return {"status": "unsupported", "persisted": False, "changed": False}
+            updated = list(lines)
+            updated[index] = (f"{tail[0]},{lat},{lon},{alt},{accuracy},{tail[-1]}"
+                              + lines[index][len(body):])
+            if not self._commit_wardrive_csv(path, updated):
+                return {"status": "io_error", "persisted": False, "changed": False}
+            # The next ordinary save rebuilds the same protocol/RSSI index
+            # from this committed version, never from an optimistic correction.
+            self._wardrive_csv_cache = None
+            self._gps_points_cache = None
+            return {"status": "updated", "persisted": True, "changed": True}
+
+    def fill_bt_device_position(self, mac: str, *, observed_at, position) -> dict:
+        """Correct only a matching current-session BLE history row's coordinates.
+
+        This and fill_wardriving_position commit independently. A caller that
+        needs both must check both results and retry any missing correction;
+        there is deliberately no claim of a cross-file atomic transaction.
+        """
+        if not self._session_active:
+            return {"status": "inactive", "persisted": False, "changed": False}
+        mac, ts, (lat, lon, _, _) = self._position_correction_input(
+            mac, observed_at, position, "T")
+        path = self._session / "bt_devices.csv"
+        with self._db_lock:
+            try:
+                with path.open("r", encoding="utf-8", newline="") as stream:
+                    lines = list(stream)
+            except FileNotFoundError:
+                return {"status": "missing", "persisted": False, "changed": False}
+            except (OSError, UnicodeError) as exc:
+                self._wardrive_save_failed(path, exc)
+                return {"status": "io_error", "persisted": False, "changed": False}
+            matches, seen = [], False
+            for index, line in enumerate(lines):
+                try:
+                    record = self._bt_history_record(line)
+                    first = next(csv.reader([line]))[0] if record else None
+                except (csv.Error, IndexError, StopIteration):
+                    continue
+                if record is not None and record["mac"] == mac:
+                    seen = True
+                    if first == ts:
+                        matches.append((index, record))
+            if not matches:
+                return {"status": "observation_changed" if seen else "missing",
+                        "persisted": False, "changed": False}
+            if len(matches) != 1:
+                return {"status": "ambiguous", "persisted": False, "changed": False}
+            index, record = matches[0]
+            if not self._observation_position_missing(record["lat"], record["lon"]):
+                return {"status": "positioned", "persisted": True, "changed": False}
+            body = lines[index].rstrip("\r\n")
+            prefix = body.rsplit(",", 2)[0]
+            updated = list(lines)
+            updated[index] = f"{prefix},{lat},{lon}" + lines[index][len(body):]
+            if not self._commit_wardrive_csv(path, updated):
+                return {"status": "io_error", "persisted": False, "changed": False}
+            self._gps_points_cache = None
+            return {"status": "updated", "persisted": True, "changed": True}
 
     def save_scan_results(self, networks: List[Network]) -> None:
         """Save scan results as CSV. fsync'd."""
@@ -1808,36 +2357,41 @@ class LootManager:
     # ------------------------------------------------------------------
 
     def save_bt_device(self, mac: str, rssi: int, name: str,
-                       is_airtag: bool, is_smarttag: bool) -> bool:
+                       is_airtag: bool, is_smarttag: bool, *, observed_at=None,
+                       position=_OBSERVATION_POSITION_UNSET) -> bool:
         """Append BLE device to bt_devices.csv (dedup by MAC). fsync'd."""
         if not self._session_active or not mac:
             return False
-        path = self._session / "bt_devices.csv"
-        # Get GPS coords if available
-        lat, lon = 0.0, 0.0
-        if self._gps and self._gps.available:
-            fix = self._gps.fix
-            if fix.valid:
-                lat = round(fix.latitude, 7)
-                lon = round(fix.longitude, 7)
-        if path.is_file():
-            try:
-                existing = path.read_text(encoding="utf-8")
-            except (OSError, UnicodeError) as exc:
-                return self._wardrive_save_failed(path, exc)
-            if f",{mac}," in existing or existing.startswith(f"{mac},"):
-                return False  # already known, not a persistence failure
-        else:
-            existing = ""
-        if not existing:
-            existing = "timestamp,mac,rssi,name,airtag,smarttag,lat,lon\n"
-        ts = datetime.now().strftime("%Y-%m-%dT%H:%M:%S")
-        if not self._commit_wardrive_csv(path, [existing,
-            f"{ts},{mac},{rssi},{name},{is_airtag},{is_smarttag},"
-            f"{lat},{lon}\n"]):
-            return False
-        self.update_session_loot()
-        return True
+        # The existing writer and position-only correction share the same lock.
+        with self._db_lock:
+            path = self._session / "bt_devices.csv"
+            # Get GPS coords if available
+            lat, lon = 0.0, 0.0
+            if position is not _OBSERVATION_POSITION_UNSET:
+                lat, lon, _, _ = self._observation_coordinates(position)
+            elif self._gps and self._gps.available:
+                fix = self._gps.fix
+                if fix.valid:
+                    lat = round(fix.latitude, 7)
+                    lon = round(fix.longitude, 7)
+            if path.is_file():
+                try:
+                    existing = path.read_text(encoding="utf-8")
+                except (OSError, UnicodeError) as exc:
+                    return self._wardrive_save_failed(path, exc)
+                if f",{mac}," in existing or existing.startswith(f"{mac},"):
+                    return False  # already known, not a persistence failure
+            else:
+                existing = ""
+            if not existing:
+                existing = "timestamp,mac,rssi,name,airtag,smarttag,lat,lon\n"
+            ts = self._observation_timestamp(observed_at, "T")
+            if not self._commit_wardrive_csv(path, [existing,
+                f"{ts},{mac},{rssi},{name},{is_airtag},{is_smarttag},"
+                f"{lat},{lon}\n"]):
+                return False
+            self.update_session_loot()
+            return True
 
     def save_bt_airtag_event(self, airtags: int, smarttags: int) -> None:
         """Log an AirTag scanner detection event. fsync'd."""
@@ -1904,11 +2458,8 @@ class LootManager:
             wd_file = session_dir / "wardriving.csv"
             if wd_file.is_file():
                 try:
-                    with open(wd_file, "r", encoding="utf-8") as fh:
-                        for i, line in enumerate(fh):
-                            if i <= 1:
-                                continue  # skip pre-header + header
-                            parts = self._wardrive_fields(line)
+                    with open(wd_file, "r", encoding="utf-8", newline="") as fh:
+                        for parts in self.iter_wardrive_fields(fh):
                             if parts is not None:
                                 try:
                                     lat = float(parts[6])
@@ -1927,36 +2478,32 @@ class LootManager:
                                         })
                                 except (ValueError, IndexError):
                                     pass
-                except OSError:
+                except (OSError, ValueError, csv.Error):
                     pass
 
             # BT devices CSV (only WiFi + BT on map, no handshake/meshcore)
             bt_file = session_dir / "bt_devices.csv"
             if bt_file.is_file():
                 try:
-                    with open(bt_file, "r", encoding="utf-8") as fh:
-                        for line in fh:
-                            row = self._bt_history_record(line)
-                            if row is None:
-                                continue
-                            try:
-                                lat = float(row["lat"])
-                                lon = float(row["lon"])
-                                if (math.isfinite(lat) and math.isfinite(lon)
-                                        and -90 <= lat <= 90 and -180 <= lon <= 180
-                                        and (lat != 0.0 or lon != 0.0)):
-                                    points.append({
-                                        "lat": lat, "lon": lon,
-                                        "type": "bt",
-                                        "label": row["label"],
-                                        "bssid": row["mac"],
-                                        "auth": "[BLE]",
-                                        "rssi": row["rssi"],
-                                        "channel": "",
-                                    })
-                            except (ValueError, TypeError):
-                                pass
-                except OSError:
+                    for row in self._iter_bt_history(bt_file):
+                        try:
+                            lat = float(row["lat"])
+                            lon = float(row["lon"])
+                            if (math.isfinite(lat) and math.isfinite(lon)
+                                    and -90 <= lat <= 90 and -180 <= lon <= 180
+                                    and (lat != 0.0 or lon != 0.0)):
+                                points.append({
+                                    "lat": lat, "lon": lon,
+                                    "type": "bt",
+                                    "label": row["label"],
+                                    "bssid": row["mac"],
+                                    "auth": "[BLE]",
+                                    "rssi": row["rssi"],
+                                    "channel": "",
+                                })
+                        except (ValueError, TypeError):
+                            pass
+                except (OSError, ValueError, csv.Error):
                     pass
 
         self._gps_points_cache = points
@@ -1967,17 +2514,18 @@ class LootManager:
     # Cleanup
     # ------------------------------------------------------------------
 
-    def close(self) -> None:
+    def close(self) -> bool:
         """Close file handles, write session summary, and update loot DB."""
         # Stop background sync thread before closing the handle it touches
         self._backup_stop = True
-        self.flush_all()
+        saved = self.flush_all()
 
         if self._serial_fh:
             try:
                 self._serial_fh.close()
-            except OSError:
-                pass
+            except OSError as exc:
+                log.error("Cannot close the loot log: %s", exc)
+                saved = False
             self._serial_fh = None
 
         # Write session summary
@@ -1992,14 +2540,21 @@ class LootManager:
                             size = f.stat().st_size
                             fh.write(f"  {f.relative_to(self._session)} "
                                      f"({size} bytes)\n")
-                    _fsync_file(fh)
-            except OSError:
-                pass
+                    fh.flush()
+                    os.fsync(fh.fileno())
+            except OSError as exc:
+                log.error("Cannot write the loot session summary: %s", exc)
+                saved = False
 
             # Final DB update + one last OS sync so every file on the card
             # reflects our final state.
-            self.update_session_loot()
+            if not self.update_session_loot():
+                saved = False
             try:
                 os.sync()
             except AttributeError:
                 pass
+            except OSError as exc:
+                log.error("Cannot sync final loot data: %s", exc)
+                saved = False
+        return saved

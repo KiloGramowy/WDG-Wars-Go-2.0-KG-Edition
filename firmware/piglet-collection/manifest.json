@@ -1,0 +1,478 @@
+{
+  "schema": 1,
+  "status": "0.9.20 DEV / UNRELEASED",
+  "firmware_identifier": "Piglet KG v1.0.1 + UConsole Collection upload isolation candidate 2026-11-11",
+  "display_version_unchanged": "v1.0.1",
+  "provenance": {
+    "repository": "KiloGramowy/Piglet-KG-Edition",
+    "base_commit": "fd8c95c5386cb116fcca7c1baa5b2936af9be880",
+    "comparison_tag": "v1.0.1",
+    "comparison_commit": "b6c706cf3a41e5df8946a87f0cfba05b7ac93d3a",
+    "distribution": "complete sketch sources; no SD configuration or flash dumps"
+  },
+  "target": {
+    "board": "Seeed XIAO ESP32-C5",
+    "chip": "ESP32-C5",
+    "revision_tested": "v1.0",
+    "flash_bytes": 8388608,
+    "psram_bytes": 8388608,
+    "partition_scheme": "default_8MB",
+    "app_offset": "0x10000",
+    "app_partition": "app0",
+    "app_partition_bytes": 3342336,
+    "other_partitions_unchanged": true
+  },
+  "build": {
+    "arduino_cli": "1.5.1",
+    "core": "esp32:esp32@3.3.11",
+    "fqbn": "esp32:esp32:XIAO_ESP32C5:UploadSpeed=921600,CDCOnBoot=cdc,CPUFreq=240,FlashFreq=80,FlashMode=qio,FlashSize=8M,PartitionScheme=default_8MB,DebugLevel=none,PSRAM=enabled,EraseFlash=none,JTAGAdapter=default,ZigbeeMode=default",
+    "source_date_epoch": 1794355200,
+    "libraries": {
+      "TinyGPSPlus": "1.0.3",
+      "Adafruit SSD1306": "2.5.17",
+      "Adafruit GFX Library": "1.13.0",
+      "Adafruit BusIO": "1.17.4",
+      "ArduinoJson": "6.21.5"
+    },
+    "program_bytes": 1970205,
+    "global_bytes": 111372,
+    "compiled_partition_sha256": "1d9cca96de0fe07ad7fc0648b9878ddecd9ce565e38b589ad20fea698ed4c80c"
+  },
+  "sources": [
+    {
+      "path": "source/Piglet/battery_test.cpp",
+      "bytes": 1353,
+      "sha256": "c8ca51e8e79b66aebd50455ea3a2d84f21828a8a95c3c8e3bb947b95ee96150f"
+    },
+    {
+      "path": "source/Piglet/battery_test.h",
+      "bytes": 400,
+      "sha256": "b4b5f95337a14eeb896a59c0feca06a5adde8d8d6c36765d2742374854a06071"
+    },
+    {
+      "path": "source/Piglet/BleCsv.h",
+      "bytes": 1689,
+      "sha256": "8641619df74aab51ed34b9b88d149ea58725518762f57b06150bc57d8ee28712"
+    },
+    {
+      "path": "source/Piglet/BleScanner.cpp",
+      "bytes": 22323,
+      "sha256": "912e92dcc9aa4d0bb082c4f0147bf63cc7b3e4e9843376b889772faace1f2eea"
+    },
+    {
+      "path": "source/Piglet/BleScanner.h",
+      "bytes": 2343,
+      "sha256": "74db99b5ba1f8320143657d47a65da4086ff7e371fb8bf75019a5b85370c588b"
+    },
+    {
+      "path": "source/Piglet/CollectionArchive.cpp",
+      "bytes": 24864,
+      "sha256": "c9f2d329a44b644c5db469d31264b904eda3b383224ae915ae2d3259c4c45a35"
+    },
+    {
+      "path": "source/Piglet/CollectionArchive.h",
+      "bytes": 1753,
+      "sha256": "a84307c397157ced581563a2aeeeeed1c4395add67aa51323802a04ba75379d3"
+    },
+    {
+      "path": "source/Piglet/CollectionHandover.h",
+      "bytes": 1265,
+      "sha256": "7d034983f35854c46e02b29379e141f089aea76ad85992c763711dacd956b583"
+    },
+    {
+      "path": "source/Piglet/CollectionReceipt.h",
+      "bytes": 2605,
+      "sha256": "7969015938b594f0cca18ca40c0e505489db180de63fb98f0e5fa559ad31c322"
+    },
+    {
+      "path": "source/Piglet/Config.cpp",
+      "bytes": 26047,
+      "sha256": "ab36f534d2e1d833745474a780b56e0404897c9b586d3897f1ae79bc7eb55c81"
+    },
+    {
+      "path": "source/Piglet/Config.h",
+      "bytes": 5091,
+      "sha256": "2ae749f743f834019b243880c8f6eb134556202cd6a28b6657ea6ffc092a2b58"
+    },
+    {
+      "path": "source/Piglet/Display.cpp",
+      "bytes": 32487,
+      "sha256": "d4ec4a3981366c2d36f66b5a409ea6293b9f9bd8d300da3244e80a5209e9033e"
+    },
+    {
+      "path": "source/Piglet/Display.h",
+      "bytes": 820,
+      "sha256": "2c25db131321028f9d9bba4f7d287f0aea85a3ec25be9e00301ee46502848869"
+    },
+    {
+      "path": "source/Piglet/Globals.cpp",
+      "bytes": 1617,
+      "sha256": "a321262daf67460e5ce8e7ce2183ec4727c3c589de03c4342781ee4be0c5f3b9"
+    },
+    {
+      "path": "source/Piglet/Globals.h",
+      "bytes": 2479,
+      "sha256": "f61639c8bec0eea430de38bd885640f9057b7fffbffd61ddefd4bd836de357bc"
+    },
+    {
+      "path": "source/Piglet/GPS.cpp",
+      "bytes": 3057,
+      "sha256": "9418c8847c086836188538ee9ca031aa57eb6ceb74e4bd14762c5fdc21902877"
+    },
+    {
+      "path": "source/Piglet/GPS.h",
+      "bytes": 428,
+      "sha256": "c2f4aefe7c5aefa680dd38373953c89fa244e63d1af30596b5767493d425cd97"
+    },
+    {
+      "path": "source/Piglet/MeshNode.cpp",
+      "bytes": 34118,
+      "sha256": "31ef5bbb4ad7fe06a517d0f26ae929da29353a1dab1f219e66c6541bd1cad776"
+    },
+    {
+      "path": "source/Piglet/MeshNode.h",
+      "bytes": 1954,
+      "sha256": "54e685b0e11ed5d45d4b1406ff1ca30e3153a38ae731460078632332a7cd5289"
+    },
+    {
+      "path": "source/Piglet/Piglet.ino",
+      "bytes": 30848,
+      "sha256": "888bfeafbfd1d6afc3fd4528403811225a31c20896debe03e89d5f4dc74e10bf"
+    },
+    {
+      "path": "source/Piglet/PigletCollection.cpp",
+      "bytes": 25008,
+      "sha256": "f372a2670dfa704035ab0eb92674dd2dfb19e0efb14eca124de39e5407b07f53"
+    },
+    {
+      "path": "source/Piglet/PigletCollection.h",
+      "bytes": 554,
+      "sha256": "c2565a355a589d8dcd2eabddb8a9e0f092a72eb3e9f49f2f66788e230f1d948f"
+    },
+    {
+      "path": "source/Piglet/PinMapDefs.h",
+      "bytes": 1311,
+      "sha256": "9d1dde639d354fb9321c69821ff5906f99f9cfb97988acb8deb3c86f0ec992b9"
+    },
+    {
+      "path": "source/Piglet/ResetHistory.cpp",
+      "bytes": 10128,
+      "sha256": "783c56a61f5ba18d670ff850cf420e0c225b4919a18acfd0074c8edf694f07c7"
+    },
+    {
+      "path": "source/Piglet/ResetHistory.h",
+      "bytes": 413,
+      "sha256": "ec15bc96b7b78b62fef88cc811a9031fd21b7648e470c88ccd062c186020f1f9"
+    },
+    {
+      "path": "source/Piglet/Scanner.cpp",
+      "bytes": 12283,
+      "sha256": "458441ccb24bf635cabcce6cb437b925787b17b58b6082af23d0ebd78deeefb1"
+    },
+    {
+      "path": "source/Piglet/Scanner.h",
+      "bytes": 508,
+      "sha256": "c3af02aa0a0c0f88efe8ba607fc31f136192bc697bd8e3a94f58aab6a1628b12"
+    },
+    {
+      "path": "source/Piglet/SDUtils.cpp",
+      "bytes": 19743,
+      "sha256": "93cbfe65de3a39abb43d3b31e138715d35c8fc1a3b50b3811c4a635b72119e79"
+    },
+    {
+      "path": "source/Piglet/SDUtils.h",
+      "bytes": 1085,
+      "sha256": "1cfb9e2488f2c52107e4ffe0b0dd18e9c92f850ef0ac5f3b4a4d566cc9cc3f5b"
+    },
+    {
+      "path": "source/Piglet/StartupGpsBackfill.cpp",
+      "bytes": 10623,
+      "sha256": "d8e56022f1398ef280f6f7fc0c465a49772f79c988e2d7b2b2096e217b40e56f"
+    },
+    {
+      "path": "source/Piglet/StartupGpsBackfill.h",
+      "bytes": 1037,
+      "sha256": "424baba1da48632b9b22629c0ac8050ceaa8c3239beeff1514f70573106bbf23"
+    },
+    {
+      "path": "source/Piglet/WebUI.cpp",
+      "bytes": 84754,
+      "sha256": "7211f7453747f44978be3e85ba6931eb997d93031fed1341b115efaa373fd110"
+    },
+    {
+      "path": "source/Piglet/WebUI.h",
+      "bytes": 58,
+      "sha256": "4324d8474f5b365dadfe4f7ff7425387782bd4b79b8e751aa5d63878eeb4f11c"
+    },
+    {
+      "path": "source/Piglet/WifiDedupe.cpp",
+      "bytes": 9232,
+      "sha256": "983134f6fd615486b447102889e1bf144c2aad4cdf9d752d48588c2adbdd87ee"
+    },
+    {
+      "path": "source/Piglet/WifiDedupe.h",
+      "bytes": 708,
+      "sha256": "18d51ccaa0c84d39dec571b656d6f76a2475dbf0175df480e0b083cbfcf83890"
+    },
+    {
+      "path": "source/Piglet/WiFiManager.cpp",
+      "bytes": 8648,
+      "sha256": "64d410527004aa96b0be2f645172ec4441374d53599e27de5c36c720132b10b9"
+    },
+    {
+      "path": "source/Piglet/WiFiManager.h",
+      "bytes": 380,
+      "sha256": "19050d1a6c32393ae5bb7089546940a29c1fdb41c2e879faefe8cdda21d85efa"
+    },
+    {
+      "path": "source/Piglet/WigleUpload.cpp",
+      "bytes": 26741,
+      "sha256": "27f4df37472faf31c5a865b1a21752bb424b7054e06b72d00ad9e032030b64e0"
+    },
+    {
+      "path": "source/Piglet/WigleUpload.h",
+      "bytes": 841,
+      "sha256": "85212fcffb339fa2354ca98a1dcf964dd28bc1cb4f0c6ea501d764b557b5d333"
+    }
+  ],
+  "comparison_baseline": [
+    {
+      "path": "baseline/BleCsv.h",
+      "bytes": 1689,
+      "sha256": "8641619df74aab51ed34b9b88d149ea58725518762f57b06150bc57d8ee28712"
+    },
+    {
+      "path": "baseline/BleScanner.cpp",
+      "bytes": 22323,
+      "sha256": "912e92dcc9aa4d0bb082c4f0147bf63cc7b3e4e9843376b889772faace1f2eea"
+    },
+    {
+      "path": "baseline/BleScanner.h",
+      "bytes": 2343,
+      "sha256": "74db99b5ba1f8320143657d47a65da4086ff7e371fb8bf75019a5b85370c588b"
+    },
+    {
+      "path": "baseline/Config.cpp",
+      "bytes": 24129,
+      "sha256": "a4cf5e49ef269d82b121e56f258816f0c86af7dae6bc4629ecbc203675c18ebf"
+    },
+    {
+      "path": "baseline/Config.h",
+      "bytes": 4708,
+      "sha256": "3c583b56192b22d50d4f313a2fc6375da6677f6f5a2b3d6eac395c2b87671fc1"
+    },
+    {
+      "path": "baseline/Display.cpp",
+      "bytes": 32487,
+      "sha256": "d4ec4a3981366c2d36f66b5a409ea6293b9f9bd8d300da3244e80a5209e9033e"
+    },
+    {
+      "path": "baseline/Display.h",
+      "bytes": 820,
+      "sha256": "2c25db131321028f9d9bba4f7d287f0aea85a3ec25be9e00301ee46502848869"
+    },
+    {
+      "path": "baseline/GPS.cpp",
+      "bytes": 3057,
+      "sha256": "9418c8847c086836188538ee9ca031aa57eb6ceb74e4bd14762c5fdc21902877"
+    },
+    {
+      "path": "baseline/GPS.h",
+      "bytes": 428,
+      "sha256": "c2f4aefe7c5aefa680dd38373953c89fa244e63d1af30596b5767493d425cd97"
+    },
+    {
+      "path": "baseline/Globals.cpp",
+      "bytes": 1617,
+      "sha256": "a321262daf67460e5ce8e7ce2183ec4727c3c589de03c4342781ee4be0c5f3b9"
+    },
+    {
+      "path": "baseline/Globals.h",
+      "bytes": 2479,
+      "sha256": "f61639c8bec0eea430de38bd885640f9057b7fffbffd61ddefd4bd836de357bc"
+    },
+    {
+      "path": "baseline/MeshNode.cpp",
+      "bytes": 34118,
+      "sha256": "31ef5bbb4ad7fe06a517d0f26ae929da29353a1dab1f219e66c6541bd1cad776"
+    },
+    {
+      "path": "baseline/MeshNode.h",
+      "bytes": 1954,
+      "sha256": "54e685b0e11ed5d45d4b1406ff1ca30e3153a38ae731460078632332a7cd5289"
+    },
+    {
+      "path": "baseline/Piglet.ino",
+      "bytes": 30279,
+      "sha256": "4dc58de5d46f6edbcece367d6f9be3d3d5c9313c9e76c7640c07baaebaac97e9"
+    },
+    {
+      "path": "baseline/PinMapDefs.h",
+      "bytes": 1311,
+      "sha256": "9d1dde639d354fb9321c69821ff5906f99f9cfb97988acb8deb3c86f0ec992b9"
+    },
+    {
+      "path": "baseline/ResetHistory.cpp",
+      "bytes": 10128,
+      "sha256": "783c56a61f5ba18d670ff850cf420e0c225b4919a18acfd0074c8edf694f07c7"
+    },
+    {
+      "path": "baseline/ResetHistory.h",
+      "bytes": 413,
+      "sha256": "ec15bc96b7b78b62fef88cc811a9031fd21b7648e470c88ccd062c186020f1f9"
+    },
+    {
+      "path": "baseline/SDUtils.cpp",
+      "bytes": 13608,
+      "sha256": "f580ca05bf256fb33afee919dba9a7944a2756b8466d67e47bc06c023ef483d0"
+    },
+    {
+      "path": "baseline/SDUtils.h",
+      "bytes": 698,
+      "sha256": "fe2bac9f6db07ae11f64bc77088460cb44049bc620585d2e9a0b040a91f47dec"
+    },
+    {
+      "path": "baseline/Scanner.cpp",
+      "bytes": 12283,
+      "sha256": "458441ccb24bf635cabcce6cb437b925787b17b58b6082af23d0ebd78deeefb1"
+    },
+    {
+      "path": "baseline/Scanner.h",
+      "bytes": 508,
+      "sha256": "c3af02aa0a0c0f88efe8ba607fc31f136192bc697bd8e3a94f58aab6a1628b12"
+    },
+    {
+      "path": "baseline/StartupGpsBackfill.cpp",
+      "bytes": 10623,
+      "sha256": "d8e56022f1398ef280f6f7fc0c465a49772f79c988e2d7b2b2096e217b40e56f"
+    },
+    {
+      "path": "baseline/StartupGpsBackfill.h",
+      "bytes": 1037,
+      "sha256": "424baba1da48632b9b22629c0ac8050ceaa8c3239beeff1514f70573106bbf23"
+    },
+    {
+      "path": "baseline/WebUI.cpp",
+      "bytes": 78210,
+      "sha256": "b08bc677f86db5e3c1014ba7aa04622cf466163a7fdcdace8410c15867fc78b0"
+    },
+    {
+      "path": "baseline/WebUI.h",
+      "bytes": 58,
+      "sha256": "4324d8474f5b365dadfe4f7ff7425387782bd4b79b8e751aa5d63878eeb4f11c"
+    },
+    {
+      "path": "baseline/WiFiManager.cpp",
+      "bytes": 7356,
+      "sha256": "3eb1fbcd9523e0b16f1168d3ad66856f8bf0188448918780a77130501d4e046d"
+    },
+    {
+      "path": "baseline/WiFiManager.h",
+      "bytes": 169,
+      "sha256": "c2776229aae623b792ab957c4a6cd8916869f9d185566e8ed982daf50a0a1b3d"
+    },
+    {
+      "path": "baseline/WifiDedupe.cpp",
+      "bytes": 9232,
+      "sha256": "983134f6fd615486b447102889e1bf144c2aad4cdf9d752d48588c2adbdd87ee"
+    },
+    {
+      "path": "baseline/WifiDedupe.h",
+      "bytes": 708,
+      "sha256": "18d51ccaa0c84d39dec571b656d6f76a2475dbf0175df480e0b083cbfcf83890"
+    },
+    {
+      "path": "baseline/WigleUpload.cpp",
+      "bytes": 25778,
+      "sha256": "c3c4c525fef79a0e597ae5e2812ae4635dcd24cfd1ae2bd296fa547651785c4e"
+    },
+    {
+      "path": "baseline/WigleUpload.h",
+      "bytes": 541,
+      "sha256": "6c91c883d44716b9130be58be4c08ad32a7f2126ed7e34951116f02891b9d611"
+    },
+    {
+      "path": "baseline/battery_test.cpp",
+      "bytes": 1353,
+      "sha256": "c8ca51e8e79b66aebd50455ea3a2d84f21828a8a95c3c8e3bb947b95ee96150f"
+    },
+    {
+      "path": "baseline/battery_test.h",
+      "bytes": 400,
+      "sha256": "b4b5f95337a14eeb896a59c0feca06a5adde8d8d6c36765d2742374854a06071"
+    }
+  ],
+  "image": {
+    "path": "piglet-kg-uconsole-xiao-c5-app.bin",
+    "bytes": 1970496,
+    "sha256": "bf7919af370c6bfbd2016683927d6cfa623864dc1e38eb7912087ecabda715ad"
+  },
+  "validation": {
+    "status": "COMPILED; APP-ONLY DEPLOYED AND VERIFIED ON ONE PHYSICAL XIAO ESP32-C5",
+    "software": {
+      "firmware_checks_passed": 51,
+      "firmware_skips": 0,
+      "firmware_breakdown": {
+        "source_regression": 20,
+        "production_cpp_mock_python_tests": 2,
+        "webui": 14,
+        "portable_cpp_programs": 2,
+        "backup_helper_offline": 13
+      },
+      "host_collection": {
+        "run": 184,
+        "passed": 182,
+        "skipped": 2
+      },
+      "host_dependencies": {
+        "run": 62,
+        "passed": 61,
+        "skipped": 1
+      },
+      "supplemental_real_archive": {
+        "files": 15,
+        "rows": 40254,
+        "passed": true
+      },
+      "host_skip_notes": "Two Windows symlink cases remain unrun; the optional archive skip was separately exercised successfully."
+    },
+    "physical": {
+      "board_revision": "ESP32-C5 v1.0",
+      "flash_bytes": 8388608,
+      "psram_bytes": 8388608,
+      "fresh_full_backups": 2,
+      "full_backup_bytes_each": 8388608,
+      "full_backups_equal": true,
+      "app_offset": "0x10000",
+      "app_readback_sha256": "bf7919af370c6bfbd2016683927d6cfa623864dc1e38eb7912087ecabda715ad",
+      "app_readback_exact": true,
+      "protected_flash_regions_unchanged": true,
+      "paired_collection": {
+        "acknowledged": 5,
+        "deferred": 0,
+        "pending_after": 0
+      },
+      "absent_collector_boots": 2,
+      "pending_after_absent_boots": [
+        1,
+        2
+      ],
+      "previous_pending_csv_preserved_and_protected": true,
+      "saved_configuration_unchanged_on_all_boots": true,
+      "completed_migration_not_reset": true,
+      "three_manual_upload_routes_http403_on_each_boot": true,
+      "timed_sta_webui_closed_and_wifi_ble_resumed_on_each_boot": true,
+      "normal_uploads": "Offline mocks only; no real external log upload performed",
+      "cli_verify_and_reset": "esptool5.6.0 --before usb-reset --after hard-reset verify-flash: digest matched, application boot confirmed"
+    },
+    "limitations": [
+      "One physical Piglet; multi-Piglet device-ID truncation risk remains documented and is not corrected in this scoped task.",
+      "No physical full-SD, forced power-loss or interrupted-transfer test in this correction; storage/lifecycle faults are tested with mocks.",
+      "Real Wi-Fi scans, BLE callbacks and GPS NMEA reception observed; a fresh valid GPS fix and new geolocated CSV row were not confirmed.",
+      "Normal Piglet behavior checked by source comparisons and offline production-backend mocks, not live external uploads.",
+      "Pre-existing Arduino/core MSPI dummy-cacheline PSRAM warning remains visible; subsequent 8 MiB PSRAM deduplication initialization succeeded.",
+      "CSV WebUI backups do not constitute a full SD image or a complete wardriver.cfg backup.",
+      "Compiler-origin source path strings exist in the compiled image; they are not runtime dependencies or device credentials."
+    ]
+  }
+}

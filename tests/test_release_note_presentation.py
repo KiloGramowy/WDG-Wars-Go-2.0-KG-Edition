@@ -31,10 +31,10 @@ class ReleaseNotePresentationTests(unittest.TestCase):
         self.assertEqual(self.candidate(), notes)
         # The display must retain the actual candidate's facts and instructions.
         words = " ".join(text.split())
-        for fact in ("Before:", "Now:", "0.9.19.2", "5 and 10 minutes",
-                     "MC:", "MT:", "[RX GPS]", "UP TO DATE", "Enter or Esc",
+        for fact in ("Before:", "Now:", "0.9.20", "720 minutes",
+                     "110 ms", "1000 ms", "10,000", "6 MiB", "Enter or Esc",
                      "0.9.17, 0.9.18 or 0.9.19", "0.9.19.1 or later",
-                     "0.9.19.1 -> 0.9.19.2", "Physical RF reception has not been verified"):
+                     "Normal Piglet", "60-second", "5.0.0", "Keep all"):
             with self.subTest(fact=fact):
                 self.assertIn(fact, words)
 
@@ -42,7 +42,8 @@ class ReleaseNotePresentationTests(unittest.TestCase):
         notes = self.candidate()
         titles = re.findall(r"^## (.+)$", notes, re.M)
         lines = game_note_lines(notes)
-        projected = [line for line in lines if re.match(r"\d+\. ", line)]
+        projected = [line for line in lines if re.fullmatch(
+            r"\d{1,2}\. [A-Z][A-Z0-9 /()+,.'&:_-]*", line)]
         self.assertEqual(len(projected), len(titles))
         for number, heading in enumerate(projected, 1):
             with self.subTest(heading=heading):
@@ -54,19 +55,20 @@ class ReleaseNotePresentationTests(unittest.TestCase):
     def test_real_candidate_filter_keeps_only_missing_blocks_for_older_users(self):
         candidate = self.candidate() + "\n"
         older = (
-            "RELEASE 0.9.19.1 - FIRST MICROFIX\nEarlier microfix instructions.\n\n",
-            "RELEASE 0.9.19 - MAP MICROFIX\nEarlier map instructions.\n\n",
-            "RELEASE 0.9.18 - PREVIOUS FIXES\nEarlier player instructions.\n\n",
+            "RELEASE 0.9.19.2 - PREVIOUS RELEASE\nEarlier fixture: clean-map instructions.\n\n",
+            "RELEASE 0.9.19.1 - FIRST MICROFIX\nEarlier fixture: microfix instructions.\n\n",
+            "RELEASE 0.9.19 - MAP MICROFIX\nEarlier fixture: map instructions.\n\n",
+            "RELEASE 0.9.18 - PREVIOUS FIXES\nEarlier fixture: player instructions.\n\n",
         )
         notes = candidate + "".join(older)
-        for installed, kept in (("0.9.17", 3), ("0.9.18", 2), ("0.9.19", 1),
-                                ("0.9.19.1", 0), ("0.9.19.2", 0)):
+        for installed, kept in (("0.9.17", 4), ("0.9.18", 3), ("0.9.19", 2),
+                                ("0.9.19.1", 1), ("0.9.19.2", 0), ("0.9.20", 0)):
             with self.subTest(installed=installed):
-                selected = filter_release_notes(notes, installed, "0.9.19.2")
+                selected = filter_release_notes(notes, installed, "0.9.20")
                 self.assertEqual(selected, candidate + "".join(older[:kept]))
                 text = "\n".join(game_note_lines(selected))
                 self.assertIn(candidate.splitlines()[0], text)
-                self.assertEqual(text.count("Earlier "), kept)
+                self.assertEqual(text.count("Earlier fixture:"), kept)
                 self.assertNotIn("##", text)
                 self.assertEqual(notes, candidate + "".join(older))
 

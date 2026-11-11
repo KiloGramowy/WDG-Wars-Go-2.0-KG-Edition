@@ -28,6 +28,8 @@ import pyxel
 
 from .serial_manager import SerialManager, detect_esp32_port
 from .gps_manager import GpsManager
+from .wardrive_solo import WardriveSoloController
+from .wardrive_track import WardriveTrack
 from .loot_manager import LootDataError, LootManager
 from .app_state import AppState, Network
 from .network_manager import NetworkManager
@@ -141,6 +143,8 @@ HACKER_QUIPS = [
     ["scanning...", "i see you", "networks exposed", "who's hiding?", "SSID hunter"],
     # SNIFF
     ["sniff sniff!", "packets=power", "wardrive!", "collecting...", "GPS+WiFi=pwn"],
+    # WARDRIVING
+    ["take the scenic route", "GPS meets packets", "eyes on the road", "radio road trip", "collecting..."],
     # ATTACK
     ["hack the world", "no mercy", "DEAUTH ALL!", "shell acquired", "fear the cap"],
     # ADDONS
@@ -209,11 +213,16 @@ MENU_CATS = [
         ("a", "AirTag Scan",     "scan_airtag",            "bt_airtag",    None),
     ]),
     ("SNIFF", [
-        ("1", "WiFi Wardrive",   "scan_networks",          "wardriving",   None),
-        ("2", "BT Wardrive",     "scan_bt",                "bt_scanning",  None),
+        ("1", "WiFi Sniff",      "scan_networks",          "wardriving",   None),
+        ("2", "BT Sniff",        "scan_bt",                "bt_scanning",  None),
         ("3", "Pkt Sniffer",     "start_sniffer",          "sniffer",      None),
         ("4", "HS Capture",      "start_handshake",        "handshake",    None),
         ("5", "HS Capture no SD","start_handshake_serial", "handshake",    None),
+    ]),
+    ("WARDRIVING", [
+        ("1", "WiFi Wardrive", "_solo_wifi", "solo_wifi", None),
+        ("2", "BLE Wardrive",  "_solo_ble",  "solo_ble",  None),
+        ("3", "Piglet Collection", "_piglet_collection", "piglet_collection", None),
     ]),
     ("ATTACK", [
         ("1", "Deauth",          "start_deauth",           "deauth",       "bssid_ch"),
@@ -267,6 +276,22 @@ MENU_CATS = [
         ("s", "Status",      "_srv_status", "_srv_status", None),
     ]),
 ]
+
+
+def _menu_tab_layout(categories, width):
+    """Fit full category labels in the existing panel, including PLUGINS."""
+    sizes = [len(name) * 5 + 6 for name, _items in categories]
+    extra = width - sum(sizes)
+    if extra < 0:
+        raise ValueError("Category labels exceed the menu panel")
+    quotient, remainder = divmod(extra, len(sizes))
+    result, offset = [], 0
+    for index, size in enumerate(sizes):
+        size += quotient + (index < remainder)
+        result.append((offset, size))
+        offset += size
+    return result
+
 
 # BLE device line regex (from JanOS bt_wardriving)
 # Groups: 1=MAC, 2=RSSI, 3=Name (optional), 4=[AirTag]/[SmartTag] (optional)
@@ -420,6 +445,15 @@ class WatchDogsGame:
 
     def __init__(self, serial_port=None, loot_path=None):
         self._shutting_down = False
+        # Logging must be ready before hardware setup or plugin callbacks run.
+        self.terminal_lines: list[str] = []
+        self._terminal_colors: list[int] = []
+        self.term_scroll = 0
+        self._term_lock = threading.Lock()
+        self._plugins = []
+        self._plugin_overlay = None
+        self._esp_serial_lock = threading.RLock()
+        self._flash_job_lock = threading.Lock()
         self._cleanup_done = False
         self._cleanup_running = False
         self._cleanup_errors = []
@@ -450,8 +484,8 @@ class WatchDogsGame:
         self._hacker_sprite_ok = False
         self._hacker_w = 0
         self._hacker_h = 0
-        self._menu_sprites: dict[int, str] = {}  # tab_idx → sprite path
-        self._current_menu_sprite = -1           # currently loaded tab
+        self._menu_sprites: dict[str, str] = {}  # category name → sprite path
+        self._current_menu_sprite = ""          # currently loaded category
         self._load_hacker_sprite()
 
         self.proj = MapProjection()
@@ -531,7 +565,7 @@ class WatchDogsGame:
             self._esp32 = False
 
         # Open GPS
-        self.gps.setup()
+        self._setup_gps_connection()
         if self._aio_available and self.gps.available:
             self._aio_power.claim("gps")
 
@@ -621,6 +655,15 @@ class WatchDogsGame:
         self._fw_version: str = ""          # detected from ESP32
         self._fw_remote_version: str = ""   # latest on GitHub
         self._fw_update_available = False
+        self._fw_generation = 0
+        # One flash job; short serial access sections never span downloads or
+        # the esptool process. Poll/send/reconnect use nonblocking acquisition.
+        self._flash_running = self._serial_busy = False
+        self._flash_process = self._flash_workspace = None
+        self._flash_device_acquired = self._flash_write_complete = False
+        self._flash_fw_pending = False
+        self._flash_fw_deadline = None
+        self._flash_status = ""
 
         # Own-fork release checks never pull code merely by opening the screen.
         self._init_game_updates()
@@ -644,6 +687,29 @@ class WatchDogsGame:
         self._mt_tx_pending = {}
         self._lora_protocol_picker = False
         self._lora_protocol_sel = 1  # Meshtastic LEFT, MeshCore RIGHT/default
+        self._solo_profile_picker = False
+        self._piglet_collection = None
+        self._piglet_collection_screen = False
+        self._piglet_pairing_visible = False
+        self._piglet_cancel_confirm = False
+        self._piglet_cancel_yes = False
+        self._piglet_leave_after_cancel = False
+        self._piglet_status = None
+        self._piglet_error = ""
+        self._piglet_poll_at = 0.0
+        self._solo_profile_sel = 0
+        self._solo_profile = "full"
+        self._solo_recorder = None
+        self._solo_track = WardriveTrack()
+        self._solo_backfill_waiting = False
+        self._solo_backfill_needs_stop = False
+        self._solo_backfill_resume = None
+        self._solo = WardriveSoloController(
+            self._start_scan_cmd,
+            lambda: self._request_esp_stop(solo=True),
+            self._on_solo_observation,
+            cancel_pending=self._cancel_solo_pending,
+            notice=self._solo_notice)
         self._radio_protocol = ""
         self._mesh_view_protocol = "meshcore"
         self._sdr = SDRManager()
@@ -686,21 +752,6 @@ class WatchDogsGame:
         _watch_addr = self._watch.check_existing()
         if _watch_addr:
             self._watch.connect(_watch_addr)
-        # Plugins
-        self._plugins = discover_plugins()
-        self._plugin_overlay = None  # active plugin overlay
-        for p in self._plugins:
-            p.on_load(self)
-        # Inject PLUGINS menu tab if any plugins loaded
-        if self._plugins:
-            plugin_items = []
-            for p_idx, p in enumerate(self._plugins):
-                for mi in p.menu_items():
-                    plugin_items.append(
-                        (mi.key, f"{mi.label}", f"_plugin_{p_idx}_{mi.action}",
-                         f"_p_{p_idx}_{mi.action}", None))
-            if plugin_items:
-                MENU_CATS.append(("PLUGINS", plugin_items))
         self._lora._on_tx_confirm = self._on_mc_tx_confirm
         self._mc_dm_target = None  # node dict when in DM mode
         self._mc_dm_ack_map: dict[bytes, int] = {}  # ack_hash → log index
@@ -846,7 +897,7 @@ class WatchDogsGame:
             else:
                 self.xp = self.loot.calculate_xp_from_loot()
                 if self.xp > 0:
-                    self.loot.save_xp(self.xp)
+                    self._xp_dirty = self.loot.save_xp(self.xp) is not True
         self.ble_devices: list[BleDevice] = []
         self.wifi_networks: list[WifiNetwork] = []
         # Map eligibility is session-only and independent of discovery XP/history.
@@ -999,12 +1050,6 @@ class WatchDogsGame:
         # Quit confirm dialog
         self.confirm_quit = False
 
-        # Terminal
-        self.terminal_lines: list[str] = []
-        self._terminal_colors: list[int] = []
-        self.term_scroll = 0
-        self._term_lock = threading.Lock()
-
         # Loot GPS points (loaded from all loot sessions)
         self.loot_points: list[dict] = []
         self._loot_points_ts = 0.0
@@ -1024,6 +1069,26 @@ class WatchDogsGame:
         # Already powered hardware still requires an explicit protocol choice.
         if self._lora_enabled:
             self._lora_protocol_picker = True
+
+        # Recover only an existing import/outbox at boot. Fresh installations
+        # create Collection state when its screen is first opened; no AP starts.
+        if self.loot and (Path(self.loot._base) / ".piglet_collection" / "index.sqlite3").exists():
+            self._ensure_piglet_collection()
+
+        # Plugins may immediately return identity, badge or UI callbacks.
+        # Start them only after the state they use is fully initialized.
+        self._plugins = discover_plugins()
+        for p in self._plugins:
+            p.on_load(self)
+        if self._plugins:
+            plugin_items = []
+            for p_idx, p in enumerate(self._plugins):
+                for mi in p.menu_items():
+                    plugin_items.append(
+                        (mi.key, f"{mi.label}", f"_plugin_{p_idx}_{mi.action}",
+                         f"_p_{p_idx}_{mi.action}", None))
+            if plugin_items:
+                MENU_CATS.append(("PLUGINS", plugin_items))
 
         if not self._exit_requested:
             pyxel.run(self._guard_update, self._guard_draw)
@@ -1113,11 +1178,22 @@ class WatchDogsGame:
         self.xp += amount
         self._xp_dirty = True
 
-    def _save_xp_if_dirty(self) -> None:
-        """Persist XP to loot_db.json if changed."""
-        if self._xp_dirty and self.loot:
-            self.loot.save_xp(self.xp)
-            self._xp_dirty = False
+    def _save_xp_if_dirty(self) -> bool:
+        """Clear dirty XP only after storage confirms a durable commit."""
+        if not self._xp_dirty:
+            return True
+        if self.loot is None:
+            return False
+        try:
+            saved = self.loot.save_xp(self.xp)
+        except (OSError, ValueError, TypeError, MemoryError) as exc:
+            logging.getLogger(__name__).warning("XP save failed; progress remains pending: %s", exc)
+            return False
+        if saved is not True:
+            logging.getLogger(__name__).warning("XP save failed; progress remains pending")
+            return False
+        self._xp_dirty = False
+        return True
 
     def _load_hacker_sprite(self):
         """Load hacker character PNG into pyxel image bank 1.
@@ -1159,20 +1235,20 @@ class WatchDogsGame:
         except Exception:
             self._hacker_sprite_ok = False
 
-        # Build per-tab sprite map: tab_index → sprite path
-        # 0=SCAN, 1=SNIFF, 2=ATTACK, 3=ADDONS, 4=SYSTEM
+        # Names keep the original art attached to its category when tabs move.
         _tab_sprites = {
-            0: "scan_sprite.png",      # SCAN tab
-            1: "sniff_sprite.png",     # SNIFF tab
-            2: "attack_sprite.png",    # ATTACK tab
-            3: "addons_sprite.png",    # ADDONS tab
-            4: "hacker_sprite.png",    # SYSTEM tab
+            "SCAN": "scan_sprite.png",
+            "SNIFF": "sniff_sprite.png",
+            "WARDRIVING": "sniff_sprite.png",
+            "ATTACK": "attack_sprite.png",
+            "ADDONS": "addons_sprite.png",
+            "SYSTEM": "hacker_sprite.png",
         }
         for tab_idx, fname in _tab_sprites.items():
             p = _project_root / "assets" / fname
             if p.exists():
                 self._menu_sprites[tab_idx] = str(p)
-        self._current_menu_sprite = 4  # hacker_sprite loaded by default
+        self._current_menu_sprite = "SYSTEM"  # hacker_sprite loaded by default
 
         # Load CB radio sprite into image bank 2 (for MeshCore notifications)
         self._radio_sprite_ok = False
@@ -1328,7 +1404,8 @@ class WatchDogsGame:
         self._boot_phase = False
         port = self._boot_serial_port
 
-        self._term_add("[SYS] ESP32 Watch Dogs v1.0", raw=True)
+        from . import __version__
+        self._term_add(f"[SYS] WDGWarsGo v{__version__}", raw=True)
         self._term_add("[SYS] TAB=menu  SPACE=hack  =/]=zoom+  -/[=zoom-", raw=True)
         if self._esp32:
             self._term_add(f"[OK] ESP32 connected on {port}", raw=True)
@@ -1419,9 +1496,13 @@ class WatchDogsGame:
 
         # ── Subtitle ──
         sub_y = logo_bottom + 8
-        pyxel.text((W - 36) // 2 + 40, sub_y, "by LOCOSP", C_DIM)
+        _author = "by LOCOSP"
         _modified = "Modified by KiloGramowy"
-        pyxel.text((W - len(_modified) * 5) // 2, sub_y + 12,
+        _font = getattr(self, "_font", None)
+        _author_w = _font.text_width(_author) if _font is not None else len(_author) * 4
+        _modified_w = _font.text_width(_modified) if _font is not None else len(_modified) * 4
+        pyxel.text((W - _author_w) // 2, sub_y, _author, C_DIM)
+        pyxel.text((W - _modified_w) // 2, sub_y + 12,
                    _modified, C_DIM)
         # Edition subtitle types in as the system initializes.
         _ed = "ESP32-C5 Edition"
@@ -1488,57 +1569,78 @@ class WatchDogsGame:
             if len(self._mitm_log) > 500:
                 self._mitm_log = self._mitm_log[-500:]
 
-    def _try_reconnect_esp32(self) -> bool:
+    def _try_reconnect_esp32(self, *, _flash_owner=False) -> bool:
         """Try to detect and reconnect ESP32. Like JanOS wait_for_esp32."""
-        if getattr(self, "_shutting_down", False):
+        owned_reconnect = (_flash_owner and getattr(self, "_flash_reconnect_thread", None)
+                           == __import__("threading").get_ident())
+        if (getattr(self, "_serial_busy", False)
+                or (getattr(self, "_flash_running", False) and not owned_reconnect)):
             return False
-        port = detect_esp32_port()
-        if not port:
+        access_lock = getattr(self, "_esp_serial_lock", None)
+        if access_lock is not None and not access_lock.acquire(blocking=False):
             return False
         try:
-            self.serial = SerialManager(port)
-            self.serial.setup()
-            # A replugged ESP32 cannot acknowledge a stop sent to the old port.
-            # Establish a new barrier directly, without recursing through _send.
-            if not self.serial.send_command("stop"):
-                raise OSError("ESP32 stop handshake could not be written")
-            self._clear_esp_scan_state(cancel_pending=True)
-            self._esp_stop_waiting = True
-            self._esp_stop_required = False
-            self._esp_stop_timed_out = self._esp_stop_ack = False
-            self._esp_stop_requested_at = time.monotonic()
-            self._pending_cmd_frame = pyxel.frame_count + 15
-            if getattr(self, "_wardrive_selected", None):
-                self._wardrive_pause("ESP32 reconnected", request_stop=False)
-            self._term_add("[TX] stop (reconnect handshake)", raw=True)
-            self._esp32 = True
-            self.state.connected = True
-            self._boot_serial_port = port
-            self._term_add(f"[SYS] ESP32 found on {port}", raw=True)
-            # Probe firmware version
-            if not self._fw_version:
-                try:
-                    self.serial.send_command("version")
-                except Exception:
-                    pass
-            return True
-        except Exception as e:
-            self._esp32 = False
-            self.state.connected = False
-            if self.serial:
-                try:
-                    self.serial.close()
-                except Exception:
-                    pass
-            self.serial = None
-            self._term_add(f"[ERR] Reconnect failed: {e}", raw=True)
-            return False
+            if (getattr(self, "_serial_busy", False)
+                    or (getattr(self, "_flash_running", False) and not owned_reconnect)):
+                return False
+            if getattr(self, "_shutting_down", False):
+                return False
+            port = detect_esp32_port()
+            if not port:
+                return False
+            try:
+                self.serial = SerialManager(port)
+                self.serial.setup()
+                solo = getattr(self, "_solo", None)
+                if solo is not None:
+                    solo.disconnected()
+                    self._solo_backfill_resume = None
+                # A replugged ESP32 cannot acknowledge a stop sent to the old port.
+                # Establish a new barrier directly, without recursing through _send.
+                if not self.serial.send_command("stop"):
+                    raise OSError("ESP32 stop handshake could not be written")
+                self._clear_esp_scan_state(cancel_pending=True)
+                self._esp_stop_waiting = True
+                self._esp_stop_required = False
+                self._esp_stop_timed_out = self._esp_stop_ack = False
+                self._esp_stop_requested_at = time.monotonic()
+                self._pending_cmd_frame = pyxel.frame_count + 15
+                if getattr(self, "_wardrive_selected", None):
+                    self._wardrive_pause("ESP32 reconnected", request_stop=False)
+                self._term_add("[TX] stop (reconnect handshake)", raw=True)
+                self._esp32 = True
+                self.state.connected = True
+                self._boot_serial_port = port
+                self._term_add(f"[SYS] ESP32 found on {port}", raw=True)
+                # Probe firmware version
+                if not self._fw_version:
+                    try:
+                        self.serial.send_command("version")
+                    except Exception:
+                        pass
+                return True
+            except Exception as e:
+                self._esp32 = False
+                self.state.connected = False
+                if self.serial:
+                    try:
+                        self.serial.close()
+                    except Exception:
+                        pass
+                self.serial = None
+                self._term_add(f"[ERR] Reconnect failed: {e}", raw=True)
+                return False
+        finally:
+            if access_lock is not None:
+                access_lock.release()
 
     def _check_fw_update(self) -> None:
         """Background: check GitHub for newer firmware release."""
         from .config import FIRMWARE_RELEASE_URL
         import json
         from urllib.request import Request, urlopen
+        generation = getattr(self, "_fw_generation", 0)
+        detected_version = self._fw_version
         try:
             req = Request(FIRMWARE_RELEASE_URL)
             req.add_header("User-Agent", "ESP32-Watch-Dogs")
@@ -1546,22 +1648,35 @@ class WatchDogsGame:
                 data = json.loads(resp.read().decode("utf-8"))
             tag = data.get("tag_name", "")
             remote = tag.lstrip("v")
-            local = self._fw_version.lstrip("v")
+            local = detected_version.lstrip("v")
+            if (generation != getattr(self, "_fw_generation", 0)
+                    or detected_version != self._fw_version):
+                return
             if remote and local:
                 r_parts = [int(x) for x in remote.split(".")]
                 l_parts = [int(x) for x in local.split(".")]
                 if r_parts > l_parts:
-                    self._fw_remote_version = remote
-                    self._fw_update_available = True
-                    self.msg(f"[FW] Update available: v{local} -> v{remote}",
-                             C_WARNING)
-                    self._term_add(
-                        f"[FW] New firmware v{remote} available! "
-                        f"(current: v{local})", raw=True)
+                    access_lock = getattr(self, "_esp_serial_lock", None)
+                    if access_lock is not None:
+                        access_lock.acquire()
+                    try:
+                        if (generation != getattr(self, "_fw_generation", 0)
+                                or detected_version != self._fw_version):
+                            return
+                        self._fw_remote_version = remote
+                        self._fw_update_available = True
+                        self.msg(f"[FW] Update available: v{local} -> v{remote}",
+                                 C_WARNING)
+                        self._term_add(
+                            f"[FW] New firmware v{remote} available! "
+                            f"(current: v{local})", raw=True)
+                    finally:
+                        if access_lock is not None:
+                            access_lock.release()
         except Exception:
             pass
 
-    def _game_git(self, root, *args, timeout=30):
+    def _game_git(self, root, *args, timeout=30, stdout=None):
         """Run a git command in `root`, as the repo OWNER when the game is root.
 
         The game runs under `sudo ./run.sh` (root), but the checkout is owned by
@@ -1584,7 +1699,8 @@ class WatchDogsGame:
                     cmd = ["sudo", "-n", "-H", "-u", owner] + cmd
         except Exception:
             pass
-        return subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
+        return subprocess.run(cmd, stdout=subprocess.PIPE if stdout is None else stdout,
+                              stderr=subprocess.PIPE, text=True, timeout=timeout)
 
     def _check_game_update(self) -> None:
         """Worker: fetch a published release; UI changes stay on the main loop."""
@@ -1595,33 +1711,50 @@ class WatchDogsGame:
             self._game_update_events.put(("check_error", "Could not check for updates."))
 
     def _send(self, cmd: str, *, wardrive=False):
-        if getattr(self, "_shutting_down", False):
+        if getattr(self, "_serial_busy", False) or getattr(self, "_flash_running", False):
             return False
-        if (not wardrive and getattr(self, "_wardrive_selected", None)
-                and cmd.strip().partition(" ")[0] not in ("version", "ping")):
-            self._cancel_wardrive_plan(clear_active=True)
-        reconnected = False
-        if not self.serial or not self.serial.is_open:
-            reconnected = self._try_reconnect_esp32()
-        if not self.serial or not self.serial.is_open:
-            self._term_add("[ERR] No serial connection", raw=True)
-            return False
-        if reconnected and getattr(self, "_esp_stop_waiting", False):
-            if cmd.strip() == "stop":
-                return True  # The reconnect handshake already wrote this command.
-            self._term_add("[ERR] ESP32 reconnected; wait for stop confirmation", raw=True)
+        access_lock = getattr(self, "_esp_serial_lock", None)
+        if access_lock is not None and not access_lock.acquire(blocking=False):
             return False
         try:
-            sent = self.serial.send_command(cmd)
-        except Exception as exc:
-            self._term_add(f"[ERR] Serial command failed: {exc}", raw=True)
-            return False
-        if not sent:
-            self._term_add("[ERR] Serial command was not sent", raw=True)
-            return False
-        suffix = " (after reconnect)" if reconnected else ""
-        self._term_add(f"[TX] {cmd}{suffix}", raw=True)
-        return True
+            if getattr(self, "_serial_busy", False) or getattr(self, "_flash_running", False):
+                return False
+            if getattr(self, "_shutting_down", False):
+                return False
+            solo = getattr(self, "_solo", None)
+            verb = cmd.strip().partition(" ")[0]
+            if (solo is not None and solo.busy
+                    and verb not in ("stop", "version", "ping", "wardrive_solo_caps", "wardrive_solo")):
+                # Direct Python-side tools share the same STOP barrier as menu scans.
+                return self._start_scan_cmd(cmd, "", "ESP32 operation")
+            if (not wardrive and getattr(self, "_wardrive_selected", None)
+                    and cmd.strip().partition(" ")[0] not in ("version", "ping")):
+                self._cancel_wardrive_plan(clear_active=True)
+            reconnected = False
+            if not self.serial or not self.serial.is_open:
+                reconnected = self._try_reconnect_esp32()
+            if not self.serial or not self.serial.is_open:
+                self._term_add("[ERR] No serial connection", raw=True)
+                return False
+            if reconnected and getattr(self, "_esp_stop_waiting", False):
+                if cmd.strip() == "stop":
+                    return True  # The reconnect handshake already wrote this command.
+                self._term_add("[ERR] ESP32 reconnected; wait for stop confirmation", raw=True)
+                return False
+            try:
+                sent = self.serial.send_command(cmd)
+            except Exception as exc:
+                self._term_add(f"[ERR] Serial command failed: {exc}", raw=True)
+                return False
+            if not sent:
+                self._term_add("[ERR] Serial command was not sent", raw=True)
+                return False
+            suffix = " (after reconnect)" if reconnected else ""
+            self._term_add(f"[TX] {cmd}{suffix}", raw=True)
+            return True
+        finally:
+            if access_lock is not None:
+                access_lock.release()
 
     # ------------------------------------------------------------------
     # Terminal helpers
@@ -1701,6 +1834,9 @@ class WatchDogsGame:
 
         self._poll_serial()
         self._poll_gps()
+        self._poll_solo()
+        self._poll_piglet_collection()
+        self._yield_piglet_threads()
         self._assign_missing_mesh_gps()
         self._poll_lora()
         self._sync_mesh_map_visibility()
@@ -1790,6 +1926,10 @@ class WatchDogsGame:
             self._update_wl_screen()
         elif self._lora_protocol_picker:
             self._update_lora_protocol_picker()
+        elif getattr(self, "_solo_profile_picker", False):
+            self._update_solo_profile_picker()
+        elif getattr(self, "_piglet_collection_screen", False):
+            self._update_piglet_collection_screen()
         elif self._mt_profile_screen:
             self._update_mt_profile_picker()
         elif self._mt_screen:
@@ -1840,7 +1980,10 @@ class WatchDogsGame:
                 if pyxel.btnp(pyxel.KEY_0):
                     self.proj.reset_view()
                 if pyxel.btnp(pyxel.KEY_S) and not self._attack_mode:
-                    self._request_esp_stop()
+                    collection = getattr(self, "_piglet_collection", None)
+                    if collection is not None:
+                        collection.stop(wait=False)
+                    self._request_esp_stop(retry=True)
                     self._clear_esp_scan_state(cancel_pending=True)
                     self.wifi_scanning = False
                     self.ble_scanning = False
@@ -1932,6 +2075,8 @@ class WatchDogsGame:
             elif self._wl_screen:
                 pass  # handled in _update_wl_screen
             elif (self._mc_screen or self._mt_screen or self._lora_protocol_picker
+                  or getattr(self, "_solo_profile_picker", False)
+                  or getattr(self, "_piglet_collection_screen", False)
                   or self._mt_profile_screen or self._mc_region_screen):
                 pass  # handled in _update_mc_screen
             elif self._wd_screen:
@@ -1986,7 +2131,7 @@ class WatchDogsGame:
         # Keep menu open for toggle actions (GPS, LoRa, SDR, USB, Mute)
         if state_key not in ("_gps_toggle", "_lora_toggle",
                              "_sdr_toggle", "_usb_toggle", "_mute_toggle",
-                             "_prox_toggle"):
+                             "_prox_toggle", "solo_ble"):
             self.menu_open = False
         self._execute_item(cmd, state_key, name, [])
 
@@ -2060,7 +2205,7 @@ class WatchDogsGame:
     def _execute_item(self, cmd: str, state_key: str, name: str,
                       field_values: list):
         if state_key == "_stop_all":
-            self._request_esp_stop()
+            self._request_esp_stop(retry=True)
             self._clear_esp_scan_state(cancel_pending=True)
             self.wifi_scanning = False
             self.ble_scanning = False
@@ -2248,11 +2393,16 @@ class WatchDogsGame:
                 or self._bt_tracking or self._bt_airtag
                 or self.sniffing or self.capturing_hs
                 or self.state.portal_running
-                or self.state.evil_twin_running)
+                or self.state.evil_twin_running
+                or bool(getattr(self, "_solo", None) and self._solo.busy))
 
     def _start_scan_cmd(self, final_cmd: str, state_key: str, name: str):
         """Start an ESP32 command. Send stop first only if something is running."""
         scheduled = state_key in ("wardriving", "bt_scanning")
+        solo = getattr(self, "_solo", None)
+        if solo is not None and state_key != "solo_control":
+            solo.cancel(stop=False)
+            self._solo_backfill_resume = None
         if not scheduled and getattr(self, "_wardrive_selected", None):
             self._cancel_wardrive_plan()
         if self._esp_stop_waiting and self._esp_stop_timed_out:
@@ -2260,7 +2410,8 @@ class WatchDogsGame:
             return False
         if (self._esp_stop_waiting or getattr(self, "_esp_stop_required", False)
                 or self._anything_running_on_esp()):
-            if not self._request_esp_stop(cancel_pending=False, wardrive=scheduled):
+            if not self._request_esp_stop(cancel_pending=False, wardrive=scheduled,
+                                          solo=state_key == "solo_control"):
                 self.msg("[ERR] Could not stop the current ESP32 operation", C_ERROR)
                 return False
             self._pending_cmd = final_cmd
@@ -2270,11 +2421,15 @@ class WatchDogsGame:
             return True
         return self._begin_esp_scan(final_cmd, state_key, name)
 
-    def _request_esp_stop(self, *, cancel_pending=True, wardrive=False):
+    def _request_esp_stop(self, *, cancel_pending=True, wardrive=False, solo=False, retry=False):
         """Keep the stop barrier even if the player has not queued a next scan."""
         if not wardrive and getattr(self, "_wardrive_selected", None):
             self._cancel_wardrive_plan()
-        if self._esp_stop_waiting:
+        controller = getattr(self, "_solo", None)
+        if controller is not None and not solo:
+            controller.cancel(stop=False)
+            self._solo_backfill_resume = None
+        if self._esp_stop_waiting and not (retry and self._esp_stop_timed_out):
             if cancel_pending:
                 self._clear_esp_scan_state(cancel_pending=True)
             return True
@@ -2303,9 +2458,19 @@ class WatchDogsGame:
 
     def _begin_esp_scan(self, final_cmd, state_key, name):
         scheduled = state_key in getattr(self, "_wardrive_selected", ())
+        # SerialManager may wait after flushing the write. Anchor SOLO at
+        # the start of transmission, before the device can already reply.
+        # A failed write must still leave command_sent unacknowledged.
+        solo_tx = (time.monotonic(), time.time()) if state_key == "solo_control" else None
         if not self._send(final_cmd, wardrive=scheduled):
             self.msg(f"[ERR] Could not start {name}", C_ERROR)
             return False
+        if state_key == "solo_control":
+            # Queue/TX is not proof that either scanner has started.
+            self._clear_esp_scan_state()
+            self._solo.command_sent(final_cmd, monotonic=solo_tx[0], utc=solo_tx[1])
+            self.msg("[SOLO] Waiting for firmware confirmation...", C_DIM)
+            return True
         self._clear_esp_scan_state()
         self._set_running(state_key, True)
         if state_key in ("wardriving", "wifi_scan"):
@@ -2325,6 +2490,9 @@ class WatchDogsGame:
                 and not self._esp_stop_timed_out):
             self._clear_esp_scan_state(cancel_pending=True)
             self._esp_stop_timed_out = True
+            solo = getattr(self, "_solo", None)
+            if solo is not None and solo.busy:
+                solo.stop_unconfirmed()
             if getattr(self, "_wardrive_selected", None):
                 self._wardrive_pause("ESP32 stop was not confirmed")
             message = "[ERR] ESP32 stop was not confirmed; new operation cancelled"
@@ -2332,6 +2500,9 @@ class WatchDogsGame:
             self._term_add(message, raw=True)
         if not self._esp_stop_ack or pyxel.frame_count < self._pending_cmd_frame:
             return
+        if (getattr(self, "_solo_backfill_waiting", False)
+                and getattr(self, "_pending_cmd_state", "") == "solo_control"):
+            return  # Do not restart SOLO before first-fix replay completes.
         cmd, state, name = self._pending_cmd, self._pending_cmd_state, self._pending_cmd_name
         self._pending_cmd = None
         self._pending_cmd_state = self._pending_cmd_name = ""
@@ -2343,6 +2514,11 @@ class WatchDogsGame:
             self._begin_esp_scan(cmd, state, name)
 
     def _is_running(self, state_key: str) -> bool:
+        if state_key == "piglet_collection":
+            return (getattr(self, "_piglet_status", None) or {}).get("state") == "active"
+        if state_key in ("solo_wifi", "solo_ble"):
+            solo = getattr(self, "_solo", None)
+            return bool(solo and getattr(solo, "confirmed_" + state_key[5:], False))
         if state_key in ("wardriving", "bt_scanning") and hasattr(self, "_wardrive_selected"):
             return state_key in self._wardrive_selected
         return {
@@ -2542,7 +2718,7 @@ class WatchDogsGame:
         else:
             next_key = self._wardrive_next_key()
         command = "scan_networks" if next_key == "wardriving" else "scan_bt"
-        label = "WiFi Wardrive" if next_key == "wardriving" else "BLE Wardrive"
+        label = "WiFi Sniff" if next_key == "wardriving" else "BT Sniff"
         if not self._start_scan_cmd(command, next_key, label):
             self._wardrive_pause("Could not start " + label)
 
@@ -2553,6 +2729,25 @@ class WatchDogsGame:
     def _handle_python_attack(self, cmd: str, state_key: str, name: str,
                               field_values: list | None):
         """Handle Python-native attacks with full scan→select→run flow."""
+
+        if cmd == "_piglet_collection":
+            self._piglet_collection_screen = True
+            phase = (getattr(self, "_piglet_status", None) or {}).get("state", "stopped")
+            self._piglet_pairing_visible = phase not in ("starting", "active", "stopping")
+            self.menu_open = False
+            self._ensure_piglet_collection()
+            return
+
+        if cmd == "_solo_wifi":
+            if self._solo_selected("wifi"):
+                self._set_solo_selection(wifi=False)
+            else:
+                self._solo_profile_picker = True
+                self.menu_open = False
+            return
+        if cmd == "_solo_ble":
+            self._set_solo_selection(ble=not self._solo_selected("ble"))
+            return
 
         # ── Dragon Drain ──
         if cmd == "_dragon_drain":
@@ -3044,6 +3239,14 @@ class WatchDogsGame:
     # GPS / LoRa toggle (AIO v2 GPIO or software)
     # ------------------------------------------------------------------
 
+    def _setup_gps_connection(self):
+        # The AIO's configured UART may be silent during power-up. Opening
+        # that known port is sufficient; probing USB can steal the ESP32 port.
+        if (self._aio_available
+                and str(getattr(self.gps, "device", "")).startswith("/dev/ttyAMA")):
+            return self.gps._try_open(self.gps.device)
+        return self.gps.setup()
+
     def _toggle_gps(self):
         new_state = not self._gps_enabled
         if self._aio_available:
@@ -3054,14 +3257,22 @@ class WatchDogsGame:
         if new_state:
             # Enable GPS — re-open serial
             if not self.gps.available:
-                self.gps.setup()
+                self._setup_gps_connection()
             if self.gps.available:
                 self._gps_enabled = True
                 self.msg("[GPS] ON", C_SUCCESS)
                 self._term_add("[SYS] GPS enabled", raw=True)
             else:
-                self.msg("[GPS] No device found", C_ERROR)
-                self._gps_enabled = False
+                # On AIO UART, enabled tracks the confirmed power state.
+                # Keep the existing five-second UART retry alive if opening
+                # failed while the receiver is still coming up.
+                self._gps_enabled = bool(self._aio_available and
+                    str(getattr(self.gps, "device", "")).startswith("/dev/ttyAMA"))
+                if self._gps_enabled:
+                    self.msg("[GPS] Power ON; waiting for UART", C_WARNING)
+                    self._term_add("[SYS] GPS powered; waiting for configured UART", raw=True)
+                else:
+                    self.msg("[GPS] No device found", C_ERROR)
         else:
             # Disable GPS — close serial, clear fix
             self.gps.close()
@@ -3190,6 +3401,436 @@ class WatchDogsGame:
         for index, label in enumerate(("Meshtastic", "MeshCore")):
             x = dx + 12 + index * 212
             selected = self._lora_protocol_sel == index
+            if selected:
+                pyxel.rect(x, dy + 30, 200, 17, C_WARNING)
+            pyxel.text(x + 8, dy + 35, label, 0 if selected else C_TEXT)
+        pyxel.text(dx + 4, dy + dh - 12, "LEFT/RIGHT select   ENTER apply   ESC cancel", C_DIM)
+
+    def _solo_selected(self, protocol):
+        resume = getattr(self, "_solo_backfill_resume", None)
+        if getattr(self, "_solo_backfill_waiting", False) and resume is not None:
+            return resume[1 if protocol == "wifi" else 2]
+        solo = getattr(self, "_solo", None)
+        return bool(solo and getattr(solo, "desired_" + protocol,
+                                    getattr(solo, "confirmed_" + protocol, False)))
+
+    def _set_solo_selection(self, *, wifi=None, ble=None):
+        """Keep unsupported firmware OFF; the adapter owns confirmed state."""
+        solo = getattr(self, "_solo", None)
+        if solo is None:
+            self.msg("[SOLO] Requires the SOLO firmware extension", C_WARNING)
+            return False
+        if getattr(self, "_solo_recorder", None) is None:
+            if not self.loot or not self.loot.active:
+                self.msg("[SOLO] No active log session; scan not started", C_ERROR)
+                return False
+            from .wardrive_gps import WardriveGpsPolicy
+            from .wardrive_recorder import WardriveRecorder
+            self._solo_recorder = WardriveRecorder(self.loot, WardriveGpsPolicy(cache_minutes=720))
+        if getattr(self._solo_recorder, "failed", False):
+            self._solo_recorder.retry()
+            self.msg("[SOLO] Retrying saved data; select scan again after recovery", C_WARNING)
+            return False
+        if getattr(self, "_solo_backfill_waiting", False):
+            previous = self._solo_backfill_resume or (self._solo_profile, False, False)
+            self._solo_backfill_resume = (self._solo_profile,
+                previous[1] if wifi is None else wifi,
+                previous[2] if ble is None else ble)
+            self.msg("[SOLO] Finishing first-fix backfill...", C_DIM)
+            return True
+        return solo.request(wifi=wifi, ble=ble, profile=self._solo_profile)
+
+    def _solo_notice(self, message):
+        self._term_add("[SOLO] " + message, raw=True)
+        self.msg("[SOLO] " + message, C_WARNING)
+
+    def _cancel_solo_pending(self):
+        if getattr(self, "_pending_cmd_state", "") == "solo_control":
+            self._pending_cmd = None
+            self._pending_cmd_state = self._pending_cmd_name = ""
+
+    def _on_solo_observation(self, observation):
+        if self._whitelist.is_blocked(observation["mac"]):
+            return True
+        recorder = getattr(self, "_solo_recorder", None)
+        if recorder is None or not recorder.submit(observation):
+            self._solo_notice("Observation writer unavailable; requesting STOP")
+            self._solo_backfill_resume = None
+            return False
+        return True
+
+    def _start_solo_backfill(self):
+        """Freeze one first fix, then seal only after the UART STOP barrier."""
+        if getattr(self, "_solo_backfill_waiting", False):
+            return
+        solo = self._solo
+        needs_stop = solo.busy
+        self._solo_backfill_resume = (solo.profile, solo.desired_wifi, solo.desired_ble)
+        self._solo_backfill_waiting = True
+        self._solo_backfill_needs_stop = needs_stop
+        solo.cancel(stop=False)
+        if needs_stop:
+            self._request_esp_stop(solo=True)
+        else:
+            # An old SOLO startup queue must not stop a different tool that
+            # the player deliberately started after switching SOLO OFF.
+            self._solo_recorder.seal_startup()
+
+    def _poll_solo(self, *, final=False):
+        solo = getattr(self, "_solo", None)
+        if solo is None:
+            return 0
+        if not final and not getattr(self, "_shutting_down", False):
+            solo.tick()
+        recorder = getattr(self, "_solo_recorder", None)
+        if recorder is None:
+            return 0
+        if (getattr(self, "_solo_backfill_waiting", False)
+                and (not getattr(self, "_solo_backfill_needs_stop", False)
+                     or (not solo.busy and self._esp_stop_ack))):
+            # A full writer queue can reject the first barrier enqueue. Retry
+            # after STOP without starting another producer or doing UI I/O.
+            recorder.seal_startup()
+        if not final:
+            recorder.tick()
+        events = recorder.poll_events(limit=32)
+        for event in events:
+            kind = event.get("event")
+            if kind == "saved":
+                self._apply_solo_observation(event["observation"], event.get("position"),
+                                              award_xp=not event.get("replay", False))
+            elif kind == "backfill":
+                self._apply_solo_observation(event["observation"], event.get("position"), award_xp=False)
+            elif kind == "backfill_done":
+                self._solo_backfill_waiting = False
+                self._solo_backfill_needs_stop = False
+                resume, self._solo_backfill_resume = self._solo_backfill_resume, None
+                if (resume and any(resume[1:]) and not getattr(self, "_shutting_down", False)):
+                    self._solo_profile = resume[0]
+                    solo.request(wifi=resume[1], ble=resume[2], profile=resume[0])
+            elif kind == "error":
+                self._solo_backfill_resume = None
+                self._solo_notice(event.get("message", "Observation save failed; requesting STOP"))
+                solo.cancel()
+        return len(events)
+
+    def _apply_solo_observation(self, observation, position, *, award_xp=True):
+        """Reuse the session map, discovered identities and original XP rules."""
+        protocol, mac = observation["protocol"], observation["mac"].upper()
+        wifi = protocol == "wifi"
+        name = observation.get("ssid", "") if wifi else observation.get("name", "")
+        source_name = name
+        rssi = observation["rssi"]
+        channel = observation.get("channel", "")
+        auth = observation.get("auth", "") if wifi else "[BLE]"
+        known = self._known_wifi if wifi else self._known_ble
+        objects = self.wifi_networks if wifi else self.ble_devices
+        target = next((item for item in objects
+                       if (item.bssid if wifi else item.mac).upper() == mac), None)
+        if not award_xp and target is not None:
+            # Replay changes position, not the latest live name/signal/channel.
+            name = target.ssid if wifi else target.name
+            rssi = target.rssi
+            if wifi:
+                channel = target.channel
+            previous = getattr(self, "_session_scan_points", {}).get(("wifi" if wifi else "bt", mac))
+            if previous:
+                auth = previous.get("auth", auth)
+        point = self._record_scan_map_observation("wifi" if wifi else "bt", mac, name, rssi,
+            channel=channel, auth=auth, position=position, observed_at=observation["observed_at"])
+        if point is not None and point.get("observed_at", observation["observed_at"]) > observation["observed_at"]:
+            name, rssi = point["label"], point["rssi"]
+            auth = point.get("auth", auth)
+            if wifi:
+                channel = point["channel"]
+        try:
+            rssi = int(rssi)
+        except (TypeError, ValueError):
+            rssi = observation["rssi"]
+        is_new = mac not in known
+        if award_xp:
+            known.add(mac)
+            if wifi:
+                current = next((net for net in self.state.networks if net.bssid.upper() == mac), None)
+                if current is None:
+                    self.state.networks.append(Network(bssid=mac, ssid=name, channel=str(channel),
+                                                       auth=auth, rssi=str(rssi)))
+                else:
+                    current.ssid, current.channel, current.auth, current.rssi = name, str(channel), auth, str(rssi)
+            self.gain_xp((15 if wifi else 10) if is_new else 1)
+        if target is None and (award_xp or mac in known):
+            lat, lon = (point["lat"], point["lon"]) if point else (0.0, 0.0)
+            target = (WifiNetwork(lat, lon, mac, name, int(channel), rssi) if wifi
+                      else BleDevice(lat, lon, mac, name, rssi))
+            target.spawn_frame = pyxel.frame_count
+            objects.append(target)
+        if target is not None:
+            if wifi:
+                target.ssid, target.channel = name[:18], int(channel)
+            else:
+                target.name = name[:18]
+            target.rssi = rssi
+            if point:
+                target.lat, target.lon = point["lat"], point["lon"]
+        if award_xp:
+            mark = "*" if is_new else " "
+            tag = "WiFi" if wifi else "BLE"
+            self._term_add(f"[{tag}]{mark} {source_name[:20]} {mac} {observation['rssi']}dBm", raw=True)
+
+    def _finish_solo_recorder(self):
+        recorder = getattr(self, "_solo_recorder", None)
+        if recorder is None:
+            return True
+        self._solo_backfill_resume = None
+        deadline, saved = time.monotonic() + 5.0, False
+        while time.monotonic() < deadline:
+            # The bounded event queue must be consumed while the writer closes;
+            # otherwise a large backfill could backpressure shutdown forever.
+            saved = recorder.close(timeout=min(0.05, max(0.0, deadline - time.monotonic())))
+            while self._poll_solo(final=True):
+                pass
+            if saved or getattr(recorder, "failed", False):
+                break
+        return saved
+
+    def _ensure_piglet_collection(self):
+        if getattr(self, "_piglet_collection", None) is not None:
+            return True
+        try:
+            if not self.loot:
+                raise RuntimeError("No loot storage")
+            from .piglet_hotspot import PigletCollectionController
+            self._piglet_collection = PigletCollectionController(self.loot)
+            self._piglet_error = ""
+            return True
+        except Exception:
+            logging.getLogger(__name__).exception("Piglet Collection initialization failed")
+            self._piglet_error = "Collection storage unavailable; existing data retained"
+            return False
+
+    def _apply_piglet_observation(self, record, *, new_identity=False, event_id=None):
+        """Reconcile a legacy durable identity without replaying a radio scan.
+
+        Source GPS/time stays in the original CSV, index and upload export.
+        Collection never creates map objects or per-observation terminal lines.
+        """
+        protocol, mac = record["protocol"], record["mac"].upper()
+        (self._known_wifi if protocol == "wifi" else self._known_ble).add(mac)
+
+    def _apply_piglet_events(self, events):
+        """Drain legacy receipts without terminal/map replay or repeated XP."""
+        acknowledged = []
+        for event in events[:20]:
+            self._apply_piglet_observation(event["record"], new_identity=event["new_identity"],
+                                            event_id=event["event_id"])
+            acknowledged.append(event["event_id"])
+        return acknowledged
+
+    def _poll_piglet_collection(self):
+        collection = getattr(self, "_piglet_collection", None)
+        if collection is None or getattr(self, "_shutting_down", False):
+            return
+        if getattr(collection, "cancel_requested", False):
+            self._piglet_status = collection.snapshot()
+            return
+        # Import work is bounded and paced independently of FPS; serial and GPS
+        # have already been serviced. The worker parses/hashes outside this loop.
+        now = time.monotonic()
+        if now < getattr(self, "_piglet_poll_at", 0):
+            return
+        self._piglet_poll_at = now + .1
+        try:
+            result = collection.store.process_pending(self.xp, self._known_wifi, self._known_ble, limit=128)
+            if result.get("committed"):
+                self.xp = result["xp_total"]
+                self._xp_dirty = False
+            events = collection.store.pending_events(limit=20)
+            if events:
+                acknowledged = self._apply_piglet_events(events)
+                if not collection.store.acknowledge_events(acknowledged):
+                    raise OSError("Presentation acknowledgement could not be saved")
+            self._piglet_status = collection.snapshot()
+            self._piglet_error = result.get("error", "")
+        except Exception:
+            # Avoid a frame-rate log storm during a disk/network failure.
+            self._piglet_poll_at = now + 2.0
+            if not getattr(self, "_piglet_error", ""):
+                logging.getLogger(__name__).exception("Piglet import paused; durable source retained")
+            self._piglet_error = "Import paused; data retained. Check storage and retry."
+
+    def _yield_piglet_threads(self):
+        """Give Collection workers a GIL window outside transport/storage locks.
+
+        Pyxel 2.9.9 retains the interpreter during its native frame limiter.
+        A short cooperative wait lets Python receive/parse threads run without
+        changing the frame target or the inactive SOLO path.
+        """
+        status = getattr(self, "_piglet_status", None) or {}
+        progress = status.get("progress", {})
+        if getattr(self, "_piglet_collection", None) is not None and (
+                status.get("state") in ("starting", "active", "stopping")
+                or progress.get("pending_files", 0)
+                or progress.get("import", {}).get("pending_events", 0)):
+            time.sleep(0.001)
+
+    def _piglet_has_unfinished_work(self):
+        collection = getattr(self, "_piglet_collection", None)
+        if collection is None:
+            return False
+        status = collection.snapshot()
+        progress = status.get("progress", {})
+        summary = progress.get("import", {})
+        return (status.get("state") in ("starting", "active", "stopping")
+                or bool(progress.get("pending_files")) or bool(summary.get("pending_events"))
+                or summary.get("status") == "importing")
+
+    def _cancel_piglet_collection(self, *, leave=False):
+        self._piglet_cancel_confirm = False
+        self._piglet_pairing_visible = False
+        self._piglet_leave_after_cancel = leave
+        collection = getattr(self, "_piglet_collection", None)
+        if collection is not None:
+            collection.cancel()
+
+    def _update_piglet_collection_screen(self):
+        if getattr(self, "_piglet_leave_after_cancel", False):
+            state = (getattr(self, "_piglet_status", None) or {}).get("state")
+            if state == "cancelled":
+                self._piglet_leave_after_cancel = False
+                self._piglet_collection_screen = False
+            elif state == "error" and pyxel.btnp(pyxel.KEY_S):
+                self._cancel_piglet_collection(leave=True)
+            return
+        if getattr(self, "_piglet_cancel_confirm", False):
+            if pyxel.btnp(pyxel.KEY_LEFT):
+                self._piglet_cancel_yes = True
+            elif pyxel.btnp(pyxel.KEY_RIGHT):
+                self._piglet_cancel_yes = False
+            if pyxel.btnp(pyxel.KEY_Y) or (pyxel.btnp(pyxel.KEY_RETURN) and self._piglet_cancel_yes):
+                self._cancel_piglet_collection(leave=True)
+            elif (pyxel.btnp(pyxel.KEY_N) or pyxel.btnp(pyxel.KEY_ESCAPE)
+                  or pyxel.btnp(pyxel.KEY_RETURN)):
+                self._piglet_cancel_confirm = False
+            self._esc_consumed_frame = pyxel.frame_count
+            return
+        if pyxel.btnp(pyxel.KEY_ESCAPE):
+            self._esc_consumed_frame = pyxel.frame_count
+            if self._piglet_has_unfinished_work():
+                self._piglet_cancel_confirm = True
+                self._piglet_cancel_yes = False
+            else:
+                self._piglet_collection_screen = False
+                self._piglet_pairing_visible = False
+        elif pyxel.btnp(pyxel.KEY_P):
+            self._piglet_pairing_visible = not self._piglet_pairing_visible
+        elif pyxel.btnp(pyxel.KEY_S):
+            self._cancel_piglet_collection()
+        elif pyxel.btnp(pyxel.KEY_RETURN):
+            if self._ensure_piglet_collection():
+                collection = self._piglet_collection
+                state = collection.snapshot()["state"]
+                if state in ("starting", "active", "stopping"):
+                    self._cancel_piglet_collection()
+                else:
+                    self._piglet_pairing_visible = False
+                    collection.start()
+
+    def _piglet_import_summary(self, summary):
+        """Present the cached import result without storage work in drawing."""
+        result = dict(summary)
+        result.setdefault("awarded_xp", result.get("base_xp", 0))
+        return result
+
+    def _draw_piglet_collection_screen(self):
+        dx, dy, dw, dh = 45, 28, 550, 300
+        pyxel.rect(dx, dy, dw, dh, C_MENU_BG)
+        pyxel.rectb(dx, dy, dw, dh, C_WARNING)
+        pyxel.text(dx + 10, dy + 10, "WARDRIVING - PIGLET COLLECTION", C_WARNING)
+        pyxel.line(dx + 8, dy + 22, dx + dw - 9, dy + 22, C_COAST)
+        collection = getattr(self, "_piglet_collection", None)
+        status = getattr(self, "_piglet_status", None) or {}
+        state = status.get("state", "stopped")
+        pyxel.text(dx + 10, dy + 32, "Hotspot: " + state.upper(), C_SUCCESS if state == "active" else C_TEXT)
+        pyxel.text(dx + 10, dy + 45, status.get("message", "ENTER starts the local receiver")[:128], C_TEXT)
+        progress = status.get("progress", {})
+        devices = progress.get("connected_devices", []) if state == "active" else []
+        peer = ("ACTIVE PIGLET KG - " + ", ".join(devices)[:78] if devices else
+                "WAITING FOR PIGLET KG" if state in ("starting", "active") else "NOT CONNECTED")
+        pyxel.text(dx + 10, dy + 64, "Piglet: " + peer, C_SUCCESS if devices else C_TEXT)
+        pyxel.text(dx + 10, dy + 77, f"Pending staged files: {progress.get('pending_files', 0)}   Total received: {progress.get('total_files', 0)}", C_TEXT)
+        current = progress.get("current_file") or {}
+        pyxel.text(dx + 10, dy + 94, "File: " + current.get("name", "-")[:110], C_TEXT)
+        summary = self._piglet_import_summary(progress.get("import", {}))
+        percentage = summary.get("percent", 0)
+        progress_label = "IMPORT CSV"
+        phase = summary.get("status", "waiting")
+        if current.get("state") == "receiving":
+            progress_label, phase = "DOWNLOADING CSV", "downloading"
+            size, offset = current.get("size", 0), current.get("offset", 0)
+            percentage = max(0, min(100, int(offset * 100 / size))) if size else 0
+        pyxel.text(dx + 10, dy + 108, f"{progress_label}: {percentage}%", C_WARNING)
+        pyxel.text(dx + 10, dy + 122, "Status: " + phase.upper(), C_TEXT)
+        pyxel.text(dx + 10, dy + 136,
+                   f"New WiFi: {summary.get('new_wifi', 0)}   New BLE: {summary.get('new_ble', 0)}   Skipped duplicates: {summary.get('duplicates', 0)}", C_TEXT)
+        pyxel.text(dx + 10, dy + 150, f"Awarded XP: {summary.get('awarded_xp', 0)}", C_TEXT)
+        details = summary.get("details") or ["Local import only. Upload later using Pending Upload Logs."]
+        pyxel.text(dx + 10, dy + 164, str(details[0])[:105], C_DIM)
+        if collection is not None:
+            pyxel.text(dx + 10, dy + 174, "UConsole hotspot SSID: " + collection.settings["ssid"], C_TEXT)
+            pyxel.text(dx + 10, dy + 196, "Collector IPv4 address: " + collection.backend.address, C_TEXT)
+            pyxel.text(dx + 10, dy + 207, "Collector port: 8765", C_TEXT)
+            if self._piglet_pairing_visible:
+                pyxel.text(dx + 10, dy + 185, "UConsole hotspot password: " + collection.settings["password"], C_WARNING)
+                pyxel.text(dx + 10, dy + 218, "Collection pairing token: " + collection.settings["token"], C_WARNING)
+                pyxel.text(dx + 10, dy + 231, "Piglet WebUI: save pairing. START here, then reboot Piglet.", C_DIM)
+            else:
+                pyxel.text(dx + 10, dy + 218, "P shows pairing credentials for Piglet WebUI", C_DIM)
+        error = getattr(self, "_piglet_error", "") or current.get("error", "")
+        if error:
+            pyxel.text(dx + 10, dy + 245, error[:128], C_ERROR)
+        label = "STOP COLLECTION" if state in ("starting", "active", "stopping") else "START COLLECTION"
+        pyxel.text(dx + 10, dy + 265, "ENTER " + label + "   S stop   P pairing   ESC back", C_WARNING)
+        pyxel.text(dx + 10, dy + 281, "STOP discards unfinished calculations; completed CSV and XP stay saved.", C_DIM)
+        if getattr(self, "_piglet_cancel_confirm", False):
+            bx, by, bw, bh = 105, 110, 430, 112
+            pyxel.rect(bx, by, bw, bh, C_MENU_BG)
+            pyxel.rectb(bx, by, bw, bh, C_WARNING)
+            pyxel.text(bx + 12, by + 12, "STOP PIGLET COLLECTION?", C_WARNING)
+            pyxel.text(bx + 12, by + 31, "Unfinished CSV calculations will be discarded.", C_TEXT)
+            pyxel.text(bx + 12, by + 44, "Completed imports and already awarded XP stay saved.", C_TEXT)
+            pyxel.text(bx + 12, by + 57, "Unconfirmed source CSV stay on Piglet for another try.", C_TEXT)
+            yes = getattr(self, "_piglet_cancel_yes", False)
+            pyxel.rect(bx + 94, by + 76, 90, 16, C_WARNING if yes else C_HUD_BG)
+            pyxel.rect(bx + 236, by + 76, 90, 16, C_WARNING if not yes else C_HUD_BG)
+            pyxel.text(bx + 106, by + 81, "YES / Y", C_MENU_BG if yes else C_TEXT)
+            pyxel.text(bx + 249, by + 81, "NO / N", C_MENU_BG if not yes else C_TEXT)
+            pyxel.text(bx + 12, by + 99, "LEFT/RIGHT choose   ENTER confirm   ESC continue", C_DIM)
+
+    def _update_solo_profile_picker(self):
+        if pyxel.btnp(pyxel.KEY_LEFT):
+            self._solo_profile_sel = 0
+        elif pyxel.btnp(pyxel.KEY_RIGHT):
+            self._solo_profile_sel = 1
+        elif pyxel.btnp(pyxel.KEY_ESCAPE):
+            self._solo_profile_picker = False
+            self._esc_consumed_frame = pyxel.frame_count
+        elif pyxel.btnp(pyxel.KEY_RETURN):
+            self._solo_profile = ("full", "kg")[self._solo_profile_sel]
+            self._solo_profile_picker = False
+            self._set_solo_selection(wifi=True)
+
+    def _draw_solo_profile_picker(self):
+        # Match the LoRa protocol chooser's geometry, palette and key handling.
+        pyxel.rect(0, HUD_TOP, W, TERM_Y - HUD_TOP, 0)
+        dx, dy, dw, dh = 100, 120, 440, 90
+        pyxel.rect(dx, dy, dw, dh, 0)
+        pyxel.rectb(dx, dy, dw, dh, C_WARNING)
+        pyxel.rectb(dx + 1, dy + 1, dw - 2, dh - 2, C_COAST)
+        pyxel.text(dx + 4, dy + 4, "WARDRIVING - Select profile", C_WARNING)
+        pyxel.line(dx + 2, dy + 14, dx + dw - 3, dy + 14, C_COAST)
+        for index, label in enumerate(("FULL SPECTRUM", "KG SETTINGS")):
+            x = dx + 12 + index * 212
+            selected = self._solo_profile_sel == index
             if selected:
                 pyxel.rect(x, dy + 30, 200, 17, C_WARNING)
             pyxel.text(x + 8, dy + 35, label, 0 if selected else C_TEXT)
@@ -4515,6 +5156,9 @@ class WatchDogsGame:
             self._esc_consumed_frame = pyxel.frame_count
 
     def _toggle_usb(self):
+        if getattr(self, "_flash_running", False) or getattr(self, "_serial_busy", False):
+            self.msg("[USB] Reserved by ESP32 flash", C_WARNING)
+            return
         new_state = not self._usb_enabled
         if not self._aio_available:
             self.msg("[USB] AIO v2 not available", C_ERROR)
@@ -4833,209 +5477,270 @@ class WatchDogsGame:
     # ------------------------------------------------------------------
 
     def _start_flash_esp32(self):
-        """Start firmware flash wizard — board picker → download → flash."""
+        """Open the wizard without replacing an existing operation."""
         from .config import FLASH_BOARDS
-        self._flash_boards = list(FLASH_BOARDS.keys())
-        self._flash_sel = 0
+        self._flash_boards = list(FLASH_BOARDS)
+        self._flash_sel = min(getattr(self, "_flash_sel", 0), len(self._flash_boards) - 1)
         self._flash_screen = True
-        self._flash_running = False
         self.menu_open = False
+        # Closing/reopening the window never resets an active worker's flag.
+        if not hasattr(self, "_flash_running"):
+            self._flash_running = False
 
     def _update_flash_screen(self):
-        """Handle board picker input."""
         if self._flash_running:
             if pyxel.btnp(pyxel.KEY_ESCAPE):
                 self._flash_screen = False
                 self._esc_consumed_frame = pyxel.frame_count
+            return
+        if getattr(self, "_shutting_down", False):
             return
         if pyxel.btnp(pyxel.KEY_UP):
             self._flash_sel = max(0, self._flash_sel - 1)
         elif pyxel.btnp(pyxel.KEY_DOWN):
             self._flash_sel = min(len(self._flash_boards) - 1, self._flash_sel + 1)
         elif pyxel.btnp(pyxel.KEY_RETURN):
+            job_lock = getattr(self, "_flash_job_lock", None)
+            if job_lock is not None and job_lock.locked():
+                return
             board = self._flash_boards[self._flash_sel]
             self._flash_running = True
+            self._flash_status = "Checking flash tool..."
             self._term_add(f"[FLASH] Selected: {board}", raw=True)
-            threading.Thread(target=self._run_flash, args=(board,),
-                             daemon=True).start()
+            try:
+                threading.Thread(target=self._run_flash, args=(board,), daemon=True).start()
+            except Exception as exc:
+                self._flash_running = False
+                self._term_add(f"[FLASH] Cannot start flash worker: {exc}", raw=True)
+                self.msg("[FLASH] Cannot start worker - see OUTPUT", C_ERROR)
         elif pyxel.btnp(pyxel.KEY_ESCAPE):
             self._flash_screen = False
             self._esc_consumed_frame = pyxel.frame_count
 
     def _run_flash(self, board: str):
+        # Real instances initialize both locks before any UI/worker can run.
+        # Lazy creation also supports old isolated method harnesses.
+        job_lock = getattr(self, "_flash_job_lock", None)
+        if job_lock is None:
+            job_lock = self._flash_job_lock = threading.Lock()
+        if not job_lock.acquire(blocking=False):
+            self._term_add("[FLASH] An operation is already running", raw=True)
+            return
+        self._flash_running = True
+        self._flash_process = self._flash_workspace = None
+        self._flash_device_acquired = self._flash_write_complete = False
+        self._flash_usb_off = False
         try:
             if not getattr(self, "_shutting_down", False):
                 self._flash_do(board)
+        except Exception as exc:
+            self._flash_status = "Flash failed - see OUTPUT"
+            self._term_add(f"[FLASH] {exc}", raw=True)
+            self.msg("[FLASH] Failed - see OUTPUT", C_ERROR)
         finally:
-            self._flash_running = False
+            process = getattr(self, "_flash_process", None)
+            warned = False
+            # A failed terminate/kill is NOT proof of child exit. Retain the
+            # port, attempt files and USB protection until exit is observable.
+            while process is not None:
+                try:
+                    if process.poll() is not None:
+                        break
+                except Exception:
+                    pass
+                if not warned:
+                    self._flash_status = "Process not stopped; port reserved"
+                    self._term_add("[FLASH] Cannot confirm process exit; ESP32 port and USB remain reserved.", raw=True)
+                    self.msg("[FLASH] Process still active - see OUTPUT", C_ERROR)
+                    warned = True
+                time.sleep(0.25)
+            # Restore USB only if this operation actually switched it off.
+            if getattr(self, "_flash_usb_off", False):
+                try:
+                    if not self._aio_power.toggle("usb", True):
+                        raise OSError("USB power-on failed")
+                    self._flash_usb_off = False
+                except Exception as exc:
+                    self._term_add(f"[FLASH] USB restoration failed: {exc}", raw=True)
+                    self.msg("[FLASH] USB power not restored - see OUTPUT", C_ERROR)
+            workspace = getattr(self, "_flash_workspace", None)
+            if workspace is not None:
+                try:
+                    workspace.cleanup()
+                except OSError as exc:
+                    self._term_add(f"[FLASH] Temporary cache cleanup failed: {exc}", raw=True)
+            self._flash_workspace = self._flash_process = None
+            acquired = getattr(self, "_flash_device_acquired", False)
+            if acquired and self._flash_write_complete:
+                self._flash_fw_pending = True
+                self._flash_fw_deadline = time.monotonic() + 15.0
+                self._flash_status = "Write complete; waiting for USB"
+            access_lock = getattr(self, "_esp_serial_lock", None)
+            if access_lock is not None:
+                access_lock.acquire()
+            try:
+                self._serial_busy = False
+            finally:
+                if access_lock is not None:
+                    access_lock.release()
+            try:
+                if acquired and not getattr(self, "_shutting_down", False):
+                    self._flash_reconnect_thread = threading.get_ident()
+                    connected = self._try_reconnect_esp32(_flash_owner=True)
+                    if self._flash_write_complete and getattr(self, "_flash_fw_pending", False):
+                        if connected:
+                            self._flash_status = "USB connected; waiting for firmware"
+                            self._term_add("[FLASH] USB connected; awaiting a fresh firmware response.", raw=True)
+                        else:
+                            self._term_add("[FLASH] Write complete; USB not detected yet. Reconnect will retry.", raw=True)
+            except Exception as exc:
+                self._term_add(f"[FLASH] Reconnect failed: {exc}", raw=True)
+            finally:
+                self._flash_reconnect_thread = None
+                self._flash_running = False
+                job_lock.release()
 
     def _flash_do(self, board: str):
-        """Download firmware and flash in background thread."""
+        """Prepare one fresh board-specific bundle, then exclusively flash it."""
         from .config import FLASH_BOARDS, FIRMWARE_RELEASE_URL
-        import json
-        import zipfile
-        import subprocess
-        import shutil
-        from urllib.request import Request, urlopen
+        from .esp32_flash import (FlashError, check_esptool, select_firmware_asset,
+                                  extract_firmware_archive, run_esptool)
         from pathlib import Path
+        from tempfile import TemporaryDirectory
+        from urllib.request import Request, urlopen
+        import json
 
         profile = FLASH_BOARDS[board]
+        # Preserve dde2bd7: the game's interpreter and a 10-second version
+        # probe must succeed before any cache/download/serial/USB operation.
+        version = check_esptool(sys.executable)
+        self._term_add(f"[FLASH] esptool {version}; Python: {sys.executable}", raw=True)
         fw_dir = Path(self._app_dir) / "firmware_cache"
-        fw_dir.mkdir(exist_ok=True)
-
+        try:
+            fw_dir.mkdir(exist_ok=True)
+            self._flash_workspace = TemporaryDirectory(prefix="flash-", dir=fw_dir)
+        except OSError as exc:
+            raise FlashError(f"Cannot write firmware cache {fw_dir}: {exc}. Check this directory's permissions.") from exc
+        attempt = Path(self._flash_workspace.name)
+        self._flash_status = "Downloading firmware..."
         self._term_add(f"[FLASH] Board: {profile['label']}", raw=True)
-
-        if board == "xiao":
-            self._term_add("[FLASH] XIAO: auto-reset via USB-JTAG (no BOOT button needed)", raw=True)
-
-        # Step 1: Download
-        self._term_add("[FLASH] Fetching latest release...", raw=True)
-        try:
-            req = Request(FIRMWARE_RELEASE_URL)
-            req.add_header("User-Agent", "ESP32-Watch-Dogs")
-            with urlopen(req, timeout=15) as resp:
-                data = json.loads(resp.read())
-
-            tag = data["tag_name"]
-            self._term_add(f"[FLASH] Release: {tag}", raw=True)
-
-            # Find ZIP
-            zip_suffix = "-xiao" if board == "xiao" else ""
-            zip_url = None
-            target = f"projectzerobylocosp{zip_suffix}"
-            for asset in data.get("assets", []):
-                name = asset["name"].lower()
-                if name.startswith(target) and name.endswith(".zip") \
-                        and "fap" not in name and "with" not in name:
-                    zip_url = asset["browser_download_url"]
+        request = Request(FIRMWARE_RELEASE_URL, headers={"User-Agent": "ESP32-Watch-Dogs"})
+        with urlopen(request, timeout=15) as response:
+            release = json.loads(response.read())
+        url = select_firmware_asset(release, board)
+        self._term_add(f"[FLASH] Release: {release['tag_name']}", raw=True)
+        archive = attempt / "firmware.zip"
+        request = Request(url, headers={"User-Agent": "ESP32-Watch-Dogs"})
+        with urlopen(request, timeout=120) as response, archive.open("wb") as output:
+            while True:
+                if getattr(self, "_shutting_down", False):
+                    return
+                block = response.read(8192)
+                if not block:
                     break
-
-            if not zip_url:
-                ver = tag.lstrip("v")
-                zip_url = (
-                    f"https://github.com/LOCOSP/projectZero/releases"
-                    f"/download/{tag}/projectZerobyLOCOSP{zip_suffix}-{ver}.zip"
-                )
-
-            self._term_add(f"[FLASH] Downloading...", raw=True)
-            self.msg("[FLASH] Downloading firmware...", C_DIM)
-
-            zip_path = fw_dir / "firmware.zip"
-            req = Request(zip_url)
-            req.add_header("User-Agent", "ESP32-Watch-Dogs")
-            with urlopen(req, timeout=120) as resp:
-                with open(zip_path, "wb") as f:
-                    while True:
-                        chunk = resp.read(8192)
-                        if not chunk:
-                            break
-                        f.write(chunk)
-
-            self._term_add("[FLASH] Extracting...", raw=True)
-            with zipfile.ZipFile(zip_path, "r") as zf:
-                zf.extractall(fw_dir)
-
-            # Verify required files
-            missing = [fn for fn in profile["offsets"]
-                       if not (fw_dir / fn).exists()]
-            if missing:
-                self._term_add(f"[FLASH] Missing: {', '.join(missing)}", raw=True)
-                self.msg("[FLASH] Download failed — missing files", C_ERROR)
-                return
-
-            self._term_add("[FLASH] Firmware ready", raw=True)
-
-        except Exception as exc:
-            self._term_add(f"[FLASH] Download error: {exc}", raw=True)
-            self.msg("[FLASH] Download failed", C_ERROR)
+                output.write(block)
+        extract_firmware_archive(archive, attempt, tuple(profile["offsets"]))
+        if getattr(self, "_shutting_down", False):
             return
-
-        # Step 2: Close serial
         port = self._boot_serial_port
-        if self.serial and self.serial.is_open:
-            self.serial.close()
-            self._esp32 = False
-            self.state.connected = False
-            self._term_add(f"[FLASH] Serial {port} released", raw=True)
-
-        # Step 3: USB power cycle + catch the ROM download window before flash.
-        # The XIAO C5's running firmware disables the USB-JTAG reset, so esptool
-        # can't reset the running app (Write timeout). A GPIO23 power cycle resets
-        # the chip; esptool must then connect during the brief ROM window (before
-        # the app boots and disables reset again) — so poll for the port and flash
-        # IMMEDIATELY (no long wait). See reference_flash_xiao_c5.
-        if self._aio_available and board == "xiao":
-            self._term_add("[FLASH] USB power cycle (reset ESP32)...", raw=True)
-            self._aio_power.toggle("usb", False)
-            time.sleep(2)
-            self._aio_power.toggle("usb", True)
-            for _ in range(80):  # tight-poll for the port (~1s), catch ROM window
-                if Path(port).exists():
-                    break
-                time.sleep(0.03)
-            else:
-                port = detect_esp32_port() or port
-            self._term_add(f"[FLASH] ESP32 on {port} (ROM window)", raw=True)
-
-        # Flash with esptool
-        self._term_add("[FLASH] Flashing...", raw=True)
-        self.msg("[FLASH] Flashing ESP32...", C_WARNING)
-
-        # --no-stub: the stub flasher fails to start on the ESP32-C5
-        # ("Failed to start stub flasher") — write via the ROM loader instead.
-        # After a xiao flash we power-cycle to boot (a hard-reset boot-loops the
-        # chip: rst:0x7 TG0_WDT), so leave the chip alone with --after no-reset.
-        power_cycle_after = self._aio_available and board == "xiao"
-        after = "no-reset" if power_cycle_after else "hard-reset"
-        cmd = [
-            sys.executable, "-m", "esptool",
-            "-p", port, "-b", str(profile["baud"]),
-            "--before", profile["before"],
-            "--after", after,
-            "--chip", "esp32c5",
-            "--no-stub",
-            "write-flash",
-            "--flash-mode", "dio",
-            "--flash-freq", "80m",
-            "--flash-size", "detect",
-        ]
-        for filename, offset in profile["offsets"].items():
-            cmd.extend([offset, str(fw_dir / filename)])
-
+        if not port or not Path(port).exists():
+            port = detect_esp32_port()
+        if not port or not Path(port).exists():
+            raise FlashError("ESP32 USB port was not detected; connection and USB power were left unchanged")
+        # Detach under the same guard used by all normal serial paths. Close
+        # outside it; a slow native close cannot block the Pyxel loop's lock.
+        access_lock = getattr(self, "_esp_serial_lock", None)
+        if access_lock is not None:
+            access_lock.acquire()
         try:
-            proc = subprocess.Popen(
-                cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-                text=True, bufsize=1)
-            for line in proc.stdout:
-                line = line.strip()
-                if line:
-                    self._term_add(f"[FLASH] {line}", raw=True)
-            proc.wait()
-
-            if proc.returncode == 0:
-                self._term_add("[FLASH] Flash complete!", raw=True)
-                if power_cycle_after:
-                    # --after no-reset left the chip halted; a GPIO23 power cycle
-                    # boots the new firmware cleanly (a hard-reset boot-loops it).
-                    self._term_add("[FLASH] Power cycle to boot new firmware...",
-                                   raw=True)
-                    self._aio_power.toggle("usb", False)
-                    time.sleep(2)
-                    self._aio_power.toggle("usb", True)
-                    time.sleep(4)
-                self.msg("[FLASH] Success! ESP32 rebooting...", C_SUCCESS)
-                # Reconnect after short delay
-                time.sleep(3)
-                self._try_reconnect_esp32()
-            else:
-                self._term_add(f"[FLASH] esptool error (code {proc.returncode})", raw=True)
-                self.msg("[FLASH] Flash failed!", C_ERROR)
-        except FileNotFoundError:
-            self._term_add("[FLASH] esptool not found! pip install esptool", raw=True)
-            self.msg("[FLASH] esptool not installed", C_ERROR)
-        except Exception as exc:
-            self._term_add(f"[FLASH] Error: {exc}", raw=True)
-            self.msg("[FLASH] Flash failed", C_ERROR)
+            if getattr(self, "_shutting_down", False):
+                return
+            self._serial_busy = True
+            self._flash_device_acquired = True
+            previous_connection = (self._esp32, self.state.connected)
+            old_serial, self.serial = self.serial, None
+            self._esp32 = self.state.connected = False
+        finally:
+            if access_lock is not None:
+                access_lock.release()
+        if old_serial is not None:
+            try:
+                old_serial.close()
+            except Exception:
+                # No child/reset has started. Retain the old manager rather
+                # than open a competing connection after an uncertain close.
+                self.serial = old_serial
+                if old_serial.is_open:
+                    self._esp32, self.state.connected = previous_connection
+                else:
+                    self._esp32 = self.state.connected = False
+                self._flash_device_acquired = False
+                raise
+        if getattr(self, "_shutting_down", False):
+            return
+        if access_lock is not None:
+            access_lock.acquire()
+        try:
+            self._fw_version = ""
+            self._fw_remote_version = ""
+            self._fw_update_available = False
+            self._fw_generation = getattr(self, "_fw_generation", 0) + 1
+            self._flash_fw_pending = False
+            self._flash_fw_deadline = None
+        finally:
+            if access_lock is not None:
+                access_lock.release()
+        power_cycle = self._aio_available and board == "xiao"
+        if power_cycle:
+            self._flash_status = "Resetting USB for ROM loader..."
+            if not self._aio_power.toggle("usb", False):
+                raise FlashError("Cannot switch USB power off; flash was not started")
+            self._flash_usb_off = True
+            time.sleep(2)
+            if not self._aio_power.toggle("usb", True):
+                raise FlashError("Cannot switch USB power on; flash was not started")
+            self._flash_usb_off = False
+            # Detect rather than trust an old ttyACM number after re-enumeration.
+            port = None
+            for _ in range(80):
+                port = detect_esp32_port()
+                if port:
+                    break
+                if getattr(self, "_shutting_down", False):
+                    return
+                time.sleep(0.03)
+        elif not port or not Path(port).exists():
+            port = detect_esp32_port()
+        if not port:
+            raise FlashError("ESP32 USB port was not detected; flash was not started")
+        if getattr(self, "_shutting_down", False):
+            return
+        self._boot_serial_port = port
+        after = "no-reset" if power_cycle else "hard-reset"
+        command = [sys.executable, "-m", "esptool", "-p", port,
+                   "-b", str(profile["baud"]), "--before", profile["before"],
+                   "--after", after, "--chip", "esp32c5", "--no-stub",
+                   "write-flash", "--flash-mode", "dio", "--flash-freq", "80m",
+                   "--flash-size", "detect"]
+        for filename, offset in profile["offsets"].items():
+            command.extend((offset, str(attempt / filename)))
+        self._flash_status = "Flashing ESP32..."
+        run_esptool(command, lambda line: self._term_add(f"[FLASH] {line}", raw=True),
+                    on_process=lambda process: setattr(self, "_flash_process", process))
+        self._flash_write_complete = True
+        self._term_add("[FLASH] esptool write completed; firmware start is not yet confirmed.", raw=True)
+        if getattr(self, "_shutting_down", False):
+            return
+        if power_cycle:
+            if not self._aio_power.toggle("usb", False):
+                raise FlashError("Write completed, but USB boot power-off failed")
+            self._flash_usb_off = True
+            time.sleep(2)
+            if not self._aio_power.toggle("usb", True):
+                raise FlashError("Write completed, but USB boot power-on failed")
+            self._flash_usb_off = False
+            time.sleep(4)
+        time.sleep(3)
 
     # ------------------------------------------------------------------
     # Wardriving auto-repeat loop
@@ -5450,34 +6155,57 @@ class WatchDogsGame:
             return -1
 
     def _poll_serial(self):
-        if getattr(self, '_serial_busy', False):
+        if getattr(self, "_serial_busy", False) or getattr(self, "_flash_running", False):
             return
-        if not self.serial or not self.serial.is_open:
-            if getattr(self, "_shutting_down", False):
-                return
-            # Auto-reconnect: try every ~3s (90 frames at 30 FPS)
-            if not self._esp32 and pyxel.frame_count % 90 == 0:
-                if self._try_reconnect_esp32():
-                    self.msg("[SYS] ESP32 reconnected!", C_SUCCESS)
+        access_lock = getattr(self, "_esp_serial_lock", None)
+        if access_lock is not None and not access_lock.acquire(blocking=False):
             return
         try:
-            lines = self.serial.read_available()
-        except Exception:
-            # USB cable yanked or serial error — mark ESP32 offline
-            self._esp32 = False
-            self.state.connected = False
+            if getattr(self, "_serial_busy", False) or getattr(self, "_flash_running", False):
+                return
+            deadline = getattr(self, "_flash_fw_deadline", None)
+            if (getattr(self, "_flash_fw_pending", False) and deadline is not None
+                    and time.monotonic() >= deadline):
+                self._flash_fw_deadline = None
+                self._flash_status = "Write complete; firmware not confirmed"
+                self._term_add("[FLASH] Write completed, but no fresh firmware response. Check USB/device boot.", raw=True)
+                self.msg("[FLASH] Firmware start not confirmed - see OUTPUT", C_WARNING)
+            if getattr(self, '_serial_busy', False):
+                return
+            if not self.serial or not self.serial.is_open:
+                if getattr(self, "_shutting_down", False):
+                    return
+                # Auto-reconnect: try every ~3s (90 frames at 30 FPS)
+                if not self._esp32 and pyxel.frame_count % 90 == 0:
+                    if self._try_reconnect_esp32():
+                        self.msg("[SYS] ESP32 reconnected!", C_SUCCESS)
+                return
             try:
-                self.serial.close()
+                lines = self.serial.read_available()
             except Exception:
-                pass
-            self.serial = None
-            if getattr(self, "_wardrive_selected", None):
-                self._wardrive_pause("ESP32 disconnected", request_stop=False)
-            self.msg("[ERR] ESP32 disconnected!", C_ERROR)
-            self._term_add("[ERR] ESP32 disconnected — plug in & retry", raw=True)
-            return
-        for line in lines:
-            self._handle_serial_line(line)
+                # USB cable yanked or serial error — mark ESP32 offline
+                self._esp32 = False
+                self.state.connected = False
+                try:
+                    self.serial.close()
+                except Exception:
+                    pass
+                self.serial = None
+                if getattr(self, "_wardrive_selected", None):
+                    self._wardrive_pause("ESP32 disconnected", request_stop=False)
+                solo = getattr(self, "_solo", None)
+                if solo is not None:
+                    solo.disconnected()
+                    self._solo_backfill_resume = None
+                    self._solo_track.break_segment()
+                self.msg("[ERR] ESP32 disconnected!", C_ERROR)
+                self._term_add("[ERR] ESP32 disconnected — plug in & retry", raw=True)
+                return
+            for line in lines:
+                self._handle_serial_line(line)
+        finally:
+            if access_lock is not None:
+                access_lock.release()
 
     def _handle_serial_line(self, line: str):
         s = line.strip()
@@ -5496,6 +6224,12 @@ class WatchDogsGame:
             if _vm:
                 self._fw_version = _vm.group(1)
                 self._term_add(f"[FW] Firmware v{self._fw_version}", raw=True)
+                if getattr(self, "_flash_fw_pending", False):
+                    self._flash_fw_pending = False
+                    self._flash_fw_deadline = None
+                    self._flash_status = f"Firmware v{self._fw_version} confirmed"
+                    self._term_add(f"[FLASH] Fresh firmware response: v{self._fw_version}", raw=True)
+                    self.msg(f"[FLASH] Firmware v{self._fw_version} confirmed", C_SUCCESS)
                 # Trigger background GitHub check
                 threading.Thread(target=self._check_fw_update,
                                  daemon=True).start()
@@ -5507,6 +6241,14 @@ class WatchDogsGame:
             except Exception:
                 if getattr(self, "_wardrive_phase", ""):
                     self._wardrive_save_failed = True
+
+        solo = getattr(self, "_solo", None)
+        if solo is not None:
+            was_running = solo.confirmed_wifi or solo.confirmed_ble
+            if solo.handle_line(s):
+                if not was_running and (solo.confirmed_wifi or solo.confirmed_ble):
+                    self._earn_badge("wardriver")
+                return
 
         # Detect handshake completion for game event
         if s.startswith("SSID:") and "AP:" in s:
@@ -5732,6 +6474,12 @@ class WatchDogsGame:
 
     def _handle_esp_operation_state(self, line):
         stopped = "all operations stopped" in line or "all stopped" in line
+        if stopped:
+            solo = getattr(self, "_solo", None)
+            if solo is not None:
+                solo.stop_acknowledged()
+            if getattr(self, "_solo_backfill_waiting", False):
+                self._solo_recorder.seal_startup()
         if "stop command" in line or stopped:
             # Receipt of "stop" alone is not completion. JanOS 1.7.0 follows
             # it with "All operations stopped."; do not start before that reply.
@@ -5784,6 +6532,13 @@ class WatchDogsGame:
                 if self.gps._try_open(self.gps.device):
                     self._term_add("[GPS] UART connection restored; waiting for a fix", raw=True)
         if not self.gps.available:
+            if getattr(self, "_solo_track", None) is not None:
+                self._solo_track.add_sample(None, active=False)
+            recorder = getattr(self, "_solo_recorder", None)
+            if recorder is not None:
+                recorder.policy.feed_sample(None)
+                if self._solo.confirmed_wifi or self._solo.confirmed_ble:
+                    self.gps_fix = False
             self._poll_radio_profiles()
             return
         sentences = self.gps.read_available()
@@ -5792,7 +6547,23 @@ class WatchDogsGame:
         fix = self.gps.fix
         self.gps_sats = fix.satellites
         self.gps_sats_vis = fix.satellites_visible
-        if fix.valid and fix.latitude != 0 and fix.longitude != 0:
+        solo = getattr(self, "_solo", None)
+        solo_active = bool(solo and (solo.confirmed_wifi or solo.confirmed_ble))
+        sample = self.gps.wardrive_sample() if hasattr(self.gps, "wardrive_sample") else None
+        recorder = getattr(self, "_solo_recorder", None)
+        if recorder is not None and recorder.policy.feed_sample(sample):
+            self._start_solo_backfill()
+        track = getattr(self, "_solo_track", None)
+        if track is not None:
+            track.add_sample(sample, active=solo_active)
+        if solo_active:
+            # Short measured motion is independent of scan completions. The
+            # trail has its own visual decimation; cached GPS never moves us.
+            self.gps_fix = sample is not None
+            if sample is not None:
+                self.player_lat, self.player_lon = sample["lat"], sample["lon"]
+                self._manual_move = False
+        elif fix.valid and fix.latitude != 0 and fix.longitude != 0:
             # Jitter filter: ignore moves < ~30 m (0.0003°)
             dlat = abs(fix.latitude - self.player_lat)
             dlon = abs(fix.longitude - self.player_lon)
@@ -6457,7 +7228,7 @@ class WatchDogsGame:
     # Loot points refresh
     # ------------------------------------------------------------------
 
-    def _record_scan_map_observation(self, kind, identity, label, rssi, channel="", auth=""):
+    def _record_scan_map_observation(self, kind, identity, label, rssi, channel="", auth="", *, position=..., observed_at=None):
         """Update one positioned observation heard this session, without replaying history.
 
         Use the same available/valid GPS fix as scan persistence. Neither map
@@ -6469,18 +7240,31 @@ class WatchDogsGame:
             points = self._session_scan_points = {}
         gps = getattr(self, "gps", None)
         fix = getattr(gps, "fix", None)
-        position = None
-        if getattr(gps, "available", False) and getattr(fix, "valid", False):
-            position = node_position(dict(lat=getattr(fix, "latitude", None),
-                                          lon=getattr(fix, "longitude", None)))
+        if position is Ellipsis:
+            position = None
+            if getattr(gps, "available", False) and getattr(fix, "valid", False):
+                position = node_position(dict(lat=getattr(fix, "latitude", None),
+                                              lon=getattr(fix, "longitude", None)))
+        elif position is not None:
+            source = position
+            position = node_position(source)
+            if position is not None:
+                position["source"] = source.get("source", "measured")
         key = (kind, identity.upper())
         point = points.get(key)
+        source_time = time.monotonic() if observed_at is None else observed_at
+        if point is not None and point.get("observed_at", -float("inf")) > source_time:
+            # A delayed source/backfill must not move a newer session marker
+            # back to an old receiver position, including a later SNIFF RX.
+            return point
         if point is None:
             if position is None: return None
             point = points[key] = dict(type=kind, bssid=identity.upper())
         if position is not None:
             point.update(lat=position["lat"], lon=position["lon"])
-        point.update(label=label, rssi=rssi, channel=channel, auth=auth)
+            if "source" in position:
+                point["position_source"] = position["source"]
+        point.update(label=label, rssi=rssi, channel=channel, auth=auth, observed_at=source_time)
         self._cluster_zoom = -1
         return point
 
@@ -6668,6 +7452,9 @@ class WatchDogsGame:
             return manager is None or step(name, lambda: getattr(manager, method)())
 
         try:
+            collection_closed = stop("_piglet_collection", "close")
+            if not collection_closed:
+                blocked.add("usb")
             if (not getattr(self, "_gameupd_closed_for_install", False)
                     and getattr(self, "_gameupd_plan", None) is not None):
                 step("staged update download", self._gameupd_discard_plan)
@@ -6675,6 +7462,10 @@ class WatchDogsGame:
                 step("power quiesce", power.begin_shutdown)
             if hasattr(self, "_wardrive_selected"):
                 step("wardrive cancellation", self._cancel_wardrive_plan)
+            solo = getattr(self, "_solo", None)
+            if solo is not None:
+                solo.cancel(stop=False)
+                self._solo_backfill_resume = None
             # Never reconnect or schedule a new scan while flushing the current one.
             serial = getattr(self, "serial", None)
             if serial is not None and serial.is_open and not flashing:
@@ -6722,18 +7513,24 @@ class WatchDogsGame:
                 step("final mesh data", self._poll_lora)
             if hasattr(self, "_sdr"):
                 step("final SDR data", self._poll_sdr)
-            if serial is not None and not step("serial close", serial.close):
+            if serial is not None and not flashing and not step("serial close", serial.close):
                 blocked.add("usb")
             if not stop("gps", "close"):
                 blocked.add("gps")
             for plugin in getattr(self, "_plugins", ()):
                 step("plugin unload", plugin.on_unload)
+            writer_closed = True
+            if getattr(self, "_solo_recorder", None) is not None:
+                writer_closed = step("SOLO observation writer", self._finish_solo_recorder)
+            if not writer_closed:
+                blocked.add("usb")
             if getattr(self, "loot", None) is not None:
                 step("XP save", self._save_xp_if_dirty)
-                if not step("loot flush", self.loot.close):
+                if writer_closed and collection_closed and not step("loot flush", self.loot.close):
                     blocked.add("usb")
             if flashing:
                 # A native window close/crash must not cut power to esptool.
+                self._cleanup_errors.append("ESP32 flash still active")
                 logging.getLogger(__name__).warning("Shutdown leaves power on: firmware flashing is in progress")
             elif power is not None:
                 results = power.shutdown(blocked_features=blocked)
@@ -6792,6 +7589,12 @@ class WatchDogsGame:
         if self._lora_protocol_picker:
             self._draw_lora_protocol_picker()
             return
+        if getattr(self, "_solo_profile_picker", False):
+            self._draw_solo_profile_picker()
+            return
+        if getattr(self, "_piglet_collection_screen", False):
+            self._draw_piglet_collection_screen()
+            return
         if self._mt_profile_screen:
             self._draw_mt_profile_picker()
             return
@@ -6834,6 +7637,10 @@ class WatchDogsGame:
             self._draw_coastlines()
         self._draw_grid()
         self._draw_ambient_motes()
+        track = getattr(self, "_solo_track", None)
+        if track is not None:
+            for x0, y0, x1, y1 in track.screen_segments(self.proj, (0, HUD_TOP, W - 1, TERM_Y - 1)):
+                pyxel.line(x0, y0, x1, y1, C_HACK_CYAN)
         self._draw_loot_points()
         self._draw_wifi()
         self._draw_ble()
@@ -7396,7 +8203,9 @@ class WatchDogsGame:
         if self.scan_pulse < 30:
             r = int(self.scan_pulse * 1.5)
             pyxel.circb(cx, cy, r, C_GRID if self.scan_pulse > 20 else C_HACK_CYAN)
-        if self.ble_scanning or self.wifi_scanning:
+        solo = getattr(self, "_solo", None)
+        if (self.ble_scanning or self.wifi_scanning
+                or bool(solo and (solo.confirmed_wifi or solo.confirmed_ble) and solo.phase != "pause")):
             r = 25 + int(math.sin(pyxel.frame_count * 0.3) * 8)
             pyxel.circb(cx, cy, r, 12)
 
@@ -7531,6 +8340,9 @@ class WatchDogsGame:
         if self.capturing_hs: tool_name = "HANDSHAKE"
         elif self.wifi_scanning or self._wifi_scan_only: tool_name = "WiFi SCAN"
         elif self.ble_scanning or self._ble_scan_only: tool_name = "BT SCAN"
+        elif (getattr(self, "_solo", None)
+              and (self._solo.confirmed_wifi or self._solo.confirmed_ble)):
+            tool_name = f"SOLO {self._solo.profile.upper()} {self._solo.phase.upper()}"
         elif self._bt_airtag:
             parts = []
             if self._airtag_count: parts.append(f"AT:{self._airtag_count}")
@@ -7867,9 +8679,12 @@ class WatchDogsGame:
         pyxel.line(0, H - HUD_BOT, W - 1, H - HUD_BOT, C_HUD_LINE)
         y = H - HUD_BOT + 5
 
-        # All-time totals from loot_db + current session additions
-        t_bt   = self._loot_totals.get("bt",   0) + len(self.ble_devices)
-        t_wifi = self._loot_totals.get("wifi", 0) + len(self.wifi_networks)
+        # Persistent discovery sets already include current observations and
+        # imports. Saved row totals plus map objects double-count known devices.
+        t_bt = (len(self._known_ble) if hasattr(self, "_known_ble") else
+                self._loot_totals.get("bt", 0) + len(self.ble_devices))
+        t_wifi = (len(self._known_wifi) if hasattr(self, "_known_wifi") else
+                  self._loot_totals.get("wifi", 0) + len(self.wifi_networks))
         n_hs_ses = sum(1 for m in self.markers if m.type == "handshake")
         t_hs   = self._loot_totals.get("hs",   0) + n_hs_ses
         n_pwn  = (sum(1 for d in self.ble_devices if d.hacked)
@@ -7897,6 +8712,25 @@ class WatchDogsGame:
         _prev = self.__dict__.setdefault("_hud_counts", {})
         _flash = self.__dict__.setdefault("_hud_flash", {})
         _fc = pyxel.frame_count
+        _font = getattr(self, "_font", None)
+        _text_width = _font.text_width if _font is not None else lambda text: len(text) * 4
+
+        # Reserve radio/GPS first, then place complete measured counter labels.
+        protocol = self._active_lora_protocol()
+        label = {"meshcore": "MeshCore", "meshtastic": "Meshtastic", "rnode": "RNode"}.get(protocol, "OFF")
+        radio_text = f"LoRa:{label}"
+        gps_x = (W - 108 if self.gps_fix else W - 120
+                 if self.gps.available and self.gps_sats_vis > 0 else W - 100
+                 if self.gps.available else W - 60)
+        radio_x = min(W - 200, gps_x - 19 - _text_width(radio_text))
+        tools_right = radio_x - 6
+        _widths = [_text_width(f"{key}:{'999999+' if value > 999999 else value}")
+                   for key, value, _ in _counters]
+        _gap = 10
+        if sum(_widths) + _gap * (len(_counters) - 1) > tools_right - 4:
+            # Preserve all numbers when every counter is unusually wide. This
+            # equal dense gap also keeps the existing growth '+' in its slot.
+            _gap = max(6, min(_gap, (tools_right - 4 - sum(_widths)) // (len(_counters) - 1)))
         _cx = 4
         for _k, _val, _col in _counters:
             if _k in _prev and _val > _prev[_k]:
@@ -7907,26 +8741,20 @@ class WatchDogsGame:
             _age = _fc - _flash.get(_k, -999)
             if 0 <= _age < 12:
                 pyxel.text(_cx, y, _txt, 7)            # white pop
-                pyxel.text(_cx + len(_txt) * 5 + 1, y - _age // 3, "+", _col)
+                pyxel.text(_cx + _text_width(_txt) + 1, y - _age // 3, "+", _col)
             else:
                 pyxel.text(_cx, y, _txt, _col)
-            _cx += len(_txt) * 5 + 6
+            _cx += _text_width(_txt) + _gap
 
-        # Reserve the actual radio/GPS width, including the searching icon.
-        protocol = self._active_lora_protocol()
-        label = {"meshcore": "MeshCore", "meshtastic": "Meshtastic", "rnode": "RNode"}.get(protocol, "OFF")
-        radio_text = f"LoRa:{label}"
-        gps_x = (W - 108 if self.gps_fix else W - 120
-                 if self.gps.available and self.gps_sats_vis > 0 else W - 100
-                 if self.gps.available else W - 60)
-        radio_x = min(W - 200, gps_x - 19 - len(radio_text) * 5)
-        tools_right = radio_x - 6
         _tools_x = max(270, _cx + 2)
-        _tools_chars = max(0, (tools_right - _tools_x) // 5)
+        _tools_width = max(0, tools_right - _tools_x)
 
         tools = []
         if self.wifi_scanning: tools.append("WiFi")
         if self.ble_scanning: tools.append("BT")
+        solo = getattr(self, "_solo", None)
+        if solo is not None and (solo.confirmed_wifi or solo.confirmed_ble):
+            tools.append("SOLO:" + solo.phase.upper())
         if self.sniffing: tools.append("SNF")
         if self.capturing_hs: tools.append("HS")
         if self.state.portal_running: tools.append("EP")
@@ -7944,8 +8772,14 @@ class WatchDogsGame:
         if tools:
             dots = "." * ((pyxel.frame_count // 10) % 4)
             summary = " ".join(tools) + dots
-            if len(summary) > _tools_chars:
-                summary = summary[:max(0, _tools_chars - 3)] + "." * min(3, _tools_chars)
+            if _text_width(summary) > _tools_width:
+                suffix = "..."
+                while suffix and _text_width(suffix) > _tools_width:
+                    suffix = suffix[:-1]
+                end = len(summary)
+                while end and _text_width(summary[:end] + suffix) > _tools_width:
+                    end -= 1
+                summary = summary[:end] + suffix
             if summary:
                 pyxel.text(_tools_x, y, summary, 12)
         elif not self.menu_open:
@@ -7953,14 +8787,14 @@ class WatchDogsGame:
             _legend = (("[TAB]", C_HACK_CYAN), ("Menu ", C_COAST),
                        ("[`]", C_HACK_CYAN), ("Loot ", C_COAST),
                        ("[S]", C_WARNING), ("Stop", C_COAST))
-            if sum(len(segment) for segment, _ in _legend) > _tools_chars:
+            if sum(_text_width(segment) for segment, _ in _legend) > _tools_width:
                 _legend = tuple((segment, color) for segment, color in _legend
                                 if segment.startswith("["))
             _kx = _tools_x
             for _seg, _sc in _legend:
-                if _kx + len(_seg) * 5 <= tools_right:
+                if _kx + _text_width(_seg) <= tools_right:
                     pyxel.text(_kx, y, _seg, _sc)
-                    _kx += len(_seg) * 5
+                    _kx += _text_width(_seg)
 
         # GPS status — lock-reticle icon reflects state (locked/searching/off).
         if self.gps_fix:
@@ -8266,20 +9100,22 @@ class WatchDogsGame:
 
         # Category tabs — 12px tall to fit 8px text + 2px padding each side
         TAB_H = 12
-        cat_w = PW // len(MENU_CATS)
+        tab_layout = _menu_tab_layout(MENU_CATS, PW)
         for i, (cat_name, _items) in enumerate(MENU_CATS):
-            tx = PX + i * cat_w
+            offset, cat_w = tab_layout[i]
+            tx = PX + offset
             sel = (i == self.menu_cat)
             if sel:
                 pyxel.rect(tx, TAB_Y - 1, cat_w - 1, TAB_H, C_HACK_CYAN)
-                pyxel.text(tx + 3, TAB_Y + 2, cat_name[:6], 0)
+                pyxel.text(tx + 3, TAB_Y + 2, cat_name, 0)
             else:
                 pyxel.rectb(tx, TAB_Y - 1, cat_w - 1, TAB_H, C_COAST)
-                pyxel.text(tx + 3, TAB_Y + 2, cat_name[:6], C_DIM)
+                pyxel.text(tx + 3, TAB_Y + 2, cat_name, C_DIM)
 
         # Active-tab affordance: a lit (gently breathing) top edge + a downward
         # connector notch tying the open tab to the item list below it.
-        _atx = PX + self.menu_cat * cat_w
+        _offset, cat_w = tab_layout[self.menu_cat]
+        _atx = PX + _offset
         _edge = 7 if pyxel.frame_count % 44 < 22 else C_HACK_CYAN
         pyxel.line(_atx, TAB_Y - 1, _atx + cat_w - 2, TAB_Y - 1, _edge)
         _ncx = _atx + cat_w // 2
@@ -8303,6 +9139,7 @@ class WatchDogsGame:
                 "_lora_toggle", "_sdr_toggle", "_usb_toggle",
                 "_wl_screen", "_wpasec_up", "_wpasec_dl", "_flash_esp", "_gameupd",
                 "_bt_hid_wip", "_bd_wip", "_race_wip",
+                "solo_wifi", "solo_ble", "piglet_collection",
                 "_srv_wiki", "_srv_ctos", "_srv_nav", "_srv_status"
             ) and not state_key.startswith("_p_")
             if sel:
@@ -8384,7 +9221,7 @@ class WatchDogsGame:
         Sprite changes per active menu tab (SCAN, SNIFF, etc.)
         """
         # Swap sprite if tab changed
-        target_tab = self.menu_cat
+        target_tab = MENU_CATS[self.menu_cat][0]
         if target_tab != self._current_menu_sprite:
             if target_tab in self._menu_sprites:
                 try:
@@ -8392,11 +9229,11 @@ class WatchDogsGame:
                     self._current_menu_sprite = target_tab
                 except Exception:
                     pass
-            elif self._current_menu_sprite != 4 and 4 in self._menu_sprites:
+            elif self._current_menu_sprite != "SYSTEM" and "SYSTEM" in self._menu_sprites:
                 # Fallback to default (SYSTEM/hacker) for tabs without sprite
                 try:
-                    pyxel.image(1).load(0, 0, self._menu_sprites[4])
-                    self._current_menu_sprite = 4
+                    pyxel.image(1).load(0, 0, self._menu_sprites["SYSTEM"])
+                    self._current_menu_sprite = "SYSTEM"
                 except Exception:
                     pass
 
@@ -9159,7 +9996,8 @@ class WatchDogsGame:
         pyxel.line(dx + 2, dy + 14, dx + dw - 3, dy + 14, C_COAST)
 
         if self._flash_running:
-            pyxel.text(dx + 4, dy + 22, "Flashing in progress...", C_HACK_CYAN)
+            pyxel.text(dx + 4, dy + 22,
+                       getattr(self, "_flash_status", "")[:52] or "Flashing in progress...", C_HACK_CYAN)
             pyxel.text(dx + 4, dy + 36, "Check terminal for status", C_DIM)
             pyxel.text(dx + 4, dy + dh - 14, "ESC to close", C_DIM)
         else:
@@ -9168,6 +10006,9 @@ class WatchDogsGame:
             if self._fw_update_available:
                 fw_info += f" -> v{self._fw_remote_version}"
             pyxel.text(dx + 4, dy + 18, fw_info, C_DIM)
+            status = getattr(self, "_flash_status", "")
+            if status:
+                pyxel.text(dx + 4, dy + dh - 28, status[:52], C_DIM)
 
             y = dy + 34
             for i, (key, profile) in enumerate(boards):
@@ -9296,7 +10137,7 @@ class WatchDogsGame:
                  "_gps_wait_dialog", "_cluster_popup", "_et_net_screen", "_portal_select_screen",
                  "_portal_data_screen", "_mitm_screen", "_flipper_screen", "_subghz_screen",
                  "_flash_screen", "_gameupd_screen", "_watch_screen", "_wl_screen",
-                 "_lora_protocol_picker", "_mt_profile_screen", "_mt_screen", "_mc_screen",
+                 "_lora_protocol_picker", "_solo_profile_picker", "_piglet_collection_screen", "_mt_profile_screen", "_mt_screen", "_mc_screen",
                  "_wd_screen", "_mc_region_screen", "_prox_screen", "_shutting_down")
         if any(getattr(self, name, False) for name in flags):
             return False
@@ -9566,7 +10407,7 @@ class WatchDogsGame:
     def _gameupd_do(self):
         try:
             if not self._gameupd_closed_for_install or not getattr(self, "_cleanup_done", False) or self._cleanup_errors:
-                raise RuntimeError("Devices must stop cleanly before updating.")
+                raise RuntimeError("Devices must stop and player data must save cleanly before updating.")
             receipt = self._game_updates.install(self._gameupd_plan, quiescent=True)
             self._gameupd_ok = True
             self._game_update_available = False
@@ -11684,6 +12525,9 @@ class WatchDogsGame:
         ops = []
         if self.wifi_scanning: ops.append("WiFi")
         if self.ble_scanning: ops.append("BT")
+        solo = getattr(self, "_solo", None)
+        if solo is not None and (solo.confirmed_wifi or solo.confirmed_ble):
+            ops.append("SOLO:" + solo.phase.upper())
         if self.sniffing: ops.append("Sniff")
         if self.capturing_hs: ops.append("HS")
         if self.state.portal_running: ops.append("EP")

@@ -25,7 +25,7 @@ NAMES={'__init__','_cleanup','_guard_update','_guard_draw','_install_exit_handle
        '_handle_esp_operation_state','_clear_esp_scan_state'}
 ENV=dict(atexit=atexit,logging=logging,signal=signal,threading=threading,time=time,
          AioPowerSession=AioPowerSession,__name__='shutdown_test',
-         pyxel=SimpleNamespace(quit=Mock()))
+         pyxel=SimpleNamespace(quit=Mock()),C_ERROR=8)
 NODE=ast.ClassDef(name='GameHarness',bases=[],keywords=[],decorator_list=[],
                  body=[copy.deepcopy(n) for n in GAME.body if isinstance(n,ast.FunctionDef) and n.name in NAMES])
 exec(compile(ast.fix_missing_locations(ast.Module(body=[NODE],type_ignores=[])),str(SOURCE),'exec'),ENV)
@@ -172,6 +172,8 @@ class ShutdownTests(unittest.TestCase):
         g=game();g._flash_running=True
         with self.assertLogs(level='WARNING'):g._cleanup()
         self.assertTrue(g.controller.states['usb']);g.serial.request_stop_for_shutdown.assert_not_called()
+        g.serial.close.assert_not_called()
+        self.assertIn('ESP32 flash still active', g._cleanup_errors)
 
     def test_initial_stop_notice_is_not_final_ack(self):
         g=game();calls=[]
@@ -205,8 +207,11 @@ class ShutdownTests(unittest.TestCase):
 
     def test_flash_worker_clears_busy_flag_even_on_error(self):
         g=game();g._flash_running=True;g._flash_do=Mock(side_effect=RuntimeError('flash failed'))
-        with self.assertRaisesRegex(RuntimeError,'flash failed'):g._run_flash('test')
+        g._term_add=Mock();g.msg=Mock()
+        g._run_flash('test')
+        self.assertTrue(any('flash failed' in str(c) for c in g._term_add.call_args_list))
         self.assertFalse(g._flash_running)
+        self.assertFalse(g._serial_busy)
 
 
 class AuxiliaryCloseTests(unittest.TestCase):

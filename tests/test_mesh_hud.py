@@ -19,6 +19,25 @@ exec(compile(ast.fix_missing_locations(ast.Module(body=[harness], type_ignores=[
 HudGame = namespace["HudGame"]
 
 
+class BdfMetrics:
+    """Read glyph advances from the same Spleen BDF used by the real UI."""
+    def __init__(self):
+        self.advances = {}
+        code = None
+        path = SOURCE.parents[1] / "assets" / "spleen-5x8.bdf"
+        for line in path.read_text(encoding="utf-8").splitlines():
+            if line.startswith("ENCODING "):
+                code = int(line.split()[1])
+            elif line.startswith("DWIDTH ") and code is not None:
+                self.advances[code] = int(line.split()[1])
+
+    def text_width(self, text):
+        return sum(self.advances[ord(character)] for character in text)
+
+
+FONT = BdfMetrics()
+
+
 class SessionObservations:
     """Generate distinct synthetic identities without allocating a million-entry set."""
     def __init__(self, meshcore=0, meshtastic=0):
@@ -44,6 +63,7 @@ def hud_game():
     g.gps = SimpleNamespace(available=False)
     g.gps_sats_vis = 0
     g.player_lat, g.player_lon = 51.1, 17.9
+    g._font = FONT
     return g
 
 
@@ -58,6 +78,48 @@ def labels(calls):
 
 
 class MeshHudTests(unittest.TestCase):
+    def test_three_five_and_six_digit_totals_keep_equal_measured_counter_gaps(self):
+        for value in (123, 12345, 123456):
+            with self.subTest(value=value):
+                g = hud_game()
+                g._loot_totals.update(bt=value, wifi=value, hs=7)
+                calls = draw(g)
+                counters = [args for args in calls if args[2].split(":")[0]
+                            in {"BLE", "WiFi", "HS", "PWD", "PWN", "MC", "MT"}]
+                self.assertEqual([item[2] for item in counters[:3]],
+                                 [f"BLE:{value}", f"WiFi:{value}", "HS:7"])
+                gaps = [right[0] - left[0] - FONT.text_width(left[2])
+                        for left, right in zip(counters, counters[1:])]
+                self.assertEqual(gaps, [10] * 6)
+                lora = next(args for args in calls if args[2].startswith("LoRa:"))
+                self.assertLess(counters[-1][0] + FONT.text_width(counters[-1][2]), lora[0])
+
+    def test_growth_plus_has_its_own_clearance_before_next_counter(self):
+        g = hud_game()
+        g._loot_totals.update(bt=12344, wifi=123455, hs=6)
+        draw(g)
+        PX.frame_count += 1
+        g._loot_totals.update(bt=12345, wifi=123456, hs=7)
+        calls = draw(g)
+        counters = [args for args in calls if args[2].split(":")[0]
+                    in {"BLE", "WiFi", "HS", "PWD", "PWN", "MC", "MT"}]
+        pluses = [args for args in calls if args[2] == "+"]
+        self.assertEqual(len(pluses), 3)
+        for counter, next_counter, plus in zip(counters, counters[1:], pluses):
+            self.assertEqual(counter[3], 7)
+            self.assertGreater(plus[0], counter[0] + FONT.text_width(counter[2]))
+            self.assertLess(plus[0] + FONT.text_width("+"), next_counter[0])
+
+    def test_builtin_font_fallback_uses_four_pixel_advances(self):
+        g = hud_game()
+        g._font = None
+        g._loot_totals.update(bt=12345, wifi=123456, hs=7)
+        calls = draw(g)
+        counters = [args for args in calls if args[2].split(":")[0]
+                    in {"BLE", "WiFi", "HS", "PWD", "PWN", "MC", "MT"}]
+        for left, right in zip(counters, counters[1:]):
+            self.assertEqual(right[0] - left[0] - len(left[2]) * 4, 10)
+
     def test_both_session_counters_are_visible_with_radio_off_and_empty_map(self):
         g = hud_game()
         calls = draw(g)

@@ -310,7 +310,7 @@ def download_tiles(lat: float, lon: float, maps_dir: Path,
 # ---------------------------------------------------------------------------
 
 class TileRenderer:
-    """Loads cached .dat tiles and renders them via pyxel pixel-by-pixel."""
+    """Cache the composed tile background; leave live map overlays to the caller."""
 
     def __init__(self, maps_dir: Path):
         self.maps_dir = maps_dir
@@ -319,10 +319,13 @@ class TileRenderer:
         self._manifest: dict | None = None
         self._load_manifest()
         self.tiles_visible = False
-        self._fb = None  # framebuffer reference (set on first draw)
+        self._background_key = None
+        self._background = None
+        self._background_drawn = False
 
     def _load_manifest(self):
         mf = self.maps_dir / "manifest.json"
+        self._manifest = None
         if mf.exists():
             try:
                 self._manifest = json.loads(mf.read_text())
@@ -335,9 +338,13 @@ class TileRenderer:
 
     def reload_manifest(self):
         self._load_manifest()
+        self._cache.clear()
+        self._background_key = None
+        self._background = None
+        self._background_drawn = False
 
     def draw(self, proj, W: int, H: int, HUD_TOP: int, TERM_Y: int) -> bool:
-        """Render visible tiles onto pyxel screen.
+        """Blit the cached background, rebuilding only when its pixels can change.
 
         Returns True if any tiles were drawn (caller can skip coastlines).
         """
@@ -347,6 +354,8 @@ class TileRenderer:
         game_zoom = proj.zoom
         osm_zoom = GAME_TO_OSM.get(game_zoom)
         if osm_zoom is None:
+            self._background_key = None
+            self._background = None
             return False  # Too far out for tiles
 
         # Viewport bounds in lat/lon
@@ -359,18 +368,83 @@ class TileRenderer:
         tx_min, ty_min = _lat_lon_to_tile(lat_n, lon_w, osm_zoom)
         tx_max, ty_max = _lat_lon_to_tile(lat_s, lon_e, osm_zoom)
 
-        drawn = False
+        tiles = []
         for tx in range(tx_min, tx_max + 1):
             for ty in range(ty_min, ty_max + 1):
-                if self._draw_tile(px, proj, osm_zoom, tx, ty,
-                                   W, H, HUD_TOP, TERM_Y):
-                    drawn = True
+                lat_tl, lon_tl = _tile_to_lat_lon(tx, ty, osm_zoom)
+                lat_br, lon_br = _tile_to_lat_lon(tx + 1, ty + 1, osm_zoom)
+                bounds = (*proj.geo_to_screen(lat_tl, lon_tl),
+                          *proj.geo_to_screen(lat_br, lon_br))
+                left, top, right, bottom = bounds
+                if (right <= left or bottom <= top or right <= 0 or left >= W
+                        or bottom <= HUD_TOP or top >= TERM_Y):
+                    continue
+                signature = self._tile_signature(osm_zoom, tx, ty)
+                tiles.append((tx, ty, bounds, signature))
 
-        self.tiles_visible = drawn
-        return drawn
+        # Integer projected bounds describe the exact sampling used below.
+        # Subpixel GPS smoothing must not rebuild an identical raster every frame.
+        key = (self.maps_dir, W, H, HUD_TOP, TERM_Y, osm_zoom, tuple(tiles))
+        if key != self._background_key:
+            self._background_key = None
+            self._background = None
+            self._background_drawn = False
+            try:
+                background = px.Image(W, H)
+                background.cls(0)
+                drawn, complete = self._draw_tiles(px, proj, osm_zoom, tiles,
+                                                   W, H, HUD_TOP, TERM_Y, background)
+            except Exception:
+                # Preserve the original renderer on older backends or allocation
+                # failure. Do not retain a partial image as a valid background.
+                return self._draw_uncached(px, proj, osm_zoom, tiles,
+                                           W, H, HUD_TOP, TERM_Y)
+            self._background = background
+            self._background_drawn = drawn
+            # A file can exist but be temporarily unreadable (or still being
+            # downloaded). Retry next frame rather than caching its omission
+            # indefinitely under an unchanged file signature.
+            self._background_key = key if complete else None
+
+        self.tiles_visible = self._background_drawn
+        if self.tiles_visible:
+            try:
+                # Opaque copy of the map rectangle only: HUD/terminal and live
+                # aircraft, contacts, particles, etc. never enter this cache.
+                px.blt(0, HUD_TOP, self._background, 0, HUD_TOP,
+                       W, TERM_Y - HUD_TOP)
+            except Exception:
+                self._background_key = None
+                self._background = None
+                return self._draw_uncached(px, proj, osm_zoom, tiles,
+                                           W, H, HUD_TOP, TERM_Y)
+        return self.tiles_visible
+
+    def _draw_tiles(self, px, proj, zoom, tiles, W, H, HUD_TOP, TERM_Y, target=None):
+        drawn = False
+        complete = True
+        for tx, ty, _bounds, signature in tiles:
+            if self._draw_tile(px, proj, zoom, tx, ty, W, H, HUD_TOP, TERM_Y, target):
+                drawn = True
+            elif signature is not None:
+                complete = False
+        return drawn, complete
+
+    def _draw_uncached(self, px, proj, zoom, tiles, W, H, HUD_TOP, TERM_Y):
+        self.tiles_visible, _complete = self._draw_tiles(px, proj, zoom, tiles,
+                                                        W, H, HUD_TOP, TERM_Y)
+        return self.tiles_visible
+
+    def _tile_signature(self, z, tx, ty):
+        try:
+            info = (self.maps_dir / str(z) / f"{tx}_{ty}.dat").stat()
+            return (info.st_dev, info.st_ino, info.st_size,
+                    info.st_mtime_ns, info.st_ctime_ns)
+        except OSError:
+            return None
 
     def _draw_tile(self, px, proj, z: int, tx: int, ty: int,
-                   W: int, H: int, HUD_TOP: int, TERM_Y: int) -> bool:
+                   W: int, H: int, HUD_TOP: int, TERM_Y: int, target=None) -> bool:
         """Render a single tile via direct framebuffer write. Returns True if drawn."""
         lat_tl, lon_tl = _tile_to_lat_lon(tx, ty, z)
         lat_br, lon_br = _tile_to_lat_lon(tx + 1, ty + 1, z)
@@ -399,11 +473,11 @@ class TileRenderer:
         if x_end <= x_start or y_end <= y_start:
             return False
 
-        # Direct framebuffer access (100x faster than pset loop)
         try:
-            if self._fb is None:
-                self._fb = px.screen.data_ptr()
-            fb = self._fb
+            surface = px.screen if target is None else target
+            # Keep native image storage owned by its image, never a screen
+            # pointer retained across frame/backend changes.
+            fb = surface.data_ptr()
             fb_w = W
         except Exception:
             fb = None
@@ -433,19 +507,26 @@ class TileRenderer:
                 for sx in range(x_start, x_end):
                     tp_x = int((sx - sx_tl) * inv_tw)
                     if 0 <= tp_x < OSM_TILE_SIZE:
-                        px.pset(sx, sy, img[row_off + tp_x])
+                        if target is None:
+                            px.pset(sx, sy, img[row_off + tp_x])
+                        else:
+                            target.pset(sx, sy, img[row_off + tp_x])
 
         return True
 
     def _get_tile_image(self, z: int, tx: int, ty: int):
         """Load tile from cache or disk. Returns flat array of palette indices."""
         key = (z, tx, ty)
+        signature = self._tile_signature(z, tx, ty)
         if key in self._cache:
-            self._cache.move_to_end(key)
-            return self._cache[key]
+            cached_signature, pixels = self._cache[key]
+            if signature is not None and signature == cached_signature:
+                self._cache.move_to_end(key)
+                return pixels
+            del self._cache[key]
 
         tile_path = self.maps_dir / str(z) / f"{tx}_{ty}.dat"
-        if not tile_path.exists():
+        if signature is None:
             return None
 
         try:
@@ -462,5 +543,5 @@ class TileRenderer:
         # LRU eviction
         if len(self._cache) >= self._max_cache:
             self._cache.popitem(last=False)
-        self._cache[key] = pixels
+        self._cache[key] = (signature, pixels)
         return pixels

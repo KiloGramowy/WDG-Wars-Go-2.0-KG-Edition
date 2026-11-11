@@ -4,6 +4,7 @@ The transport substitutes a local repository for the fixed GitHub destination.
 Every installed file, player fixture and notification preference is temporary.
 """
 from dataclasses import replace
+import errno
 import hashlib
 import importlib
 import io
@@ -130,7 +131,7 @@ class GameUpdateTests(unittest.TestCase):
         return dict(id=self.source_id, full_name=self.source_name,
                     owner=dict(id=self.owner_id, login=self.owner_login))
 
-    def transport(self, root, *args, timeout=30):
+    def transport(self, root, *args, timeout=30, stdout=None):
         self.calls.append(tuple(args))
         args = list(args)
         if args[0] == "fetch":
@@ -140,7 +141,8 @@ class GameUpdateTests(unittest.TestCase):
             self.assertIn(expected, args)
             args[args.index(expected)] = str(self.remote)
         return subprocess.run(["git", "-c", "core.autocrlf=false", "-C", str(root), *args],
-                              capture_output=True, text=True, encoding="utf-8", timeout=timeout)
+                              stdout=subprocess.PIPE if stdout is None else stdout,
+                              stderr=subprocess.PIPE, text=True, encoding="utf-8", timeout=timeout)
 
     def publish(self, **changes):
         feed = dict(self.feed, **changes)
@@ -636,6 +638,95 @@ class GameUpdateTests(unittest.TestCase):
         self.assertFalse(any("loot" in Path(name).parts or "secrets.conf" in name
                              for name in snapshot(receipt.backup_dir)))
 
+    def test_archive_stream_preserves_binary_assets_without_passing_private_output_path(self):
+        release = self.release()
+        before = snapshot(self.root)
+        with patch.object(self.manager, "_run", wraps=self.manager._run) as run:
+            plan = self.manager.prepare(release)
+        archive = next(call for call in run.call_args_list if call.args[0] == "archive")
+        self.assertFalse(any(str(arg).startswith("--output") for arg in archive.args))
+        self.assertIsNotNone(archive.kwargs.get("stdout"))
+        self.assertTrue(archive.kwargs["stdout"].closed)
+        self.assertEqual((plan.staging_dir / "files/assets/test.png").read_bytes(),
+                         b"\x89PNG\x00\xffnew\n")
+        self.assertFalse((plan.staging_dir / "source.tar").exists())
+        self.assertEqual(snapshot(self.root), before)
+        self.assert_player_kept()
+        self.manager.discard(plan)
+
+    def test_archive_failure_has_local_stage_message_and_keeps_installed_files(self):
+        release = self.release()
+        original = self.manager._git
+        before = snapshot(self.root)
+
+        def fail_archive(root, *args, timeout=30, stdout=None):
+            if args[0] == "archive":
+                return subprocess.CompletedProcess(args, 128, None,
+                    "fatal: Permission denied /root/private-path PRIVATE_TOKEN_SECRET")
+            return original(root, *args, timeout=timeout, stdout=stdout)
+
+        self.manager._git = fail_archive
+        with self.assertRaises(updates.UpdateError) as caught:
+            self.manager.prepare(release)
+        message = str(caught.exception)
+        self.assertIn("archive", message.lower())
+        self.assertNotIn("GitHub", message)
+        self.assertNotIn("PRIVATE_TOKEN_SECRET", message)
+        self.assertNotIn("/root/private-path", message)
+        self.assertEqual(snapshot(self.root), before)
+        self.assertEqual(list(self.manager.staging_root.iterdir()), [])
+        self.assert_player_kept()
+
+    def test_archive_storage_failures_are_actionable_and_leave_no_partial_plan(self):
+        release = self.release()
+        before = snapshot(self.root)
+        original_open = os.open
+        failures = ((errno.EACCES, "access"), (errno.ENOSPC, "free space"),
+                    (getattr(errno, "EDQUOT", errno.ENOSPC), "free space"))
+        for number, hint in failures:
+            with self.subTest(errno=number):
+                def fail_archive_open(path, flags, mode=0o777, **kwargs):
+                    if Path(path).name == "source.tar":
+                        raise OSError(number, "PRIVATE_TOKEN_SECRET /root/private-path")
+                    return original_open(path, flags, mode, **kwargs)
+
+                with patch.object(updates.os, "open", side_effect=fail_archive_open), \
+                        self.assertRaises(updates.UpdateError) as caught:
+                    self.manager.prepare(release)
+                message = str(caught.exception)
+                self.assertIn("archive", message.lower())
+                self.assertIn(hint, message.lower())
+                self.assertNotIn("GitHub", message)
+                self.assertNotIn("PRIVATE_TOKEN_SECRET", message)
+                self.assertNotIn("/root/private-path", message)
+                self.assertEqual(snapshot(self.root), before)
+                self.assertEqual(list(self.manager.staging_root.iterdir()), [])
+                self.assert_player_kept()
+
+    def test_archive_creation_never_overwrites_or_removes_a_preexisting_file(self):
+        directory = self.home / "archive-collision"
+        directory.mkdir()
+        archive = directory / "source.tar"
+        archive.write_bytes(b"Existing private content")
+        with self.assertRaises(updates.UpdateError):
+            self.manager._archive(self.target, self.manager._tree(self.target), directory)
+        self.assertEqual(archive.read_bytes(), b"Existing private content")
+        self.assert_player_kept()
+
+    def test_git_timeouts_report_the_stage_without_raw_subprocess_details(self):
+        for operation, stage in (("archive", "archive"), ("fetch", "download"),
+                                 ("ls-tree", "local Git")):
+            with self.subTest(operation=operation):
+                error = subprocess.TimeoutExpired(["git", "PRIVATE_TOKEN_SECRET"], 1,
+                    output="/root/private-path", stderr="PRIVATE_TOKEN_SECRET")
+                with patch.object(self.manager, "_run", side_effect=error), \
+                        self.assertRaises(updates.UpdateError) as caught:
+                    self.manager._required(operation)
+                message = str(caught.exception)
+                self.assertIn(stage, message)
+                self.assertNotIn("PRIVATE_TOKEN_SECRET", message)
+                self.assertNotIn("/root/private-path", message)
+
     def test_new_nested_code_directories_match_checkout_ownership(self):
         write(self.remote, "watchdogs/new_package/__init__.py", "PACKAGE = True\n")
         git(self.remote, "add", ".")
@@ -664,12 +755,13 @@ class GameUpdateTests(unittest.TestCase):
         os.chmod(self.directory_path, 0o711)
         os.chown(self.home, owner.pw_uid, owner.pw_gid)
         original = self.manager._git
-        def owner_archive(root, *args, timeout=30):
+        def owner_archive(root, *args, timeout=30, stdout=None):
             if args[0] != "archive":
-                return original(root, *args, timeout=timeout)
+                return original(root, *args, timeout=timeout, stdout=stdout)
             return subprocess.run(["sudo", "-n", "-H", "-u", owner.pw_name,
                                    "git", "-C", str(root), "-c", f"safe.directory={root}", *args],
-                                  capture_output=True, text=True, timeout=timeout)
+                                  stdout=subprocess.PIPE if stdout is None else stdout,
+                                  stderr=subprocess.PIPE, text=True, timeout=timeout)
         self.manager._git = owner_archive
         plan = self.manager.prepare(self.release())
         self.assertEqual(plan.staging_dir.stat().st_uid, owner.pw_uid)
@@ -677,6 +769,62 @@ class GameUpdateTests(unittest.TestCase):
         for path in plan.staging_dir.rglob("*"):
             self.assertEqual(path.stat().st_uid, owner.pw_uid)
         self.manager.discard(plan)
+
+    @unittest.skipUnless(os.name == "posix" and hasattr(os, "geteuid") and os.geteuid() == 0
+                         and shutil.which("sudo"), "Root-only private-home archive integration")
+    def test_production_git_owner_can_prepare_when_privileged_home_is_inaccessible(self):
+        """Match root-launched game + user-owned checkout, without exposing root home."""
+        import pwd
+        try:
+            owner = pwd.getpwnam(os.environ.get("SUDO_USER", "nobody"))
+            if owner.pw_uid == 0:
+                owner = pwd.getpwnam("nobody")
+        except KeyError:
+            self.skipTest("No non-root test account is available")
+        release = self.release()
+        fetched = git(self.root, "rev-parse", "--verify", updates.FETCH_REF).stdout.decode().strip()
+        os.chmod(self.directory_path, 0o711)
+        os.chmod(self.home, 0o700)
+        for path in (self.root, *self.root.rglob("*")):
+            os.chown(path, owner.pw_uid, owner.pw_gid)
+        self.assertEqual(self.home.stat().st_uid, 0)
+        denied = subprocess.run(["sudo", "-n", "-H", "-u", owner.pw_name,
+                                 "test", "-x", str(self.home)], capture_output=True)
+        self.assertEqual(denied.returncode, 1)
+
+        manager = updates.GameUpdates(root=self.root, home=self.home,
+                                      metadata=self.source_metadata)
+        before = snapshot(self.root)
+        manager._private_directory(manager.staging_root)
+        inaccessible_output = manager.staging_root / "forbidden-old-style.tar"
+        old_archive = manager._run("archive", "--format=tar",
+            "--output=" + str(inaccessible_output), self.target, "--", "assets/test.png")
+        self.assertNotEqual(old_archive.returncode, 0)
+        self.assertFalse(inaccessible_output.exists())
+        # The source has already been fetched; every local Git read/archive below
+        # uses production _run, including its real checkout-owner account switch.
+        with patch.object(manager, "_fetch", return_value=fetched), \
+                patch.object(manager, "_run", wraps=manager._run) as run:
+            plan = manager.prepare(release)
+        self.assertTrue(any(call.args[0] == "archive" for call in run.call_args_list))
+        self.assertEqual(snapshot(self.root), before)
+        for path in (self.home, manager.staging_root, plan.staging_dir):
+            self.assertEqual(path.stat().st_uid, 0)
+            self.assertEqual(path.stat().st_mode & 0o777, 0o700)
+        self.assertEqual((plan.staging_dir / "files/assets/test.png").read_bytes(),
+                         b"\x89PNG\x00\xffnew\n")
+
+        receipt = manager.install(plan, quiescent=True)
+        self.assertEqual(manager.installed_version(), release.version)
+        self.assertEqual((self.root / "assets/test.png").read_bytes(), b"\x89PNG\x00\xffnew\n")
+        self.assert_player_kept()
+        write(self.root, "loot/player.json", '{"xp":9000,"level":10}')
+        manager.rollback(receipt, quiescent=True)
+        self.assertEqual((self.root / "assets/test.png").read_bytes(), before["assets/test.png"])
+        self.assertEqual((self.root / "loot/player.json").read_text(), '{"xp":9000,"level":10}')
+        self.assertEqual(self.home.stat().st_mode & 0o777, 0o700)
+        self.assertEqual(manager.staging_root.stat().st_mode & 0o777, 0o700)
+        manager.discard(plan)
 
     def test_recovery_function_definition_without_call_blocks_packaging(self):
         write(self.remote, "watchdogs/__main__.py", "def _recover_game_update():\n    pass\n")

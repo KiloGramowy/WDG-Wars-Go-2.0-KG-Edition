@@ -187,6 +187,11 @@ class WardrivePersistenceTests(unittest.TestCase):
                 self.assertTrue(self.save(kind))
                 target = self.path(kind)
                 original = target.read_bytes()
+                # An external replacement requires a real reload even when
+                # the previous successful save populated the in-memory index.
+                replacement = target.with_suffix(".external")
+                replacement.write_bytes(original)
+                replacement.replace(target)
                 before = self.loot.wardrive_save_errors
                 real_open, real_read = open, Path.read_text
                 def fail_open(file, mode="r", *a, **k):

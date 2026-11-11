@@ -21,6 +21,7 @@ RADIO_FIX_MAX_AGE = 10.0
 RADIO_FIX_RMC_MAX_AGE = 2.0
 RADIO_FIX_RMC_TIME_TOLERANCE = 2.0
 RADIO_FIX_RMC_DISTANCE_METRES = 100.0
+WARDRIVE_SAMPLE_MAX_AGE = 2.0
 
 
 @dataclass
@@ -79,6 +80,7 @@ class GpsManager:
         self._radio_position = None
         self._recent_rmc = None
         self._last_gga = None
+        self._wardrive_position = None
 
     @property
     def available(self) -> bool:
@@ -102,9 +104,35 @@ class GpsManager:
         return {key: position[key] for key in
                 ("lat", "lon", "observed_at", "quality", "sats", "hdop")}
 
+    def wardrive_sample(self, now=None) -> Optional[dict]:
+        """Return an unfiltered measured GGA/RMC location younger than 2 s.
+
+        This is independent of RF AUTO's stricter GGA quality policy and the
+        player's visual jitter filter. It provides no cached position or
+        startup backfill. ``observed_at`` is the monotonic receive time of the
+        accepted position sentence; polling cannot refresh it. As in Piglet,
+        an RMC position carries the latest available GGA altitude/quality
+        metrics, which may not belong to the same sentence.
+        """
+        now = time.monotonic() if now is None else now
+        position = self._wardrive_position
+        if not self.available or position is None or not math.isfinite(now):
+            return None
+        if not 0 <= now - position["observed_at"] < WARDRIVE_SAMPLE_MAX_AGE:
+            return None
+        return dict(position)
+
+    def _record_wardrive_sample(self, lat, lon, utc_seconds, observed_at, sentence):
+        self._wardrive_position = dict(
+            lat=lat, lon=lon, altitude=self.fix.altitude,
+            quality=self.fix.fix_quality, sats=self.fix.satellites,
+            hdop=self.fix.hdop, observed_at=observed_at,
+            utc_seconds=utc_seconds, sentence=sentence)
+
     def _invalidate_position(self):
         self.fix.valid = False
         self._radio_position = None
+        self._wardrive_position = None
 
     # ------------------------------------------------------------------
     # Connection
@@ -356,6 +384,7 @@ class GpsManager:
             return
         self.fix.latitude, self.fix.longitude, self.fix.altitude = lat, lon, altitude
         self.fix.valid = True
+        self._record_wardrive_sample(lat, lon, utc_seconds, now, "GGA")
         if repeated_epoch:
             # Repeated receiver output from the same epoch cannot make an old
             # observation fresh or count as several stable AUTO samples.
@@ -392,6 +421,7 @@ class GpsManager:
         self.fix.valid = True
         self.fix.timestamp = p[1]
         self.fix.latitude, self.fix.longitude, self.fix.speed_knots = lat, lon, speed
+        self._record_wardrive_sample(lat, lon, utc_seconds, now, "RMC")
 
     def _parse_gsv(self, p: List[str]) -> None:
         """$xxGSV: total_msgs, msg_num, sats_in_view, ..."""

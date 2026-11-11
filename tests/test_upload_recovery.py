@@ -47,6 +47,7 @@ class UploadRecoveryTests(unittest.TestCase):
             _term_add=lambda *args, **kwargs: None)
         plugin._badge_sync_worker = Mock()
         plugin._handle_upload_badges = Mock()
+        plugin._wait_upload = Mock(return_value=True)
         return plugin
 
     def write_mesh(self, *, no_gps=False, second=False):
@@ -172,7 +173,8 @@ class UploadRecoveryTests(unittest.TestCase):
         with patch("plugins.wardrive_upload._open", return_value=self.response(
                 dict(DUPLICATE_CACHE_RESPONSE, cooldown=0))) as network:
             p._upload_worker([self.session])
-        network.assert_called_once()  # No mesh-only fallback for mixed records.
+        self.assertEqual(network.call_count,2)  # A child POST still needs its own full ACK.
+        self.assertTrue(all(call.args[0].get_method()=="POST" for call in network.call_args_list))
         self.assertIsNone(p._cached_receipt(payload))
         self.assertNotIn(self.session.name, p._uploaded_sessions)
         self.assertNotIn(self.session.name, p._uploaded_meshtastic_sessions)
@@ -378,7 +380,8 @@ class UploadRecoveryTests(unittest.TestCase):
                 patch("time.sleep") as sleep:
             p._upload_worker([self.session])
         self.assertEqual(network.call_count, 2)
-        sleep.assert_called_once_with(17)
+        self.assertTrue(any(call.args[0] == 17 for call in p._wait_upload.call_args_list))
+        sleep.assert_not_called()
         self.assertEqual(p._cached_receipt(self.payload()), receipt)
         self.assertIn(self.session.name, p._uploaded_meshtastic_sessions)
 
@@ -390,7 +393,8 @@ class UploadRecoveryTests(unittest.TestCase):
                 patch("time.sleep") as sleep:
             p._upload_worker([self.session])
         self.assertEqual(network.call_count, 2)
-        sleep.assert_called_once_with(3)
+        self.assertTrue(any(call.args[0] == 3 for call in p._wait_upload.call_args_list))
+        sleep.assert_not_called()
         self.assertNotIn(self.session.name, p._uploaded_meshtastic_sessions)
         self.assertIsNone(p._cached_receipt(self.payload()))
 
@@ -655,6 +659,10 @@ class UploadRecoveryTests(unittest.TestCase):
         with patch("plugins.wardrive_upload._open") as network:
             self.assertEqual(p._pending_sessions(), [])
             p._start_upload(all_sessions=True)
+            try:
+                self.assertTrue(p._sync_idle.wait(5), "Upload preparation did not finish")
+            finally:
+                self.assertTrue(p.on_unload(), "Upload preparation did not stop")
         network.assert_not_called()
         self.assertEqual({p.name for p in self.session.glob("*.csv")}, set())
         self.assertEqual(p._overlay_items()[0][0], "upload_all")
@@ -714,7 +722,7 @@ class UploadRecoveryTests(unittest.TestCase):
         self.assertTrue((self.session / "meshtastic_nodes.csv").is_file())
         self.assertNotIn(self.session.name, p._uploaded_meshtastic_sessions)
 
-    def test_prune_parses_and_unlinks_under_the_loot_lock(self):
+    def test_prune_prepares_outside_loot_lock_and_unlinks_under_it(self):
         self.write_mesh(no_gps=True)
         path = self.session / "meshtastic_nodes.csv"
         path.write_text(path.read_text().replace("!12345678", "malformed-node-id"))
@@ -730,7 +738,7 @@ class UploadRecoveryTests(unittest.TestCase):
         original_parse = p._parse_meshtastic
         original_unlink = Path.unlink
         def parse(path):
-            self.assertTrue(tracker.held, "upload CSV must be parsed while holding the loot lock")
+            self.assertFalse(tracker.held, "slow CSV preparation must not block gameplay writers")
             return original_parse(path)
         def unlink(path, *args, **kwargs):
             self.assertTrue(tracker.held, "upload CSV must be unlinked while holding the loot lock")

@@ -1,0 +1,6 @@
+* text eol=lf
+*.bin -text
+source/** text eol=lf whitespace=-blank-at-eol
+tests/** text eol=lf
+baseline/** text eol=lf whitespace=-blank-at-eol
+LICENSE text eol=lf

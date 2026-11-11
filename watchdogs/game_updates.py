@@ -14,6 +14,7 @@ from contextlib import contextmanager
 from dataclasses import asdict, dataclass
 import ast
 import base64
+import errno
 import hashlib
 import json
 import os
@@ -333,9 +334,11 @@ class GameUpdates:
                             url=f"https://github.com/{name}", verified=True)
         return name
 
-    def _run(self, *args, timeout=30):
+    def _run(self, *args, timeout=30, stdout=None):
         if self._git is not None:
             # The app's owner-aware _game_git has this exact signature.
+            if stdout is not None:
+                return self._git(self.root, *args, timeout=timeout, stdout=stdout)
             return self._git(self.root, *args, timeout=timeout)
         command = ["git", "-C", str(self.root), "-c", f"safe.directory={self.root}"]
         if shutil.which("gh"):
@@ -346,13 +349,34 @@ class GameUpdates:
             owner = pwd.getpwuid(self.root.stat().st_uid).pw_name
             command = ["sudo", "-n", "-H", "-u", owner] + command
         environment = dict(os.environ, GIT_TERMINAL_PROMPT="0", GCM_INTERACTIVE="Never")
-        return subprocess.run(command, capture_output=True, text=True, timeout=timeout,
+        return subprocess.run(command, stdout=subprocess.PIPE if stdout is None else stdout,
+                              stderr=subprocess.PIPE, text=True, timeout=timeout,
                               env=environment, encoding="utf-8", errors="strict")
 
-    def _required(self, *args, timeout=30):
-        result = self._run(*args, timeout=timeout)
+    def _required(self, *args, timeout=30, stdout=None):
+        operation = args[0] if args else ""
+        if operation == "archive":
+            failure = "Cannot create update archive. Check free space and update-folder access."
+            timed_out = "Update archive creation timed out. Retry the update."
+        elif operation == "fetch":
+            failure = "Cannot download the update. Check network and GitHub access."
+            timed_out = "Update download timed out. Check network access and retry."
+        else:
+            failure = "Cannot read local Git update data. Check repository access."
+            timed_out = "Reading local Git update data timed out. Retry the update."
+        try:
+            if stdout is None:
+                result = self._run(*args, timeout=timeout)
+            else:
+                result = self._run(*args, timeout=timeout, stdout=stdout)
+        except subprocess.TimeoutExpired:
+            raise UpdateError(timed_out) from None
+        except (OSError, UnicodeError):
+            raise UpdateError(failure) from None
         if result.returncode:
-            raise UpdateError("Cannot read the update source. Check network and GitHub access.")
+            # Git stderr may contain private URLs or credentials. Report the
+            # actual stage without exposing raw subprocess diagnostics.
+            raise UpdateError(failure)
         return result.stdout
 
     def _fetch(self):
@@ -684,14 +708,22 @@ class GameUpdates:
 
     def _archive(self, commit, tree, directory):
         archive_path = directory / "source.tar"
-        self._required("archive", "--format=tar", "--output=" + str(archive_path),
-                       commit, "--", *tree, timeout=45)
-        if archive_path.is_symlink() or not archive_path.is_file():
-            raise UpdateError("The staged release archive is missing.")
-        if archive_path.stat().st_size > MAX_TOTAL_BYTES + MAX_FILES * 2048:
-            raise UpdateError("The staged release archive is too large.")
+        created = False
         contents = {}
         try:
+            # The game may run as root while Git runs as the checkout owner.
+            # Open the private file here; Git writes through inherited stdout
+            # and never needs to traverse the game's private HOME/staging.
+            flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_BINARY", 0)
+            descriptor = os.open(archive_path, flags, 0o600)
+            created = True
+            with os.fdopen(descriptor, "wb") as output:
+                self._required("archive", "--format=tar", commit, "--", *tree,
+                               timeout=45, stdout=output)
+            if archive_path.is_symlink() or not archive_path.is_file():
+                raise UpdateError("The staged release archive is missing.")
+            if archive_path.stat().st_size > MAX_TOTAL_BYTES + MAX_FILES * 2048:
+                raise UpdateError("The staged release archive is too large.")
             with tarfile.open(archive_path, "r:") as archive:
                 for member in archive:
                     if member.isdir():
@@ -714,10 +746,17 @@ class GameUpdates:
             if contents.keys() != tree.keys():
                 raise UpdateError("The staged release archive is incomplete.")
             return contents
-        except (tarfile.TarError, OSError):
+        except PermissionError:
+            raise UpdateError("Cannot write update archive. Check update-folder access for the game user.") from None
+        except OSError as error:
+            if error.errno in (errno.ENOSPC, getattr(errno, "EDQUOT", errno.ENOSPC)):
+                raise UpdateError("Not enough free space for the update archive. Free disk space and retry.") from None
+            raise UpdateError("Cannot access the update archive. Check update-folder access and storage.") from None
+        except tarfile.TarError:
             raise UpdateError("Cannot read the staged release archive.") from None
         finally:
-            archive_path.unlink(missing_ok=True)
+            if created:
+                archive_path.unlink(missing_ok=True)
 
     def prepare(self, release):
         """Freshly verify a release and stage it without changing installed files."""
