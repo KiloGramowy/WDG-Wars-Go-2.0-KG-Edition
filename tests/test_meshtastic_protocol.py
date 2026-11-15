@@ -90,14 +90,14 @@ class ProtocolTests(unittest.TestCase):
         self.assertEqual(packet["node_type"], "Router")
         self.assertEqual(packet["public_key"], bytes(range(32)))
         self.assertIsNone(packet["lat"])
-        position = b"\x0d" + struct.pack("<i", 364700000) + b"\x15" + struct.pack("<i", -62000000)
+        position = b"\x0d" + struct.pack("<i", 12600000) + b"\x15" + struct.pack("<i", 25000000)
         packet = decode_packet(frame(3, position))
-        self.assertAlmostEqual(packet["lat"], 36.47)
-        self.assertAlmostEqual(packet["lon"], -6.2)
+        self.assertAlmostEqual(packet["lat"], 1.26)
+        self.assertAlmostEqual(packet["lon"], 2.5)
         self.assertIsNone(packet["node_type"])
 
     def test_incomplete_position_never_invents_coordinates(self):
-        packet = decode_packet(frame(3, b"\x0d" + struct.pack("<i", 364700000)))
+        packet = decode_packet(frame(3, b"\x0d" + struct.pack("<i", 12600000)))
         self.assertIsNone(packet["lat"])
         self.assertIsNone(packet["lon"])
 
@@ -187,9 +187,9 @@ class ManagerTests(unittest.TestCase):
             manager._on_node = lambda *args: seen.append(args)
             user = blob(1, b"!9f90f6a0") + blob(2, b"Test Router") + b"\x38\x02"
             manager._handle_frame(frame(4, user), metadata())
-            position = b"\x0d" + struct.pack("<i", 364700000) + b"\x15" + struct.pack("<i", -62000000)
+            position = b"\x0d" + struct.pack("<i", 12600000) + b"\x15" + struct.pack("<i", 25000000)
             manager._handle_frame(frame(3, position, packet_id=2), metadata())
-            self.assertEqual(seen[-1][1:5], ("Router", "Test Router", 36.47, -6.2))
+            self.assertEqual(seen[-1][1:5], ("Router", "Test Router", 1.26, 2.5))
 
     def test_corrupt_config_is_preserved_and_does_not_reuse_identity(self):
         with tempfile.TemporaryDirectory() as folder:

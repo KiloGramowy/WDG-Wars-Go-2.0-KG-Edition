@@ -7,7 +7,7 @@ from watchdogs.wardrive_gps import WardriveGpsPolicy
 
 
 def sample(when=100.0, **changes):
-    value = dict(lat=36.46, lon=-6.2, altitude=10.0, hdop=0.9,
+    value = dict(lat=1.25, lon=2.5, altitude=10.0, hdop=0.9,
                  sats=8, quality=1, observed_at=when)
     value.update(changes)
     return value
@@ -33,7 +33,7 @@ class WardriveGpsPolicyTests(unittest.TestCase):
         first = policy.first_fix_snapshot
         first["lat"] = 99
         self.assertFalse(policy.feed_sample(sample(101, lat=40), 101))
-        self.assertEqual(policy.first_fix_snapshot["lat"], 36.46)
+        self.assertEqual(policy.first_fix_snapshot["lat"], 1.25)
         self.assertEqual(policy.position_for(101, 101)["lat"], 40)
         policy.complete_startup()
         self.assertFalse(policy.startup_closing)
@@ -73,7 +73,7 @@ class WardriveGpsPolicyTests(unittest.TestCase):
         self.assertEqual((live["lat"], live["source"], live["hdop"]), (40, "measured", 12))
         policy.feed_sample(None, 102)
         cached = policy.position_for(102, 102)
-        self.assertEqual((cached["lat"], cached["source"], cached["observed_at"]), (36.46, "cache", 100))
+        self.assertEqual((cached["lat"], cached["source"], cached["observed_at"]), (1.25, "cache", 100))
 
     def test_loss_expiry_recovery_does_not_arm_another_startup_backfill(self):
         policy = WardriveGpsPolicy(cache_minutes=1)
@@ -85,7 +85,7 @@ class WardriveGpsPolicyTests(unittest.TestCase):
         self.assertEqual(policy.position_for(162, 162)["source"], "measured")
         self.assertTrue(policy.startup_complete)
         self.assertFalse(policy.startup_closing)
-        self.assertEqual(policy.first_fix_snapshot["lat"], 36.46)
+        self.assertEqual(policy.first_fix_snapshot["lat"], 1.25)
 
     def test_delayed_rx_does_not_receive_a_future_gps_measurement(self):
         policy = WardriveGpsPolicy()

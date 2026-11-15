@@ -561,10 +561,10 @@ class WardriveSoloIntegrationTests(unittest.TestCase):
         g._apply_solo_observation(observation, None)
         self.assertEqual(g._session_scan_points, {})
         g._apply_solo_observation(observation,
-            dict(lat=36.46, lon=-6.2, source="startup_backfill"), award_xp=False)
+            dict(lat=1.25, lon=2.5, source="startup_backfill"), award_xp=False)
         point = g._session_scan_points[("wifi", observation["mac"])]
         self.assertEqual((point["lat"], point["lon"], point["position_source"]),
-                         (36.46, -6.2, "startup_backfill"))
+                         (1.25, 2.5, "startup_backfill"))
         g.gain_xp.assert_called_once_with(15)
         self.assertEqual(len(g.wifi_networks), 1)
 
@@ -622,7 +622,7 @@ class WardriveSoloIntegrationTests(unittest.TestCase):
                 key = ("wifi" if protocol == "wifi" else "bt", mac)
                 before = dict(g._session_scan_points[key])
                 count = g.gain_xp.call_count
-                g._apply_solo_observation(old, dict(lat=36.46, lon=-6.2, source="startup_backfill"), award_xp=False)
+                g._apply_solo_observation(old, dict(lat=1.25, lon=2.5, source="startup_backfill"), award_xp=False)
                 self.assertEqual(g._session_scan_points[key], before)
                 self.assertEqual(g.gain_xp.call_count, count)
                 target = (g.wifi_networks if protocol == "wifi" else g.ble_devices)[0]

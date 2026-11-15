@@ -35,15 +35,22 @@ class RadioGeographyTests(unittest.TestCase):
                 self.assertGreaterEqual(area["land_boundary_distance_km"], 0)
                 self.assertLessEqual(area["land_boundary_distance_km"], 6)
 
-    def test_san_fernando_land_and_coast(self):
-        inland = geography.resolve_area(36.4666, -6.1988)
-        self.assertEqual(inland["code"], "ES")
-        self.assertGreater(inland["boundary_distance_km"], 1.5)
-        self.assertLess(inland["boundary_distance_km"], 2.3)
-        # A wider international-border guard must not mistake the nearby coast
-        # for a land border. The distance is capped, not an RF coverage claim.
-        self.assertEqual(inland["land_boundary_distance_km"], 6.0)
-        self.assertIsNone(geography.resolve_area(36.4, -6.25))
+    def test_synthetic_coast_does_not_become_an_international_land_border(self):
+        # Artificial land rectangle, with an international boundary far inland.
+        # No real observation or test-site geometry is included in this fixture.
+        polygon = {"bbox": [0, 0, 4, 4], "rings": [
+            [[0, 0], [4, 0], [4, 4], [0, 4], [0, 0]]
+        ]}
+        catalog = {"areas": [{"code": "AA", "label": "Synthetic coast",
+            "region": "EU_868", "polygons": [polygon]}],
+            "land_borders": [{"countries": ["AA"], "points": [[3, 0], [3, 4]]}]}
+        with patch.object(geography, "_catalog", return_value=catalog):
+            inland = geography.resolve_area(2, .017)
+            self.assertEqual(inland["code"], "AA")
+            self.assertGreater(inland["boundary_distance_km"], 1.5)
+            self.assertLess(inland["boundary_distance_km"], 2.3)
+            self.assertEqual(inland["land_boundary_distance_km"], 6.0)
+            self.assertIsNone(geography.resolve_area(2, -.017))
 
     def test_selected_islands_and_alaska(self):
         for code, lat, lon in [
@@ -56,7 +63,7 @@ class RadioGeographyTests(unittest.TestCase):
 
     def test_sea_unsupported_territories_and_countries_are_unknown(self):
         for lat, lon in [
-            (54, 3), (0, 0), (36.4, -6.25), (45, -30),
+            (54, 3), (0, 0), (45, -30),
             (28.4636, -16.2518), (35.8894, -5.3213), (35.2923, -2.9381),
             (78.2232, 15.6469), (70.98, -8.68), (4.9224, -52.3135),
             (18.4655, -66.1057), (13.4443, 144.7937), (28.2072, -177.3735),

@@ -62,7 +62,7 @@ class SyncPreparationTests(unittest.TestCase):
         self.assertTrue(self.plugin._sync_idle.wait(5), "Worker did not finish")
 
     def write_kind(self, kind, *, no_gps=False):
-        lat, lon = (0, 0) if no_gps else (36.4, -6.2)
+        lat, lon = (0, 0) if no_gps else (1.2, 2.5)
         stream = io.StringIO(newline="")
         writer = csv.writer(stream)
         if kind in ("WIFI", "BLE"):
@@ -484,7 +484,7 @@ class SyncPreparationTests(unittest.TestCase):
 
     def test_signature_and_receipt_hmac_keep_exact_existing_bytes(self):
         p = self.plugin
-        data = {"networks": [{"ssid": "Łódź café", "lat": 36.4}], "aircraft": [], "meshcore_nodes": []}
+        data = {"networks": [{"ssid": "Łódź café", "lat": 1.2}], "aircraft": [], "meshcore_nodes": []}
         nonce, key = "0123456789abcdef", "override-key"
         raw = json.dumps(data, separators=(",", ":")).encode("utf-8")
         encoded = base64.b64encode(raw).decode()

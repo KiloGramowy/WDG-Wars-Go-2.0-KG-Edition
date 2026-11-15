@@ -65,7 +65,7 @@ class RadioProfileUiTests(unittest.TestCase):
 
     def stable_fix(self):
         for _ in range(5):
-            self.controller.update(dict(lat=36.46, lon=-6.2, observed_at=self.now,
+            self.controller.update(dict(lat=1.25, lon=2.5, observed_at=self.now,
                                         quality=1, sats=8, hdop=.9))
             self.now += 5
         self.now -= 5
@@ -111,7 +111,7 @@ class RadioProfileUiTests(unittest.TestCase):
     def uart_gps(self, *, enabled=True, device="/dev/ttyAMA0", opens=False):
         self.g._gps_enabled = enabled
         self.g.gps_fix = False
-        self.g.player_lat, self.g.player_lon = 36.46, -6.2
+        self.g.player_lat, self.g.player_lon = 1.25, 2.5
         self.g.gps = SimpleNamespace(available=False, device=device,
             radio_fix=Mock(return_value=None), read_available=Mock(return_value=[]),
             process_sentences=Mock(), fix=SimpleNamespace(valid=False, latitude=0.0,
@@ -131,7 +131,7 @@ class RadioProfileUiTests(unittest.TestCase):
         gps.process_sentences.assert_not_called()
         self.assertTrue(gps.available)
         self.assertFalse(self.g.gps_fix)
-        self.assertEqual((self.g.player_lat, self.g.player_lon), (36.46, -6.2))
+        self.assertEqual((self.g.player_lat, self.g.player_lon), (1.25, 2.5))
         self.g._term_add.assert_called_once_with(
             "[GPS] UART connection restored; waiting for a fix", raw=True)
         self.assertEqual(self.controller.data["bindings"], [])
@@ -175,13 +175,13 @@ class RadioProfileUiTests(unittest.TestCase):
         gps.read_available.return_value = ["checksum-validated-by-real-parser"]
         def parse(sentences):
             gps.fix.valid = True
-            gps.fix.latitude, gps.fix.longitude = 36.4605, -6.2005
+            gps.fix.latitude, gps.fix.longitude = 1.2505, 2.5005
         gps.process_sentences.side_effect = parse
         self.g._poll_gps()
         gps._try_open.assert_not_called()
         gps.process_sentences.assert_called_once_with(["checksum-validated-by-real-parser"])
         self.assertTrue(self.g.gps_fix)
-        self.assertEqual((self.g.player_lat, self.g.player_lon), (36.4605, -6.2005))
+        self.assertEqual((self.g.player_lat, self.g.player_lon), (1.2505, 2.5005))
         self.g._term_add.assert_not_called()
 
     def test_s_requires_manual_selected_profile_to_be_successfully_applied(self):
@@ -202,7 +202,7 @@ class RadioProfileUiTests(unittest.TestCase):
         self.g._draw_radio_profile_picker("meshtastic")
         text = self.text()
         self.assertIn("Protocol: MESHTASTIC", text)
-        self.assertIn("GPS center: 36.460000, -6.200000", text)
+        self.assertIn("GPS center: 1.250000, 2.500000", text)
         self.assertIn("CIRCLE - radius 2 km", text)
         self.assertIn("This circle only; not the whole country.", text)
         self.assertIn("Y confirm   N/ESC cancel", text)
@@ -274,7 +274,7 @@ class RadioProfileUiTests(unittest.TestCase):
         self.stable_fix()
         self.controller.remember("meshtastic", "longfast", self.controller.preview_area("meshtastic"))
         self.controller.set_auto("meshtastic")
-        self.g.gps.radio_fix.return_value = dict(lat=36.46, lon=-6.2, observed_at=self.now,
+        self.g.gps.radio_fix.return_value = dict(lat=1.25, lon=2.5, observed_at=self.now,
                                                  quality=1, sats=8, hdop=.9)
         self.g._lora.running = self.g._lora.ready = True
         self.g._poll_radio_profiles()

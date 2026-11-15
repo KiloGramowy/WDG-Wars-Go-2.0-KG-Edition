@@ -33,7 +33,7 @@ class UploadTests(unittest.TestCase):
         with (session/filename).open("w", encoding="utf-8", newline="") as fh:
             writer = csv.writer(fh)
             writer.writerow(fields)
-            writer.writerows(rows or [["2026-10-29T12:00:00", "!12345678", "Client", "synthetic", 36.4, -6.2, -110, -5]])
+            writer.writerows(rows or [["2026-10-29T12:00:00", "!12345678", "Client", "synthetic", 1.2, 2.5, -110, -5]])
 
     def response(self, body):
         return io.BytesIO(json.dumps(body).encode())

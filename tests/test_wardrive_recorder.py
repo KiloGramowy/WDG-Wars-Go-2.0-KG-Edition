@@ -66,8 +66,8 @@ class WardriveRecorderTests(unittest.TestCase):
             captured_at=(datetime(2020, 1, 2, tzinfo=timezone.utc) + timedelta(microseconds=seq)).isoformat(),
             rawcapture_monotonic_us=seq * 1000, clock_source="test_fixed_anchor", clock_uncertainty_s=0.05)
 
-    def feed_fix(self, recorder, lat=36.46, **changes):
-        value = dict(lat=lat, lon=-6.2, altitude=10.125, hdop=0.9,
+    def feed_fix(self, recorder, lat=1.25, **changes):
+        value = dict(lat=lat, lon=2.5, altitude=10.125, hdop=0.9,
                      sats=8, quality=1, observed_at=self.now)
         value.update(changes)
         return recorder.policy.feed_sample(value, self.now)
@@ -133,10 +133,10 @@ class WardriveRecorderTests(unittest.TestCase):
         self.wait(recorder, lambda: self.count("backfill_done") == 1, replay=True)
         self.assertEqual(self.count("saved"), 2)
         self.assertEqual(self.count("backfill"), 2)
-        self.assertTrue(all(event["replay"] and event["position"]["lat"] == 36.46
+        self.assertTrue(all(event["replay"] and event["position"]["lat"] == 1.25
             and event["position"]["source"] == "startup_backfill"
             for event in self.events if event["event"] == "backfill"))
-        self.assertTrue(all(float(row[6]) == 36.46 for row in self.fields()))
+        self.assertTrue(all(float(row[6]) == 1.25 for row in self.fields()))
         self.assertFalse(recorder._pending_path.exists())
 
     def test_each_tick_grants_at_most_twenty_background_replay_records(self):
@@ -285,7 +285,7 @@ class WardriveRecorderTests(unittest.TestCase):
             rows = list(stream)
         record = self.loot._bt_history_record(rows[-1])
         self.assertEqual(record["rssi"], "-70")
-        self.assertEqual(float(record["lat"]), 36.46)
+        self.assertEqual(float(record["lat"]), 1.25)
         self.assertEqual(self.count("saved"), 2)
         self.assertEqual(self.count("backfill"), 2)
         log = (Path(self.loot.session_dir) / "serial_full.log").read_text()

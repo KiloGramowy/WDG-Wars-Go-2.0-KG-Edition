@@ -28,13 +28,14 @@ def nmea(body):
     return f"${body}*{checksum:02X}"
 
 
-def gga(utc="120000.00", lat="3627.6000", ns="N", lon="00612.0000", ew="W",
+# Generated NMEA positions; no captured receiver data or real test site.
+def gga(utc="120000.00", lat="0115.0000", ns="N", lon="00230.0000", ew="E",
         quality="1", sats="08", hdop="0.9", altitude="10.0", talker="GP"):
     return nmea(f"{talker}GGA,{utc},{lat},{ns},{lon},{ew},{quality},{sats},{hdop},{altitude},M,0.0,M,,")
 
 
-def rmc(utc="120000.00", status="A", lat="3627.6000", ns="N", lon="00612.0000",
-        ew="W", speed="0.0", talker="GP"):
+def rmc(utc="120000.00", status="A", lat="0115.0000", ns="N", lon="00230.0000",
+        ew="E", speed="0.0", talker="GP"):
     return nmea(f"{talker}RMC,{utc},{status},{lat},{ns},{lon},{ew},{speed},0.0,291026,,,A")
 
 
@@ -57,12 +58,12 @@ class GpsRadioFixTests(unittest.TestCase):
         self.feed(gga())
         value = self.fix()
         self.assertEqual(set(value), {"lat", "lon", "observed_at", "quality", "sats", "hdop"})
-        self.assertAlmostEqual(value["lat"], 36.46)
-        self.assertAlmostEqual(value["lon"], -6.2)
+        self.assertAlmostEqual(value["lat"], 1.25)
+        self.assertAlmostEqual(value["lon"], 2.5)
         self.assertEqual((value["observed_at"], value["quality"], value["sats"], value["hdop"]),
                          (100.0, 1, 8, 0.9))
         value["lat"] = 0
-        self.assertAlmostEqual(self.fix()["lat"], 36.46)
+        self.assertAlmostEqual(self.fix()["lat"], 1.25)
         self.assertTrue(self.gps.fix.valid)
 
     def test_measured_quality_types_and_gn_talker(self):
@@ -109,10 +110,10 @@ class GpsRadioFixTests(unittest.TestCase):
     def test_different_coordinates_in_same_gga_epoch_are_not_a_second_fix(self):
         self.feed(gga())
         self.now += 0.1
-        self.feed(gga(lat="3727.6000"))
+        self.feed(gga(lat="0215.0000"))
         self.assertIsNone(self.fix())
         self.assertFalse(self.gps.fix.valid)
-        self.assertAlmostEqual(self.gps.fix.latitude, 36.46)
+        self.assertAlmostEqual(self.gps.fix.latitude, 1.25)
 
     def test_rmc_alone_never_provides_quality_for_radio_selection(self):
         self.feed(rmc())
@@ -144,7 +145,7 @@ class GpsRadioFixTests(unittest.TestCase):
                 self.assertEqual(self.fix()["observed_at"], 100.2 if first.startswith("$GPRMC") else 100)
 
     def test_conflicting_rmc_position_or_time_invalidates_either_order(self):
-        for bad_rmc in (rmc(lat="4027.6000"), rmc(utc="130000.00")):
+        for bad_rmc in (rmc(lat="0515.0000"), rmc(utc="130000.00")):
             for first, second in ((gga(), bad_rmc), (bad_rmc, gga())):
                 with self.subTest(first=first, second=second):
                     self.gps = gps_module.GpsManager(device="never-open-test-device")
@@ -154,7 +155,7 @@ class GpsRadioFixTests(unittest.TestCase):
                     self.assertFalse(self.gps.fix.valid)
 
     def test_expired_rmc_does_not_block_new_complete_gga(self):
-        self.feed(rmc(lat="4027.6000"))
+        self.feed(rmc(lat="0515.0000"))
         self.now += gps_module.RADIO_FIX_RMC_MAX_AGE + 0.01
         self.feed(gga(utc="120003.00"))
         self.assertIsNotNone(self.fix())
@@ -178,10 +179,10 @@ class GpsRadioFixTests(unittest.TestCase):
 
     def test_invalid_or_incomplete_coordinates_never_mix_old_and_new_fields(self):
         malformed = [dict(lat=""), dict(lon=""), dict(ns=""), dict(ew="N"),
-                     dict(lat="NaN"), dict(lon="inf"), dict(lat="3660.0000"),
+                     dict(lat="NaN"), dict(lon="inf"), dict(lat="0160.0000"),
                      dict(lat="9100.0000"), dict(lon="18100.0000"),
                      dict(lat="9000.0001"), dict(lon="18000.0001"),
-                     dict(lat="-3627.6000"), dict(lon="0620.0000"),
+                     dict(lat="-0115.0000"), dict(lon="0230.0000"),
                      dict(hdop="NaN"), dict(hdop="-1"), dict(sats="-1"),
                      dict(altitude="inf"), dict(quality="-1"), dict(quality="9")]
         for changes in malformed:
@@ -196,10 +197,10 @@ class GpsRadioFixTests(unittest.TestCase):
 
     def test_incomplete_rmc_does_not_mix_coordinates_or_reuse_old_quality(self):
         self.feed(gga())
-        self.feed(rmc(utc="120001.00", lat="3727.6000", lon=""))
+        self.feed(rmc(utc="120001.00", lat="0215.0000", lon=""))
         self.assertIsNone(self.fix())
         self.assertFalse(self.gps.fix.valid)
-        self.assertAlmostEqual(self.gps.fix.latitude, 36.46)
+        self.assertAlmostEqual(self.gps.fix.latitude, 1.25)
 
     def test_bad_utc_and_truncated_position_sentences_invalidate(self):
         for bad in (gga(utc=""), gga(utc="240000"), gga(utc="126000"),

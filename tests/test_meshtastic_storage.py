@@ -87,26 +87,26 @@ class MeshStorageTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as folder, loot_at(folder) as loot:
             first = loot.register_mesh_contact("meshtastic", "!06cec900", node())
             loot.save_meshtastic_contact_note("!06cec900", "keep this note")
-            update = loot.register_mesh_contact("meshtastic", "!06cec900", node("Penny", 36.47, -6.19))
+            update = loot.register_mesh_contact("meshtastic", "!06cec900", node("Penny", 1.26, 2.51))
             stale = loot.register_mesh_contact("meshtastic", "!06cec900", node())
             contact = stale["contact"]
             self.assertEqual(contact["name"], "Penny")
-            self.assertEqual((contact["lat"], contact["lon"]), (36.47, -6.19))
+            self.assertEqual((contact["lat"], contact["lon"]), (1.26, 2.51))
             self.assertEqual(contact["first_seen"], first["contact"]["first_seen"])
             self.assertEqual(contact["note"], "keep this note")
             self.assertEqual(update["xp_award"], 0)
             row = csv_rows(loot._session / "meshtastic_nodes.csv")[0]
-            self.assertEqual((row["name"], row["lat"], row["lon"]), ("Penny", "36.47", "-6.19"))
+            self.assertEqual((row["name"], row["lat"], row["lon"]), ("Penny", "1.26", "2.51"))
             self.assertEqual(loot.loot_totals["mt_nodes"], 1)
 
     def test_mc_csv_later_position_fix_uses_same_upsert(self):
         with tempfile.TemporaryDirectory() as folder, loot_at(folder) as loot:
             loot.save_meshcore_node("abcd1234", "Client", "", 0, 0, -100, -2)
-            loot.save_meshcore_node("abcd1234", "Client", "MC", 36.47, -6.19, -99, -1)
+            loot.save_meshcore_node("abcd1234", "Client", "MC", 1.26, 2.51, -99, -1)
             loot.save_meshcore_node("abcd1234", "Client", "", 0, 0, -98, 0)
             rows = csv_rows(loot._session / "meshcore_nodes.csv")
             self.assertEqual(len(rows), 1)
-            self.assertEqual((rows[0]["name"], rows[0]["lat"], rows[0]["lon"]), ("MC", "36.47", "-6.19"))
+            self.assertEqual((rows[0]["name"], rows[0]["lat"], rows[0]["lon"]), ("MC", "1.26", "2.51"))
 
     def test_existing_contacts_and_xp_badges_are_not_reset_or_retroactively_paid(self):
         with tempfile.TemporaryDirectory() as folder:
@@ -201,10 +201,10 @@ class MeshStorageTests(unittest.TestCase):
 
     def test_invalid_position_does_not_replace_known_position(self):
         with tempfile.TemporaryDirectory() as folder, loot_at(folder) as loot:
-            loot.register_mesh_contact("meshtastic", "!06cec900", node("Penny", 36.47, -6.19))
+            loot.register_mesh_contact("meshtastic", "!06cec900", node("Penny", 1.26, 2.51))
             for lat, lon in ((float("nan"), 1), (91, 1), (1, 181), (None, None)):
                 result = loot.register_mesh_contact("meshtastic", "!06cec900", node(lat=lat, lon=lon))
-                self.assertEqual((result["contact"]["lat"], result["contact"]["lon"]), (36.47, -6.19))
+                self.assertEqual((result["contact"]["lat"], result["contact"]["lon"]), (1.26, 2.51))
 
 
 class PrivateCapturedReplayTest(unittest.TestCase):

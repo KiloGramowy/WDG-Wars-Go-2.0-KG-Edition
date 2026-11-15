@@ -14,7 +14,8 @@ from unittest.mock import patch
 from watchdogs.radio_profiles import PROFILES, RadioProfileController
 
 
-POINT = (36.47, -6.2)
+# Arbitrary numeric fix, resolved only by the injected synthetic area below.
+POINT = (1.26, 2.5)
 ES = {'code': 'ES', 'label': 'Spain', 'region': 'EU_868', 'boundary_distance_km': 100.0,
       'land_boundary_distance_km': 6.0}
 
@@ -195,16 +196,13 @@ class RadioProfilePolicyTests(unittest.TestCase):
         self.assertIn('boundary', controller.status('meshtastic')['reason'])
         self.assertEqual(controller.status('meshtastic')['active_profile'], 'sfnarrow')
 
-    def test_real_san_fernando_can_offer_local_approval_after_twenty_seconds(self):
-        from watchdogs.radio_geography import resolve_area
-        point = (36.4666, -6.1988)
-        mapped = resolve_area(*point)
-        self.assertGreater(mapped['boundary_distance_km'], .25)
-        self.assertLess(mapped['boundary_distance_km'], 2)
-        self.assertGreater(mapped['land_boundary_distance_km'], 2)
-        controller = RadioProfileController(home=Path(self.directory.name) / 'san-fernando',
-                                            resolver=resolve_area, clock=self.clock)
-        self.stable(point, controller)
+    def test_synthetic_coastal_area_can_offer_local_approval_after_twenty_seconds(self):
+        # Preserve the coastal-versus-international-border policy independently
+        # of any actual GPS observation or owner's test location.
+        mapped = dict(ES, boundary_distance_km=1.8, land_boundary_distance_km=6.0)
+        controller = RadioProfileController(home=Path(self.directory.name) / 'synthetic-coast',
+                                            resolver=lambda lat, lon: dict(mapped), clock=self.clock)
+        self.stable(POINT, controller)
         preview = controller.preview_area('meshtastic')
         self.assertEqual(preview['country'], 'ES')
         self.assertEqual(preview['radius_km'], 2)

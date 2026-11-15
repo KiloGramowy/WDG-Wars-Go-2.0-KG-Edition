@@ -52,9 +52,9 @@ class UploadRecoveryTests(unittest.TestCase):
 
     def write_mesh(self, *, no_gps=False, second=False):
         rows = [["2026-10-29T12:00:00", "!12345678", "Client", "synthetic",
-                 0 if no_gps else 36.4, 0 if no_gps else -6.2, -100, -5]]
+                 0 if no_gps else 1.2, 0 if no_gps else 2.5, -100, -5]]
         if second:
-            rows.append(["2026-10-29T12:01:00", "!87654321", "Client", "synthetic-2", 36.5, -6.1, -105, -7])
+            rows.append(["2026-10-29T12:01:00", "!87654321", "Client", "synthetic-2", 1.3, 2.6, -105, -7])
         with (self.session / "meshtastic_nodes.csv").open("w", encoding="utf-8", newline="") as stream:
             writer = csv.writer(stream)
             writer.writerow(["timestamp", "node_id", "type", "name", "lat", "lon", "rssi", "snr"])
@@ -75,14 +75,14 @@ class UploadRecoveryTests(unittest.TestCase):
 
     def write_upload_csvs(self, *, valid=False, mixed=False):
         mesh_header = ["timestamp", "node_id", "type", "name", "lat", "lon", "rssi", "snr"]
-        mesh_good = ["now", "!12345678", "Client", "synthetic", 36.4, -6.2, -90, 0]
+        mesh_good = ["now", "!12345678", "Client", "synthetic", 1.2, 2.5, -90, 0]
         mesh_bad = ["now", "!87654321", "Client", "synthetic", 0, 0, -90, 0]
         wifi_header = ["MAC", "SSID", "AuthMode", "FirstSeen", "Channel", "RSSI",
                        "CurrentLatitude", "CurrentLongitude", "AltitudeMeters", "AccuracyMeters", "Type"]
-        wifi_good = ["00:11:22:33:44:55", "synthetic", "[ESS]", "now", 1, -50, 36.4, -6.2, 10, 1, "WIFI"]
+        wifi_good = ["00:11:22:33:44:55", "synthetic", "[ESS]", "now", 1, -50, 1.2, 2.5, 10, 1, "WIFI"]
         wifi_bad = ["00:11:22:33:44:66", "synthetic-no-gps", "[ESS]", "now", 1, -50, 0, 0, 0, 1, "WIFI"]
         adsb_header = ["time", "icao", "callsign", "lat", "lon", "alt_ft", "speed_kt", "heading"]
-        adsb_good = ["now", "abc123", "synthetic", 36.4, -6.2, 10000, 200, 20]
+        adsb_good = ["now", "abc123", "synthetic", 1.2, 2.5, 10000, 200, 20]
         adsb_bad = ["now", "def456", "synthetic-no-gps", 0, 0, 10000, 200, 20]
         for filename, header, good, bad in (("meshtastic_nodes.csv", mesh_header, mesh_good, mesh_bad),
                 ("meshcore_nodes.csv", mesh_header, mesh_good, mesh_bad),
@@ -289,7 +289,7 @@ class UploadRecoveryTests(unittest.TestCase):
 
     def test_previously_confirmed_exact_payload_is_not_resent_or_counted_as_new_import(self):
         p = self.plugin
-        network_row = {"bssid": "00:11:22:33:44:55", "ssid": "synthetic", "lat": 36.4, "lon": -6.2}
+        network_row = {"bssid": "00:11:22:33:44:55", "ssid": "synthetic", "lat": 1.2, "lon": 2.5}
         p._parse_csv = lambda path: [dict(network_row)]
         payload = self.payload()
         payload["networks"] = [dict(network_row)]
@@ -494,7 +494,7 @@ class UploadRecoveryTests(unittest.TestCase):
         p = self.plugin
         payload = self.payload()
         for field, value in (("node_id", "87654321"), ("network", "meshcore"),
-                             ("latitude", 36.4000000001), ("longitude", -6.2000000001),
+                             ("latitude", 1.2000000001), ("longitude", 2.5000000001),
                              ("name", "Synthetic"), ("node_type", "Router"), ("rssi", -101)):
             rows = self.registry_rows(payload)
             rows[0][field] = value
@@ -672,7 +672,7 @@ class UploadRecoveryTests(unittest.TestCase):
 
     def test_prune_removes_invalid_upload_log_without_touching_game_data(self):
         (self.session / "meshtastic_nodes.csv").write_text(
-            "timestamp,node_id,type,name,lat,lon,rssi\nnow,not-a-node,Client,synthetic,36.4,-6.2,-90\n")
+            "timestamp,node_id,type,name,lat,lon,rssi\nnow,not-a-node,Client,synthetic,1.2,2.5,-90\n")
         survivor = self.session / "contacts.db"
         survivor.write_bytes(b"synthetic persistent contacts")
         self.assertEqual(self.plugin._prune_upload_logs(self.session), 1)
@@ -844,7 +844,7 @@ class UploadRecoveryTests(unittest.TestCase):
             self.assertEqual(loot._db, original_db)
             self.assertEqual(loot.load_meshtastic_contacts(), original_contacts)
             result = loot.register_mesh_contact("meshtastic", "!12345678",
-                dict(data, lat=36.4, lon=-6.2), current_xp=original_db["xp"])
+                dict(data, lat=1.2, lon=2.5), current_xp=original_db["xp"])
             self.assertFalse(result["new_event"])
             self.assertEqual(result["xp_award"], 0)
             self.assertEqual(result["xp_total"], original_db["xp"])

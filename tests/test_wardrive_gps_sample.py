@@ -1,4 +1,4 @@
-"""Measured wardrive GPS samples, without hardware, cache, or player data.
+"""Generated wardrive GPS samples, without hardware, cache, or player data.
 
 Exercise the real NMEA parser with fake time. RF AUTO keeps its existing,
 separate GGA freshness and quality rules.
@@ -27,13 +27,14 @@ def nmea(body):
     return f"${body}*{checksum:02X}"
 
 
-def gga(utc="120000.00", lat="3627.6000", lon="00612.0000", quality="1",
-        sats="08", hdop="0.9", altitude="10.0", ns="N", ew="W", talker="GP"):
+# Generated NMEA positions; no captured receiver data or real test site.
+def gga(utc="120000.00", lat="0115.0000", lon="00230.0000", quality="1",
+        sats="08", hdop="0.9", altitude="10.0", ns="N", ew="E", talker="GP"):
     return nmea(f"{talker}GGA,{utc},{lat},{ns},{lon},{ew},{quality},{sats},{hdop},{altitude},M,0.0,M,,")
 
 
-def rmc(utc="120000.00", status="A", lat="3627.6000", lon="00612.0000",
-        ns="N", ew="W", talker="GP"):
+def rmc(utc="120000.00", status="A", lat="0115.0000", lon="00230.0000",
+        ns="N", ew="E", talker="GP"):
     return nmea(f"{talker}RMC,{utc},{status},{lat},{ns},{lon},{ew},0.0,0.0,071126,,,A")
 
 
@@ -57,8 +58,8 @@ class WardriveGpsSampleTests(unittest.TestCase):
         value = self.sample()
         self.assertEqual(set(value), {"lat", "lon", "altitude", "quality", "sats",
                                      "hdop", "observed_at", "utc_seconds", "sentence"})
-        self.assertAlmostEqual(value["lat"], 36.46)
-        self.assertAlmostEqual(value["lon"], -6.2)
+        self.assertAlmostEqual(value["lat"], 1.25)
+        self.assertAlmostEqual(value["lon"], 2.5)
         self.assertEqual((value["quality"], value["sats"], value["hdop"], value["altitude"]),
                          (1, 3, 10.0, 42.5))
         self.assertEqual((value["observed_at"], value["utc_seconds"], value["sentence"]),
@@ -87,9 +88,9 @@ class WardriveGpsSampleTests(unittest.TestCase):
     def test_fresh_rmc_uses_its_position_and_latest_gga_metrics(self):
         self.feed(gga(altitude="42.5", sats="03", hdop="10"))
         self.now = 101.5
-        self.feed(rmc(utc="120001.50", lat="3627.6060"))
+        self.feed(rmc(utc="120001.50", lat="0115.0060"))
         value = self.sample()
-        self.assertAlmostEqual(value["lat"], 36.4601)
+        self.assertAlmostEqual(value["lat"], 1.2501)
         self.assertEqual((value["observed_at"], value["utc_seconds"], value["sentence"]),
                          (101.5, 43201.5, "RMC"))
         self.assertEqual((value["quality"], value["sats"], value["hdop"], value["altitude"]),
@@ -111,9 +112,9 @@ class WardriveGpsSampleTests(unittest.TestCase):
         radio_before = self.gps.radio_fix(self.now)
         value = self.sample()
         value.update(lat=90, hdop=99, observed_at=1000)
-        self.assertAlmostEqual(self.sample()["lat"], 36.46)
+        self.assertAlmostEqual(self.sample()["lat"], 1.25)
         self.assertEqual(self.gps.radio_fix(self.now), radio_before)
-        self.assertEqual((self.gps.fix.latitude, self.gps.fix.hdop), (36.46, 0.9))
+        self.assertEqual((self.gps.fix.latitude, self.gps.fix.hdop), (1.25, 0.9))
 
     def test_gsv_or_display_field_changes_do_not_refresh_measured_sample(self):
         self.feed(gga())
@@ -173,8 +174,8 @@ class WardriveGpsSampleTests(unittest.TestCase):
                 self.assertFalse(self.gps.fix.valid)
 
     def test_conflicting_rmc_or_repeated_gga_cannot_create_a_sample(self):
-        for invalid in (rmc(lat="4027.6000"), rmc(utc="130000.00"),
-                        gga(lat="3727.6000")):
+        for invalid in (rmc(lat="0515.0000"), rmc(utc="130000.00"),
+                        gga(lat="0215.0000")):
             with self.subTest(invalid=invalid):
                 self.gps = gps_module.GpsManager(device="never-open-test-device")
                 self.gps._available = True

@@ -23,6 +23,12 @@
 
 *Your CPU has enough paperwork. Let Piglet carry the CSV.* 😏
 
+### 🔒 Privacy hotfix — same radios, fewer breadcrumbs
+
+**Before:** some examples and validation notes included a real test location and its GPS coordinates. **Now:** current source examples use neutral test data and location-free validation notes. RF profiles, country support and game behavior stay unchanged. The cyberdeck keeps its toolbox; your whereabouts stay yours. 🕶️
+
+**Scope:** this correction is on current **main**, with the software version still **0.9.20**. It does **not** activate a new OTA update or rewrite older commits, tags or their source archives.
+
 **[📦 Release 0.9.20](https://github.com/KiloGramowy/WDG-Wars-Go-2.0-KG-Edition/releases/tag/v0.9.20)** · **[📝 All releases](https://github.com/KiloGramowy/WDG-Wars-Go-2.0-KG-Edition/releases)** · **[📚 Full changelog](docs/UPDATE_PREVIEW.txt)**
 
 **[🐷 Download Piglet BIN](firmware/piglet-collection/piglet-kg-uconsole-xiao-c5-app.bin?raw=1)** · **[🔌 Piglet installation, pairing and rollback](docs/PIGLET_COLLECTION_INSTALL.md)** · **[📡 SOLO firmware guide](firmware/wardriving-solo/README.md)**
@@ -295,7 +301,7 @@ Open **ADDONS → Meshtastic Profile** or **ADDONS → MeshCore Region**. Each p
 
 📌 **Local means local.** An approval covers the displayed circle, not an entire country. AUTO uses its conservative inner area and does not discover nearby nodes' RF settings. RF changes preserve channel/key configuration.
 
-🇪🇸 **Real Meshtastic SFNarrow traffic was received around San Fernando:** EU_868, **869.618 MHz · BW 62.5 kHz · SF7 · CR 4/5**. This does not establish one preset for all Spain or for MeshCore. EU/UK LongFast remains available; MeshCore has its own catalog.
+🇪🇸 **Real Meshtastic SFNarrow traffic was received during receiver validation:** EU_868, **869.618 MHz · BW 62.5 kHz · SF7 · CR 4/5**. This does not establish one preset for all Spain or for MeshCore. EU/UK LongFast remains available; MeshCore has its own catalog.
 
 📚 **[Complete RF profiles, GPS checks and sources →](docs/RADIO_PROFILES.md)**
 
@@ -435,7 +441,7 @@ Future work will be documented as it is implemented and checked. More field test
 
 | Check | Recorded result |
 | --- | --- |
-| 📡 SFNarrow RX | Real public traffic received on uConsole around San Fernando, Spain. |
+| 📡 SFNarrow RX | Real public traffic received on uConsole; test location withheld. |
 | 💬 Background text RX | Received and stored with the chat closed. |
 | 📨 Public text TX | Local TX_DONE recorded; remote delivery was not established. |
 | 🔁 WiFi / BLE | Seven complete WiFi and seven BLE phases on XIAO ESP32-C5 / JanOS 1.7.0, with GPS and CSV output. |
