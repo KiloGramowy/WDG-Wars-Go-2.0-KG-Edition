@@ -137,3 +137,15 @@ Updaters **0.9.19.1 or later restart the game automatically after successful ins
 🐷 [Piglet BIN](https://github.com/KiloGramowy/WDG-Wars-Go-2.0-KG-Edition/raw/refs/tags/v0.9.20/firmware/piglet-collection/piglet-kg-uconsole-xiao-c5-app.bin) · 🔐 [Piglet SHA256SUMS](https://github.com/KiloGramowy/WDG-Wars-Go-2.0-KG-Edition/blob/v0.9.20/firmware/piglet-collection/SHA256SUMS) · 🔌 [Complete Piglet installation, pairing and rollback](https://github.com/KiloGramowy/WDG-Wars-Go-2.0-KG-Edition/blob/v0.9.20/docs/PIGLET_COLLECTION_INSTALL.md)
 
 **KEEP THE HUNT. KEEP THE LOOT. LET THE PIG CARRY THE CSV.** 🐕📡🐷
+
+---
+
+## 🔒 Privacy correction — same radios, fewer breadcrumbs
+
+❌ **Before:** source examples and validation notes included a real field-test location and its GPS coordinates.
+
+✅ **Now:** current **main** and the refreshed **WatchDogsGo-0.9.20.zip** use neutral examples and location-free validation notes. RF profiles, country support, algorithms and game behavior are unchanged. Existing media remain unchanged.
+
+**Still 0.9.20.** This is a source/documentation privacy correction, not a new OTA release. The approved OTA feed and existing tags are unchanged. GitHub's automatic **Source code (zip/tar.gz)** downloads follow the original tag and still contain the old snapshot; use the refreshed named ZIP for the corrected source. Earlier commits, tags and previously downloaded copies are not erased by this correction.
+
+*The cyberdeck keeps its toolbox. Your whereabouts stay yours.* 🕶️
