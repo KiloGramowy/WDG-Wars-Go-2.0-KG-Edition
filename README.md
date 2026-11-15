@@ -652,7 +652,7 @@ The release includes the tested shutdown fix and updater. Screenshots show UI st
 🔬 **[Evidence and test limits →](docs/VALIDATION.md)**
 
 The table above records earlier releases. Fresh 0.9.21 RC checks are tied to
-the exact private RC commit; they do not establish a new physical uConsole
+the validated source commit; they do not establish a new physical uConsole
 run. [0.9.21 changes, update controls and limits](docs/ota-0.9.21/CHANGELOG_AND_UPDATE_GUIDE.md).
 
 ## 🛠️ Hardware and installation
