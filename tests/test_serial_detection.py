@@ -103,14 +103,14 @@ class SerialSendResultTests(unittest.TestCase):
         self.connection = Mock(is_open=True)
         self.manager.serial_conn = self.connection
 
-    def test_complete_command_returns_true_after_flush(self):
+    def test_complete_command_queues_without_drain_or_ui_sleep(self):
         payload = b"scan_networks\r\n"
         self.connection.write.return_value = len(payload)
         with patch.object(serial_manager.time, "sleep") as sleep:
             self.assertIs(self.manager.send_command("scan_networks"), True)
         self.connection.write.assert_called_once_with(payload)
-        self.connection.flush.assert_called_once_with()
-        sleep.assert_called_once_with(0.1)
+        self.connection.flush.assert_not_called()
+        sleep.assert_not_called()
 
     def test_write_length_counts_encoded_bytes(self):
         command = "name J\N{LATIN SMALL LETTER U WITH ACUTE}nior"
@@ -156,12 +156,12 @@ class SerialSendResultTests(unittest.TestCase):
                 self.connection.flush.assert_not_called()
                 sleep.assert_not_called()
 
-    def test_flush_exception_is_not_reported_as_success(self):
+    def test_unresponsive_drain_is_never_entered_after_complete_write(self):
         self.connection.write.return_value = len(b"scan_bt\r\n")
-        self.connection.flush.side_effect = OSError("device disappeared")
-        with self.assertLogs(serial_manager.log, level="ERROR"):
-            with patch.object(serial_manager.time, "sleep") as sleep:
-                self.assertIs(self.manager.send_command("scan_bt"), False)
+        self.connection.flush.side_effect = AssertionError("unbounded drain")
+        with patch.object(serial_manager.time, "sleep") as sleep:
+            self.assertIs(self.manager.send_command("scan_bt"), True)
+        self.connection.flush.assert_not_called()
         sleep.assert_not_called()
 
 

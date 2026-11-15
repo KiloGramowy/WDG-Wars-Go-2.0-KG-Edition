@@ -31,19 +31,31 @@ class ReleaseNotePresentationTests(unittest.TestCase):
         self.assertEqual(self.candidate(), notes)
         # The display must retain the actual candidate's facts and instructions.
         words = " ".join(text.split())
-        for fact in ("Before:", "Now:", "0.9.20", "720 minutes",
-                     "110 ms", "1000 ms", "10,000", "6 MiB", "Enter or Esc",
-                     "0.9.17, 0.9.18 or 0.9.19", "0.9.19.1 or later",
-                     "Normal Piglet", "60-second", "5.0.0", "Keep all"):
+        for fact in ("Before:", "Now:", "0.9.21", "0.9.20",
+                     "TAB -> SYSTEM -> Auto Map + Turf", "Download Map",
+                     "10 km", "3 km", "five minutes", "720-minute",
+                     "White Rabbit", "Game State", "Device Pairing",
+                     "white bunny markers appear automatically", "60 seconds",
+                     "Portal Badges", "read-only GET",
+                     "15 XP", "10 XP", "1 XP", "firmware",
+                     "SYSTEM -> Firmware KG/SOLO", "KG Edition release repository",
+                     "Enter starts a manual KG firmware installation or reinstall",
+                     "Esc closes the window; an installation already underway continues",
+                     "Automatic checking does not flash automatically",
+                     "TAB -> SYSTEM -> Update Game"):
             with self.subTest(fact=fact):
                 self.assertIn(fact, words)
+        self.assertRegex(words, r"\b(?:Default:\s*OFF|OFF by default)\b")
+        self.assertRegex(words, r"fresh,? measured GPS")
+        self.assertRegex(words, r"(?:younger than|less than|under) (?:two|2) seconds")
+        self.assertIn("Game State and Device Pairing remain API clients", words)
+        self.assertIn("without new Game State or interactive pairing screens", words)
 
     def test_actual_candidate_headings_become_numbered_uppercase_titles(self):
         notes = self.candidate()
         titles = re.findall(r"^## (.+)$", notes, re.M)
         lines = game_note_lines(notes)
-        projected = [line for line in lines if re.fullmatch(
-            r"\d{1,2}\. [A-Z][A-Z0-9 /()+,.'&:_-]*", line)]
+        projected = [line for line in lines if re.match(r"\d+\. ", line)]
         self.assertEqual(len(projected), len(titles))
         for number, heading in enumerate(projected, 1):
             with self.subTest(heading=heading):
@@ -55,20 +67,21 @@ class ReleaseNotePresentationTests(unittest.TestCase):
     def test_real_candidate_filter_keeps_only_missing_blocks_for_older_users(self):
         candidate = self.candidate() + "\n"
         older = (
-            "RELEASE 0.9.19.2 - PREVIOUS RELEASE\nEarlier fixture: clean-map instructions.\n\n",
-            "RELEASE 0.9.19.1 - FIRST MICROFIX\nEarlier fixture: microfix instructions.\n\n",
-            "RELEASE 0.9.19 - MAP MICROFIX\nEarlier fixture: map instructions.\n\n",
-            "RELEASE 0.9.18 - PREVIOUS FIXES\nEarlier fixture: player instructions.\n\n",
+            "RELEASE 0.9.20 - SOLO AND COLLECTION\nEarlier player instructions.\n\n",
+            "RELEASE 0.9.19.2 - CLEAN MAP\nEarlier map instructions.\n\n",
+            "RELEASE 0.9.19.1 - FIRST MICROFIX\nEarlier microfix instructions.\n\n",
         )
         notes = candidate + "".join(older)
-        for installed, kept in (("0.9.17", 4), ("0.9.18", 3), ("0.9.19", 2),
-                                ("0.9.19.1", 1), ("0.9.19.2", 0), ("0.9.20", 0)):
+        for installed, kept in (("0.9.19", 3), ("0.9.19.1", 2), ("0.9.19.2", 1),
+                                ("0.9.20", 0), ("0.9.21", 0)):
             with self.subTest(installed=installed):
-                selected = filter_release_notes(notes, installed, "0.9.20")
+                selected = filter_release_notes(notes, installed, "0.9.21")
                 self.assertEqual(selected, candidate + "".join(older[:kept]))
                 text = "\n".join(game_note_lines(selected))
                 self.assertIn(candidate.splitlines()[0], text)
-                self.assertEqual(text.count("Earlier fixture:"), kept)
+                for index, block in enumerate(older):
+                    marker = block.splitlines()[1]
+                    self.assertEqual(text.count(marker), int(index < kept))
                 self.assertNotIn("##", text)
                 self.assertEqual(notes, candidate + "".join(older))
 

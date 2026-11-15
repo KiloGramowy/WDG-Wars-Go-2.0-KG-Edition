@@ -100,12 +100,12 @@ class FirmwareArchiveTests(unittest.TestCase):
                              for name in ("projectZerobyLOCOSP-xiao-1.7.0.zip",
                                           "projectZerobyLOCOSP-with-fap-1.7.0.zip",
                                           "projectZerobyLOCOSP-1.6.5.zip")]
-        self.assertEqual(select_firmware_asset(release, "wroom"),
-            "https://github.com/LOCOSP/projectZero/releases/download/v1.7.0/projectZerobyLOCOSP-1.7.0.zip")
+        with self.assertRaises(FlashError):
+            select_firmware_asset(release, "wroom")
 
-    def test_missing_asset_keeps_official_board_specific_fallback(self):
-        self.assertEqual(select_firmware_asset(self.release(()), "xiao"),
-            "https://github.com/LOCOSP/projectZero/releases/download/v1.7.0/projectZerobyLOCOSP-xiao-1.7.0.zip")
+    def test_missing_asset_is_refused_without_guessing_a_stock_download(self):
+        with self.assertRaisesRegex(FlashError, "no fallback"):
+            select_firmware_asset(self.release(()), "xiao")
 
     def test_ambiguous_archive_invalid_tag_board_or_url_is_refused(self):
         duplicated = self.release(); duplicated["assets"].append(duplicated["assets"][0].copy())

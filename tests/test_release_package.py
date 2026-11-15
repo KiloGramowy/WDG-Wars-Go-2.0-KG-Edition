@@ -47,6 +47,17 @@ class PackageValidationTests(unittest.TestCase):
         self.assertTrue(result["ok"], result)
         self.assertEqual(result["checked_local_links"], 2)
 
+    def test_directory_links_require_a_real_tracked_subtree_not_a_similar_prefix(self):
+        files = minimal()
+        files["README.md"] = b"[Sources](src/) [Sources without slash](src)"
+        files["src/nested/example.txt"] = b"synthetic fixture"
+        self.assertTrue(package.validate(files)["ok"])
+        del files["src/nested/example.txt"]
+        files["src-other/example.txt"] = b"not the requested directory"
+        result = package.validate(files)
+        self.assertFalse(result["ok"])
+        self.assertEqual(sum("Broken local link" in row for row in result["errors"]), 2)
+
     def test_missing_local_link_and_escape_are_reported(self):
         files = minimal()
         files["README.md"] = b"[Missing](docs/absent.md) [Escape](../outside.md)"
@@ -93,10 +104,48 @@ class PackageValidationTests(unittest.TestCase):
         self.assertTrue(result["ok"])
         self.assertTrue(any("attachment access" in row for row in result["warnings"]))
 
+    def test_private_project_walkthrough_cannot_leak_into_public_instructions(self):
+        files = minimal()
+        private_link = "https://chatgpt.com/g/g-p-synthetic-project/c/synthetic-conversation"
+        files["README.md"] = ("[Install](" + private_link + ")").encode()
+        result = package.validate(files)
+        self.assertFalse(result["ok"])
+        self.assertTrue(any("Private project conversation link" in row for row in result["errors"]))
+        self.assertNotIn(private_link, json.dumps(result))
+        files["README.md"] = b"[Public shared guide](https://chatgpt.com/share/synthetic-public-guide)"
+        self.assertTrue(package.validate(files)["ok"])
+
     def test_unsafe_archive_paths_are_rejected(self):
         for name in ("../outside", "/absolute", "C:/drive", "a\\b", "a/../b", "a//b", "a\nb", None):
             with self.subTest(name=name), self.assertRaises(package.PackageError):
                 package.safe_name(name)
+
+    def test_profile_keeps_every_runtime_resource_and_test_without_replacement(self):
+        files = minimal()
+        files.update({"assets/original.bdf": b"font", "tests/test_example.py": b"test",
+                      "firmware/source.c": b"source", "updates/stable.json": b"feed",
+                      "receiver.py": b"runtime helper", ".gitignore": b"loot/\n"})
+        for name in tuple(files):
+            with self.subTest(omitted=name):
+                if name == "README.md":
+                    continue
+                entries = {n: n for n in files if n != name}
+                files["profile.json"] = json.dumps({"schema": 1, "entries": entries}).encode()
+                with self.assertRaisesRegex(package.PackageError, "cannot omit or replace"):
+                    package.source_profile(files, dict.fromkeys(files, "100644"), "profile.json")
+                del files["profile.json"]
+
+    def test_profile_rejects_unsafe_missing_and_private_inputs(self):
+        for target, origin in (("../escape", "README.md"), ("README.md", "absent.md"),
+                               ("README.md", "old-delivery.zip"), ("loot/report.txt", "README.md")):
+            with self.subTest(target=target, origin=origin):
+                files = minimal()
+                files["old-delivery.zip"] = b"private history"
+                entries = {n: n for n in package.REQUIRED_FILES}
+                entries[target] = origin
+                files["profile.json"] = json.dumps({"schema": 1, "entries": entries}).encode()
+                with self.assertRaises(package.PackageError):
+                    package.source_profile(files, dict.fromkeys(files, "100644"), "profile.json")
 
 
 @unittest.skipUnless(shutil.which("git"), "Git is required for exact snapshot exports")
@@ -163,6 +212,28 @@ class PackageExportTests(unittest.TestCase):
             package.export(self.repo, self.commit, first)
         with self.assertRaises(package.PackageError):
             package.export(self.repo, self.commit, self.repo / "unsafe.zip")
+
+    def test_profiled_export_uses_exact_reviewed_docs_and_preserves_provenance(self):
+        self.write("docs/readme-draft.md", b"Reviewed replacement\n")
+        self.write("private-audit.md", b"historical operational report")
+        entries = {n: n for n in package.REQUIRED_FILES}
+        entries[".gitignore"] = ".gitignore"
+        entries["README.md"] = "docs/readme-draft.md"
+        raw = json.dumps({"schema": 1, "entries": entries}).encode()
+        self.write("profile.json", raw)
+        self.git("add", ".")
+        self.git("commit", "-qm", "Reviewed source profile")
+        commit = self.git("rev-parse", "HEAD").strip()
+        result = package.export(self.repo, commit, self.base / "public-source.zip", "profile.json")
+        self.assertTrue(result["ok"], result)
+        prefix = "WatchDogsGo-" + commit[:12] + "/"
+        with zipfile.ZipFile(self.base / "public-source.zip") as archive:
+            self.assertEqual(archive.read(prefix + "README.md"), b"Reviewed replacement\n")
+            self.assertNotIn(prefix + "private-audit.md", archive.namelist())
+            manifest = json.loads(archive.read(prefix + "RELEASE_SOURCE.json"))
+            self.assertEqual(manifest["profile_sha256"], hashlib.sha256(raw).hexdigest())
+            entry = next(f for f in manifest["files"] if f["path"] == "README.md")
+            self.assertEqual(entry["source_path"], "docs/readme-draft.md")
 
     def test_committed_private_artifact_blocks_export_without_creating_zip(self):
         self.write("capture.jsonl", b"private capture")

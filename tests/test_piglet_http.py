@@ -150,7 +150,8 @@ class PigletHTTPTests(unittest.TestCase):
         status, body = self.call("GET", "/pc/v1/hello")
         self.assertEqual(status, 200)
         self.assertEqual(body, {"protocol": 1, "collector_id": self.store.collector_id,
-                                "max_chunk": 16384, "source_items": 1})
+                                "max_chunk": 16384, "source_items": 1,
+                                "device_types": ["piglet-kg", "dark3d-c5"]})
         for method, path, data in (("GET", "/pc/v1/hello", None), ("POST", "/pc/v1/begin", {}),
                                    ("PUT", "/pc/v1/chunk", b"abc"), ("GET", "/not-an-endpoint", None)):
             with self.subTest(path=path):

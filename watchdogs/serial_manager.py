@@ -140,9 +140,14 @@ class SerialLineBuffer:
 
     def feed(self, raw: bytes) -> List[str]:
         self._buf += raw
+        if b"\n" not in self._buf:
+            return []
+        # Split a burst once. Repeatedly splitting the remaining tail copies
+        # the same bytes again for every line and stalls large RX batches.
+        complete = self._buf.split(b"\n")
+        self._buf = complete.pop()
         lines: List[str] = []
-        while b"\n" in self._buf:
-            line, self._buf = self._buf.split(b"\n", 1)
+        for line in complete:
             decoded = line.decode("utf-8", errors="replace").strip()
             if decoded:
                 lines.append(decoded)
@@ -219,7 +224,8 @@ class SerialManager:
         try:
             # A nonresponsive ACM device can leave output queued, making the
             # kernel wait for it indefinitely during close. Cancel unsent TX
-            # first; normal command sends have already flushed successfully.
+            # first. Firmware acknowledgements, not a TX drain, confirm
+            # whether normal commands were actually performed.
             try:
                 connection.reset_output_buffer()
             except Exception as exc:
@@ -290,6 +296,8 @@ class SerialManager:
 
         This reports transport success, not a firmware acknowledgement.
         Callers must not show a successful start when the write fails.
+        Do not drain TX here: POSIX tcdrain can wait without a bound even
+        with write_timeout set. The existing response/STOP barriers own ACKs.
         """
         if not self.is_open:
             log.error("Serial not connected — cannot send %r", command)
@@ -301,8 +309,6 @@ class SerialManager:
                 log.error("Short serial write on %s: %r of %d bytes",
                           self.device, written, len(payload))
                 return False
-            self.serial_conn.flush()
-            time.sleep(0.1)
             log.debug("TX: %s", command)
             return True
         except Exception as exc:

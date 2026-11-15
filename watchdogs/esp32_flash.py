@@ -104,10 +104,8 @@ def select_firmware_asset(release, board):
         if not isinstance(url, str) or urlsplit(url).scheme != "https" or not urlsplit(url).netloc:
             raise FlashError("Firmware archive download URL is invalid")
         return url
-    # Preserve the official release-name fallback; a missing asset/download is
-    # still a visible preparation error and never authorizes using old cache.
-    return (f"https://github.com/LOCOSP/projectZero/releases/download/{tag}/"
-            f"{filename}")
+    # Missing metadata cannot authorize a guessed stock firmware download.
+    raise FlashError(f"Firmware release has no exact {board} archive; no fallback download is permitted")
 
 
 def extract_firmware_archive(zip_path, destination, required_files):

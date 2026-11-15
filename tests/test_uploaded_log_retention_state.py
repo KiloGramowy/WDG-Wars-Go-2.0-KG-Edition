@@ -93,6 +93,28 @@ class UploadedLogRetentionStateTests(unittest.TestCase):
         self.assertEqual(self.path.read_bytes(), original)
         self.assertEqual(self.due()[0]["confirmed_at"], NOW)
 
+    def test_trusted_original_ack_time_is_used_without_restarting_on_reseed(self):
+        self.assertTrue(self.store.set_days(5))
+        original=NOW-5*86400
+        self.assertTrue(self.record(confirmed_at=original))
+        self.assertEqual(self.due()[0]['confirmed_at'],original)
+        self.now+=86400
+        self.assertTrue(self.record(confirmed_at=self.now))
+        self.assertEqual(self.due()[0]['confirmed_at'],original)
+
+    def test_invalid_or_future_trusted_confirmation_time_never_creates_a_proof(self):
+        for stamp in (0,-1,True,float('nan'),float('inf'),NOW+1,'1700000000'):
+            with self.subTest(stamp=stamp):
+                self.assertFalse(self.record(confirmed_at=stamp))
+                self.assertFalse(self.path.exists())
+
+    def test_undated_reseed_during_clock_rollback_preserves_original_confirmation_time(self):
+        self.assertTrue(self.record())
+        before=self.path.read_bytes()
+        self.now=NOW-100
+        self.assertTrue(self.record())
+        self.assertEqual(self.path.read_bytes(),before)
+
     def test_new_receipt_key_and_ack_hash_preserve_file_confirmation_age(self):
         self.assertTrue(self.store.set_days(1))
         self.assertTrue(self.record())

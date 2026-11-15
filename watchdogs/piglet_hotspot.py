@@ -387,6 +387,7 @@ class PigletCollectionController:
                 if not self._cancel_requested.is_set():
                     raise
         connected = []
+        peers = []
         service = self._service
         if result["state"] == "active" and not self._store_closed and not self._store_closing and service is not None:
             activity = getattr(service,"connected_devices",None)
@@ -395,7 +396,13 @@ class PigletCollectionController:
                     connected = activity()
                 except Exception:
                     pass
-        result["progress"] = dict(self._last_progress,connected_devices=connected)
+            typed_activity = getattr(service,"connected_peers",None)
+            if callable(typed_activity):
+                try:
+                    peers = typed_activity()
+                except Exception:
+                    pass
+        result["progress"] = dict(self._last_progress,connected_devices=connected,connected_peers=peers)
         return result
 
     def stop(self, *, wait=True, timeout=8):

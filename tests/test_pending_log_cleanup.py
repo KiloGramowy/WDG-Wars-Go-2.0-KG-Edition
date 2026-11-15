@@ -124,6 +124,9 @@ class PendingLogCleanupTests(unittest.TestCase):
         original = valid.read_bytes()
         self.plugin._uploaded_sessions.add(self.session.name)
         self.plugin._uploaded_meshtastic_sessions.add(self.session.name)
+        no_gps_entry = self.entry("meshtastic_nodes.csv")
+        self.assertFalse(no_gps_entry["confirmed"], "A session flag cannot certify this unpositioned file")
+        self.assertEqual(no_gps_entry["status"], "waiting_gps")
         progress = self.protected()
         receipts = copy.deepcopy(self.plugin._upload_receipts)
         with patch("plugins.wardrive_upload._open") as network:
@@ -257,17 +260,78 @@ class PendingLogCleanupTests(unittest.TestCase):
         self.assertEqual(path.read_bytes(), original)
         self.assertEqual(self.loot.load_xp(), 12345)
 
-    def test_confirmed_payload_without_session_flag_is_protected_and_receipt_bytes_stay(self):
+    def test_confirmed_payload_can_be_manually_deleted_without_losing_receipt_or_progress(self):
         self.make_positioned("wardriving.csv")
         payload = self.plugin._session_upload_data(self.session)
         receipt = {"ok": True, "imported": len(payload["networks"]), "rejected": 0}
         self.assertTrue(self.plugin._remember_receipt(payload, receipt))
         saved = copy.deepcopy(self.plugin._upload_receipts)
+        progress = self.protected()
+        target = self.session / "wardriving.csv"
+        others = {path: path.read_bytes() for path in self.session.iterdir()
+                  if path.is_file() and path != target}
         entry = self.entry("wardriving.csv")
         self.assertEqual(entry["status"], "confirmed")
-        self.assertFalse(entry["can_delete"])
-        self.assertFalse(self.delete("wardriving.csv")["deleted"])
+        self.assertTrue(entry["can_delete"])
+        self.assertTrue(self.plugin._pending_can_delete(entry))
+        with patch("plugins.wardrive_upload._open") as network:
+            self.assertTrue(self.delete("wardriving.csv")["deleted"])
+        network.assert_not_called()
+        self.assertFalse(target.exists())
         self.assertEqual(self.plugin._upload_receipts, saved)
+        self.assertEqual(self.protected(), progress)
+        self.assertEqual({path: path.read_bytes() for path in others}, others)
+        self.assertNotIn(self.session.name, self.plugin._uploaded_sessions)
+
+    def test_manually_deleting_confirmed_session_export_keeps_uploaded_flags_and_other_csvs(self):
+        for filename in self.plugin._upload_log_specs():
+            self.make_positioned(filename)
+        self.plugin._uploaded_sessions.add(self.session.name)
+        self.plugin._uploaded_meshtastic_sessions.add(self.session.name)
+        receipts = copy.deepcopy(self.plugin._upload_receipts)
+        progress = self.protected()
+        target = self.session / "meshtastic_nodes.csv"
+        others = {path: path.read_bytes() for path in self.session.glob("*.csv") if path != target}
+        item = self.entry(target.name)
+        self.assertTrue(item["confirmed"])
+        self.assertEqual(item["status"], "confirmed")
+        self.assertTrue(item["can_delete"])
+        self.assertTrue(self.delete(target.name)["deleted"])
+        self.assertFalse(target.exists())
+        self.assertEqual({path: path.read_bytes() for path in others}, others)
+        self.assertEqual(self.plugin._upload_receipts, receipts)
+        self.assertEqual(self.plugin._uploaded_sessions, {self.session.name})
+        self.assertEqual(self.plugin._uploaded_meshtastic_sessions, {self.session.name})
+        self.assertEqual(self.protected(), progress)
+
+    def test_confirmed_positioned_manual_permission_does_not_expand_automatic_no_gps_cleanup(self):
+        self.make_positioned("wardriving.csv")
+        self.plugin._uploaded_sessions.add(self.session.name)
+        target = self.session / "wardriving.csv"
+        original = target.read_bytes()
+        item = self.entry(target.name)
+        self.assertTrue(item["can_delete"])
+        result = self.plugin._delete_pending_log(item["session"], item["filename"], item["token"], automatic=True)
+        self.assertFalse(result["deleted"])
+        self.assertIn("positioned", result["reason"])
+        self.assertEqual(self.plugin.cleanup_no_gps_logs()["deleted"], 3)
+        self.assertEqual(target.read_bytes(), original)
+
+    def test_confirmed_manual_export_is_still_protected_when_upload_starts_or_token_changes(self):
+        self.make_positioned("wardriving.csv")
+        self.plugin._uploaded_sessions.add(self.session.name)
+        item = self.entry("wardriving.csv")
+        self.assertTrue(item["confirmed"])
+        path = self.session / item["filename"]
+        original = path.read_bytes()
+        self.plugin._uploading = True
+        self.assertFalse(self.plugin.delete_pending_log(item["session"], item["filename"], item["token"])["deleted"])
+        self.assertEqual(path.read_bytes(), original)
+        self.plugin._uploading = False
+        path.write_bytes(original + b"\n")
+        changed = path.read_bytes()
+        self.assertFalse(self.plugin.delete_pending_log(item["session"], item["filename"], item["token"])["deleted"])
+        self.assertEqual(path.read_bytes(), changed)
 
     def test_background_cleanup_uses_closed_files_only_and_invalidates_caches(self):
         item = self.entry("meshtastic_nodes.csv")

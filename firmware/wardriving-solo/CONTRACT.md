@@ -133,6 +133,5 @@ radio ownership. A stop timeout must not manufacture a successful ACK.
 * BLE SOLO: preserve Wardrive 2.0 active scanning, interval 160 ms/window 40 ms,
   continuously until STOP. Combined bursts are passive instead.
 
-The scheduler and parser tests are software evidence. The completed XIAO vendor
-build and prior one-device hardware checks are described in README.md. Driver
-acceptance and observed reception do not prove every channel or RF losslessness.
+The scheduler and parser tests are software evidence. Driver acceptance and
+physical RF reception require a later approved build and hardware test.

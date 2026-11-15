@@ -71,7 +71,7 @@ class PendingLogUiTests(unittest.TestCase):
         self.plugin.draw(0, 0, 640, 360)
         self.assertTrue(self.plugin.overlay_active)
         self.assertTrue(self.plugin._pending_browser)
-        self.assertIn("WAIT GPS", [row[2] for row in self.texts()])
+        self.assertIn("NOT SENT", [row[2] for row in self.texts()])
         self.assertIn("0/4", [row[2] for row in self.texts()])
         self.plugin._pending_sessions.assert_not_called()
         self.plugin._start_upload.assert_not_called()
@@ -150,8 +150,9 @@ class PendingLogUiTests(unittest.TestCase):
         self.plugin.delete_pending_log.assert_not_called()
 
     def test_protected_rows_and_upload_in_progress_cannot_open_or_execute_deletion(self):
-        for changes in (dict(active=True), dict(confirmed=True), dict(status="unreadable"),
-                        dict(status="active"), dict(status="confirmed"), dict(can_delete=False)):
+        for changes in (dict(active=True), dict(status="unreadable"),
+                        dict(status="active"), dict(confirmed=True, status="confirmed", can_delete=False),
+                        dict(can_delete=False)):
             with self.subTest(changes=changes):
                 self.plugin.list_pending_logs.return_value = [entry(**changes)]
                 self.plugin.open_pending_logs()
@@ -168,6 +169,52 @@ class PendingLogUiTests(unittest.TestCase):
         self.press("Y")
         self.assertIn("Upload in progress", self.plugin._pending_message)
         self.plugin.delete_pending_log.assert_not_called()
+
+    def test_sent_log_d_immediately_deletes_only_the_exact_reviewed_export_without_modal(self):
+        row = entry(filename="wardriving.csv", status="confirmed", confirmed=True,
+                    eligible=4, no_gps=0, can_delete=True)
+        self.plugin.list_pending_logs.return_value = [row]
+        self.plugin.open_pending_logs()
+        self.press("D")
+        self.plugin.delete_pending_log.assert_called_once_with(row["session"], row["filename"], row["token"])
+        self.assertIsNone(self.plugin._pending_delete)
+        self.press("Y", advance=False)
+        self.press("Y")
+        self.plugin.delete_pending_log.assert_called_once_with(row["session"], row["filename"], row["token"])
+        self.assertIsNone(self.plugin._pending_delete)
+        self.plugin._start_upload.assert_not_called()
+
+    def test_unsent_no_gps_log_requires_warning_and_cancel_keeps_all_58_records(self):
+        row = entry(filename="wardriving.csv", status="waiting_gps", confirmed=False,
+                    records=58, eligible=0, no_gps=58, can_delete=True)
+        self.plugin.list_pending_logs.return_value = [row]
+        for key in ("N", "ESCAPE"):
+            with self.subTest(cancel=key):
+                self.plugin.open_pending_logs()
+                self.press("D")
+                self.assertEqual(self.plugin._pending_delete, row)
+                self.px.calls.clear()
+                self.plugin.draw(0, 0, 640, 360)
+                shown = [args[2].lower() for args in self.texts()]
+                self.assertTrue(any("not uploaded" in text or "not been uploaded" in text
+                                    or "not sent" in text for text in shown))
+                self.assertTrue(any("y" in text and "n" in text for text in shown))
+                self.press(key)
+                self.assertIsNone(self.plugin._pending_delete)
+                self.assertTrue(self.plugin._pending_browser)
+                self.assertEqual(self.plugin._pending_rows, [row])
+                self.plugin.delete_pending_log.assert_not_called()
+
+    def test_browser_shows_explicit_sent_and_not_sent_upload_states(self):
+        self.plugin.list_pending_logs.return_value = [entry(status="confirmed",confirmed=True,eligible=4,no_gps=0),
+            entry(session="unsent-synthetic",records=58,no_gps=58)]
+        self.plugin.open_pending_logs()
+        self.plugin.draw(0, 0, 640, 360)
+        shown = [args[2] for args in self.texts()]
+        self.assertIn("SENT", shown)
+        self.assertIn("NOT SENT", shown)
+        self.plugin.delete_pending_log.assert_not_called()
+        self.assert_bounds()
 
     def test_file_errors_are_visible_without_starting_network_or_leaving_a_confirmation(self):
         self.plugin.list_pending_logs.side_effect = OSError("private diagnostic")
@@ -203,7 +250,7 @@ class PendingLogUiTests(unittest.TestCase):
         self.press("D")
         self.px.calls.clear()
         self.plugin.draw(0, 0, 640, 360)
-        self.assertIn("DELETE THIS UPLOAD LOG?", [row[2] for row in self.texts()])
+        self.assertIn("DELETE THIS UNSENT LOG?", [row[2] for row in self.texts()])
         self.assertIn(rows[-1]["session"], [row[2] for row in self.texts()])
         self.assert_bounds()
         self.press("N")

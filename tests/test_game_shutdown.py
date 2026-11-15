@@ -206,7 +206,9 @@ class ShutdownTests(unittest.TestCase):
         system.assert_not_called()
 
     def test_flash_worker_clears_busy_flag_even_on_error(self):
-        g=game();g._flash_running=True;g._flash_do=Mock(side_effect=RuntimeError('flash failed'))
+        from test_flash_preflight import FlashEnvironment
+        env=FlashEnvironment(allow_upstream=True);self.addCleanup(env.close)
+        g=env.game;g._flash_running=True;g._flash_do=Mock(side_effect=RuntimeError('flash failed'))
         g._term_add=Mock();g.msg=Mock()
         g._run_flash('test')
         self.assertTrue(any('flash failed' in str(c) for c in g._term_add.call_args_list))

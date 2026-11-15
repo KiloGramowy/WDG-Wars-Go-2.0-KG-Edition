@@ -74,7 +74,27 @@
     "music": "Infraction - Venom (Rave), Instrumental",
     "music_track_url": "https://inaudio.org/track/venom-rave/",
     "music_terms_url": "https://inaudio.org/license-terms/",
-    "music_basis": "Official free-track video terms with track-link attribution; separate from repository MIT. No standalone audio included."
+    "music_basis": "Official free-track video terms with track-link attribution; separate from repository MIT. No standalone audio included.",
+    "default_street_basemap": {
+      "style": "Alidade Smooth Dark",
+      "provider": "Stadia Maps",
+      "attribution": [
+        {
+          "name": "Stadia Maps",
+          "url": "https://stadiamaps.com/attribution/"
+        },
+        {
+          "name": "OpenMapTiles",
+          "url": "https://openmaptiles.org/"
+        },
+        {
+          "name": "OpenStreetMap contributors",
+          "url": "https://www.openstreetmap.org/copyright"
+        }
+      ],
+      "requirements": "https://docs.stadiamaps.com/attribution/",
+      "scope": "Existing default tile service only; does not establish the source of owner-supplied illustration pixels"
+    }
   },
   "validation": {
     "full_audio_video_decode_errors": 0,
@@ -88,9 +108,29 @@
   },
   "files": [
     {
+      "path": "0.9.21-automap-sectors.png",
+      "bytes": 10032,
+      "sha256": "b5225ce0cead47e57a2d07edf532a529f5f56a62fb6576fa47d9d797202a299e",
+      "dimensions": [
+        564,
+        196
+      ],
+      "source_kind": "owner-supplied illustrative map preview; not physical device proof"
+    },
+    {
+      "path": "0.9.21-rabbit-world.png",
+      "bytes": 18964,
+      "sha256": "9b99856ee9874f2796c611d7359425d0d9821b7d20c517e2e0dd89d7ade44dc0",
+      "dimensions": [
+        1280,
+        440
+      ],
+      "source_kind": "owner-supplied illustrative map preview; not physical device proof"
+    },
+    {
       "path": "README.md",
-      "bytes": 11217,
-      "sha256": "c34664264b44155b9f2661489800f294eb8568eacec37bb1e7f87a692fd5eb1e"
+      "bytes": 11277,
+      "sha256": "2ff388374679bcf19c0044f787252b1661d27733b4abe38dbf5784820bac1100"
     },
     {
       "path": "auto-save-preview.png",

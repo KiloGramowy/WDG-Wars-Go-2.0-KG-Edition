@@ -1,0 +1,96 @@
+{
+  "schema": 1,
+  "package": "JanOS 1.7.0 + WARDRIVING SOLO for WDGWars GO 0.9.20",
+  "provenance": {
+    "upstream_repository": "LOCOSP/projectZero",
+    "upstream_commit": "ef35e9bbed28c441f53abdb6e634cf46428f912b",
+    "upstream_main_sha256": "839136e2826fdf880c2dce95b77bfed484e0942cecc46b490ad15fe7def9add2",
+    "upstream_source_url": "https://github.com/LOCOSP/projectZero/tree/ef35e9bbed28c441f53abdb6e634cf46428f912b",
+    "patch_sha256": "16b2b910dd18cee0301dc76add39ce8e898322b2ccb9e56b16e29b727b5638ae",
+    "distribution": "compiled application image, source patch and exact build configuration; no device dump"
+  },
+  "target": {
+    "board": "Seeed XIAO ESP32-C5",
+    "chip": "ESP32-C5",
+    "revision_tested": "v1.0",
+    "flash_bytes": 8388608,
+    "flash_mode": "DIO",
+    "flash_frequency_mhz": 80,
+    "console": "USB Serial/JTAG",
+    "tested_write_offset": "0x20000",
+    "tested_partition": "ota_0",
+    "app_partition_bytes": 4128768,
+    "partition_table_must_match": "build-inputs/partitions.csv.example",
+    "write_scope": "application only; preserve bootloader, partition table, OTA selection, NVS, PHY and other app slot"
+  },
+  "build": {
+    "esp_idf": "v6.0.1",
+    "sdk_archive_sha256": "4f294f44ddcf7b6677ae2347808fc708768a4890fed3c6f7227b7d4c076b9019",
+    "compiler": "riscv32-esp-elf GCC 15.2.0, esp-15.2.0_20251204",
+    "python_used": "3.12.16",
+    "command": "idf.py --preview -D CMAKE_JOB_POOLS=solo_compile=4 -D CMAKE_JOB_POOL_COMPILE=solo_compile build",
+    "components": {
+      "espressif/cjson": "1.7.19~2",
+      "espressif/led_strip": "3.0.3",
+      "lvgl/lvgl": "9.2.0"
+    },
+    "firmware_cli_version_unchanged": "1.7.0",
+    "upstream_application_descriptor_version_unchanged": "1.6.9",
+    "elf_sha256": "b04fcf48d9c6c048bdc864898d83d6ca3b83db28f37522b7076923f5ef265d20",
+    "source_hashes": {
+      "patched_main.c": "451b8635ede58a5b1856fc1d14ff875698340d1fcfcd59e969e935a150d63140",
+      "solo_core.c": "ed5cf9005c3e4a69d09b276b400897a57abbdc5a16f97f968affd878b072b5c5",
+      "solo_core.h": "432c55bebff11ab42f5cc10dcc1ef6b382478ebf53d63ecb43737be5b93eab44",
+      "solo_adapter.inc": "30886360d735ea357c7cd6ac7e839c4bb012b6261edf3ad057593f5618be549a"
+    }
+  },
+  "image": {
+    "path": "janos-1.7.0-solo-xiao-c5-app.bin",
+    "original_build_filename": "projectZerobyLOCOSP.bin",
+    "bytes": 2250896,
+    "sha256": "e3dff6b534ff8d7712d37e181a3d2d1e30d3672877b6925be2a4bf27c8a989c5",
+    "image_header_verified": true,
+    "internal_image_checksum_verified": true,
+    "internal_validation_hash_verified": true
+  },
+  "build_inputs": [
+    {
+      "path": "build-inputs/sdkconfig",
+      "bytes": 124938,
+      "sha256": "110aef13d5260d3937889ba66951aa38b2aeed3dc92559852db6d4f95d20c2a6"
+    },
+    {
+      "path": "build-inputs/sdkconfig.xiao",
+      "bytes": 492,
+      "sha256": "bd861dc498c2fd84dadbbefa02fd05ca37b56a82ed196d269c5fb37ab3388289"
+    },
+    {
+      "path": "build-inputs/dependencies.lock",
+      "bytes": 1067,
+      "sha256": "9c312f6df6f5e35c2d1a198ae865d418515ac6cd8d084f3f9454030dcd3e68e3"
+    },
+    {
+      "path": "build-inputs/partitions.csv.example",
+      "bytes": 354,
+      "sha256": "91c653d29211d33838c6a2b43bf7a3c351a3effa70e505ec7f38b8c1daa74e33"
+    }
+  ],
+  "validation": {
+    "native_core_tests": 10,
+    "native_adapter_tests": 19,
+    "native_test_date": "2026-11-11",
+    "fresh_vendor_rebuild_for_release": false,
+    "vendor_build_result": "existing ESP-IDF 6.0.1 compilation, linking and partition-size checks passed; exact source/patch hashes reverified for release",
+    "physical_scope": "previously verified on one XIAO ESP32-C5 revision1.0 inside a CM5 uConsole; all five SOLO profiles, real Wi-Fi/BLE observations, STOP/ownership, durable host records, GPS fix/cache/startup-backfill observed",
+    "limitations": [
+      "No WROOM vendor build or hardware validation for this image.",
+      "Linux/AC1200 software bridge does not implement this SOLO contract; legacy supported scan functions remain available.",
+      "No release-time physical flash; the tested image was preserved unchanged.",
+      "No independent RF measurement of every channel dwell or claim of RF losslessness.",
+      "No physical twelve-hour cache-boundary test or complete moving field-track test.",
+      "An intermittent USB enumeration failure occurred during prior testing; cause and universal cold-start recovery are not established.",
+      "The stock ESP32 FLASH wizard downloads upstream JanOS and is not a SOLO installer.",
+      "Rebuild timestamps, paths and host toolchain details can change binary identity; a rebuild is not automatically the tested image."
+    ]
+  }
+}

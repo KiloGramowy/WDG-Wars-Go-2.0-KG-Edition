@@ -2,63 +2,101 @@
 
 **Small scanner. Real CSV. One delivery address.** 📡📦
 
-Firmware supplied with **WDGWars GO 0.9.20** for the **separate Seeed XIAO ESP32-C5 Piglet**. It does not replace the embedded uConsole XIAO's JanOS/SOLO firmware. Updating the WDG game **does not flash Piglet**.
+**WDG Wars Go 0.9.21 integration documentation.** This guide covers the existing
+Piglet KG Collection package and game-side integration. Game and Piglet firmware
+are released separately; follow the [game Releases](https://github.com/KiloGramowy/WDG-Wars-Go-2.0-KG-Edition/releases)
+and package [manifest](manifest.json) for current availability.
 
-## 🔌 Start with the complete installation guide
+This firmware is for the **separate Seeed XIAO ESP32-C5 Piglet**. It does not
+replace the embedded uConsole XIAO's JanOS/SOLO firmware. Updating the WDG game
+does **not** automatically update Piglet.
 
-**[📚 USB installation, file verification, pairing and rollback](../../docs/PIGLET_COLLECTION_INSTALL.md)**
+## 🔌 README → INSTALL
 
-**[💾 DOWNLOAD BIN](piglet-kg-uconsole-xiao-c5-app.bin?raw=1)** · **[🔐 SHA256SUMS](SHA256SUMS)** · **[📋 Manifest](manifest.json)** · **[🚀 Full 0.9.20 release notes](../../docs/RELEASE_0.9.20.md)**
+**[🐷 INSTALL — open the self-contained installation guide](../../docs/PIGLET_COLLECTION_INSTALL.md)**
 
-The GitHub guide is self-contained: identify the physical board, preserve existing firmware and SD files, verify the image, write only the supported app slot, then pair using your own uConsole's values.
+The INSTALL link opens the self-contained installation guide. The complete,
+self-contained instructions and firmware also remain directly available here:
 
-## 📦 Two modes, one clear destination
+**[📚 Full USB installation, verification, pairing and rollback guide](../../docs/PIGLET_COLLECTION_INSTALL.md)**
 
-❌ **Before:** WDG had no paired Piglet Collection receiver, and connecting to home Wi-Fi used Piglet's configured external-upload workflow.
+**[💾 DOWNLOAD BIN](piglet-kg-uconsole-xiao-c5-app.bin?raw=1)** · **[🔐 SHA256SUMS](SHA256SUMS)** · **[📋 Manifest](manifest.json)** · **[🚀 Full 0.9.20 release description](../../docs/RELEASE_0.9.20.md)**
 
-✅ **Now:** choose **Normal Piglet / UConsole Piglet** in the existing WebUI. **Normal Piglet retains its original behavior. UConsole Piglet sends CSV only to its paired uConsole.** Backend checks refuse direct external log uploads before connection/send, including manual WebUI routes. Saved external-service credentials remain available for Normal mode.
+> 🐷 Take Piglet for a walk. Bring home the CSV. Your uConsole can skip leg day.
 
-UConsole Piglet searches for the collector for **at most about 10 seconds at boot**. Transfer can take longer. It then enters the full original WebUI stage: home Wi-Fi or fallback **192.168.4.1**, **60 seconds**, and **Stay: five minutes**. Standalone UConsole operation disconnects home Wi-Fi and starts the existing scanning flow when that window ends, even with `autoStartAfterUpload=false`. Deliberate pauses and saved Core/Node boot behavior retain their existing rules. No new gestures or PAUSE controls are added.
+## 📦 What changed?
 
-Unacknowledged CSV in **`/logs` and `/uploaded`** stay protected across restarts. One-time migration covers the available historical archive too. Only verified Collection **ACK** permits the existing archive/retention handover; previous external-upload status does not count. Existing `autoDeleteUploadedLogs` and `uploadedLogsToKeep` values stay. A full SD reports a storage problem rather than deleting pending data.
+❌ **Before:** UConsole Piglet could return from Collection to the original
+external-upload paths after connecting to home Wi-Fi; WebUI upload requests could
+also reach them.
 
-> 🐷 The pig has a delivery address. It does not need a career in international logistics.
+✅ **Now:** **UConsole Piglet delivers CSV only to its paired uConsole**. Shared
+backend checks reject direct external log upload **before connecting or
+sending**, including manual WebUI routes. Existing service credentials remain
+stored. **Normal Piglet keeps its original uploads, configuration and startup.**
 
-## 🔧 Supported image — the other ESP32, not JanOS
+UConsole mode still searches for the collector for **at most about 10 seconds**
+at boot. Transfer can take longer. Collection then hands over to the full
+**60-second WebUI window**, with **Stay: five minutes** retained. For standalone
+UConsole operation, a connected home STA disconnects when that window ends and
+the existing scan flow resumes, including when `autoStartAfterUpload` is off.
+Deliberate user pauses and saved Core/Node boot behavior are preserved.
 
-| Compatibility item | Supplied image |
+Unacknowledged CSV in **`/logs` and `/uploaded`** stay queued across restarts and
+protected from automatic deletion. Only verified Collection **ACK** permits the
+existing archive/retention handover. Missing the collector adds no continuous
+search, retry schedule or automatic mode switch. A full SD reports a storage
+problem rather than deleting pending files to make room.
+
+> 📬 The pig has a delivery address. It no longer takes a scenic route through
+> somebody else's upload button.
+
+## 🔧 Install the correct image — not the other ESP32
+
+**Read the [complete USB installation, verification, pairing and rollback
+guide](../../docs/PIGLET_COLLECTION_INSTALL.md) before writing firmware.**
+
+The supported profile is **XIAO ESP32-C5, 8 MiB flash / 8 MiB PSRAM**, existing
+`default_8MB` partition layout, **app0 at `0x10000` with `0x330000` bytes capacity**.
+This is an **application-only upgrade of a compatible existing Piglet**, not an
+initial installation for a blank board. Identify your own chip, flash, partition
+table and active slot first. Do not infer them from the USB port name.
+
+The app-only procedure preserves bootloader, partition table, OTA metadata, NVS
+and the SD archive/configuration. It does not format SD or perform a full erase.
+The image is compiled from the included source, **not a device flash dump**.
+
+| Download / source | Purpose |
 | --- | --- |
-| Board | **Seeed XIAO ESP32-C5**, validated revision **v1.0** |
-| Memory | **8 MiB flash / 8 MiB PSRAM** |
-| Existing layout | **`default_8MB`**, active **app0** |
-| Image / offset / capacity | **Application only / `0x10000` / `0x330000` bytes** |
-| BIN length | **1,970,496 bytes** |
-| BIN SHA256 | **`bf7919af370c6bfbd2016683927d6cfa623864dc1e38eb7912087ecabda715ad`** |
-| Base display version | **v1.0.1**, deliberately unchanged; identify the image by its hash and manifest |
-
-This upgrades a compatible existing Piglet. It is **not a blank-board installer** or a reason to replace a partition table. The documented app-only procedure preserves bootloader, partitions, OTA data, NVS and the SD archive/configuration. The BIN is compiled firmware, **not a device dump**. No full erase or SD formatting is part of installation.
-
-**One physical Piglet is validated. Multiple physical Piglets are unsupported pending correction and verification of the device identifier.** Full compatibility and validation limits are in the [installation guide](../../docs/PIGLET_COLLECTION_INSTALL.md#multiple-physical-piglets--unsupported-in-this-release).
-
-## 🔗 Pair once, collect later
-
-1. On uConsole open **WARDRIVING → Piglet Collection**. **P** shows/hides pairing details.
-2. In Piglet's existing WebUI choose **UConsole Piglet**. Copy your own console's **hotspot SSID, hotspot password, collector IPv4 address, collector port and Collection pairing token** into the five matching fields.
-3. **Save Config**. Start the uConsole receiver and wait for **Hotspot: ACTIVE**, then use **Save & Reboot** on Piglet.
-4. **DOWNLOADING CSV** measures the current transfer; **IMPORT CSV** measures processing. Final **100%** waits for durable storage, completed-file accounting and required ACKs.
-
-Imported exports enter uConsole's existing **manual upload** workflow. Collection ACK confirms local delivery, **not an external upload**. Return to ordinary Piglet behavior through **Normal Piglet → Save Config → Save & Reboot**; do not erase saved settings to change modes.
-
-## 🛠️ Package contents and reproducibility
-
-| File | Purpose |
-| --- | --- |
-| [`piglet-kg-uconsole-xiao-c5-app.bin`](piglet-kg-uconsole-xiao-c5-app.bin?raw=1) | Supported application image |
-| [`SHA256SUMS`](SHA256SUMS) · [`manifest.json`](manifest.json) | Image identity, hardware/build profile and source hashes |
-| [`source/Piglet/`](source/Piglet/Piglet.ino) | Complete application sketch |
-| [`BUILD.md`](BUILD.md) · [`build.py`](build.py) | Pinned build configuration and source-verifying helper |
-| [`device_backup.py`](device_backup.py) | Read-only hardware/layout/OTA validation, two full backups and rollback-slot extraction |
-| [`tests/`](tests/test_collection_source_regression.py) · [`baseline/`](baseline/Piglet.ino) | Offline regressions and portable comparison sources |
+| [`piglet-kg-uconsole-xiao-c5-app.bin`](piglet-kg-uconsole-xiao-c5-app.bin?raw=1) | Ready application image for the supported profile |
+| [`SHA256SUMS`](SHA256SUMS) | Package integrity checks |
+| [`manifest.json`](manifest.json) | Exact BIN size/SHA256, source hashes, build profile and validation record |
+| [`source/Piglet/`](source/Piglet/) | Complete application sketch used to build the candidate |
+| [`BUILD.md`](BUILD.md) · [`build.py`](build.py) | Pinned build instructions and source-verifying build helper |
+| [`device_backup.py`](device_backup.py) | Strict read-only hardware/layout/OTA preflight, two independent backups and app-only rollback extraction |
+| [`tests/`](tests/) · [`baseline/`](baseline/) | Offline regression tests and their portable comparison sources |
 | [`LICENSE`](LICENSE) | Preserved upstream license |
 
-Download the BIN, manifest, checksums and sources from the **same v0.9.20 tag**. The OLED/CSV label remains **Piglet KG v1.0.1**; a version label alone cannot distinguish the image. See [the complete guide](../../docs/PIGLET_COLLECTION_INSTALL.md) for verification, the tested **460800-baud** app-only procedure and prepared rollback.
+Download these files from the **same DEV commit**. The manifest identifies the
+candidate as **Piglet KG v1.0.1 + UConsole Collection upload isolation candidate
+2026-11-11**. Its OLED/CSV base label intentionally remains **v1.0.1**; the BIN
+hash, manifest and source identity distinguish the DEV image.
+
+## 🔗 Pair, start, collect
+
+On uConsole open **WARDRIVING → Piglet Collection** and copy **your own** SSID,
+hotspot password, collector IPv4 address, port and pairing token into the five
+matching Piglet WebUI fields. **Start the uConsole receiver first** and wait for
+**Hotspot: ACTIVE**, then restart Piglet in **UConsole Piglet** mode.
+
+**DOWNLOADING CSV** measures received bytes. **IMPORT CSV: 100%** requires the
+completed job, durable exports, completed-file accounting and required ACKs.
+Imported CSV enter the existing uConsole **manual upload** workflow. Collection
+ACK confirms local delivery, not an upload to an external service.
+
+To restore ordinary Piglet operation, select **Normal Piglet → Save Config →
+Save & Reboot**. Do not reset settings or erase service credentials.
+
+📚 [Full installation and pairing guide](../../docs/PIGLET_COLLECTION_INSTALL.md)
+· [Host setup and validation](../../docs/RELEASE_0.9.20.md)
+· [0.9.20 DEV preview — SOLO and Piglet first](../../docs/RELEASE_0.9.20.md)

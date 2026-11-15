@@ -1,4 +1,4 @@
-"""Watch Dogs Go Wars Sync — upload wardriving loot to community server.
+"""Watch Dogs Go Wars Sync â€” upload wardriving loot to community server.
 
 Uploads WiFi/BLE networks, ADS-B aircraft, and MeshCore/Meshtastic nodes from
 loot sessions to a wardrive server via HTTPS API with HMAC-SHA256
@@ -27,6 +27,7 @@ import secrets
 import threading
 import tempfile
 import time
+import unicodedata
 from pathlib import Path
 from urllib.request import Request, urlopen
 from urllib.error import URLError, HTTPError
@@ -47,7 +48,42 @@ except Exception:
 # structured format is purely for their telemetry.
 import platform as _plat
 import sys as _sys
-_PLATFORM = "uConsole" if _plat.system() == "Linux" else _plat.system()
+
+
+def _hw_id() -> str:
+    """Stable six-character device hint, derived from local board identifiers.
+
+    The raw board serial / machine-id stays on this device. This matches the
+    documented LOCOSP WDGWars portal User-Agent format.
+    """
+    seed = ""
+    try:
+        with open("/proc/cpuinfo", "r", errors="replace") as stream:
+            for line in stream:
+                if line.lower().startswith("serial"):
+                    seed += line.split(":")[-1].strip()
+                    break
+    except Exception:
+        pass
+    for source in ("/sys/firmware/devicetree/base/serial-number", "/etc/machine-id"):
+        try:
+            with open(source, "rb") as stream:
+                seed += stream.read().decode("utf-8", "replace").strip("\x00 \n")
+        except Exception:
+            pass
+    if not seed:
+        try:
+            import uuid
+            seed = "%012x" % uuid.getnode()
+        except Exception:
+            seed = "unknown"
+    alphabet = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789"
+    digest = hashlib.sha256(seed.encode("utf-8")).digest()
+    return "".join(alphabet[byte % 32] for byte in digest[:6])
+
+
+_PLATFORM = (f"uConsole-{_hw_id()}" if _plat.system() == "Linux"
+             else _plat.system())
 _PYVER = f"{_sys.version_info.major}.{_sys.version_info.minor}"
 USER_AGENT = (f"WatchDogsGo/{_GAME_VERSION} "
               f"({_PLATFORM}; Python/{_PYVER})")
@@ -69,7 +105,7 @@ class UploadReadError(OSError):
     """A log was not read completely; no partial payload may be acknowledged."""
 
 # Auth mode mapping from WiGLE CSV to simple format
-# Badge ID mapping: game badge → server badge
+# Badge ID mapping: game badge â†’ server badge
 BADGE_GAME_TO_SERVER = {
     "wardriver": "wardriver",
     "handshake_hunter": "handshake_hunter",
@@ -80,7 +116,7 @@ BADGE_GAME_TO_SERVER = {
     "skywatch": "skywatch",
     "iot_hunter": "iot_hunter",
 }
-# Reverse mapping: server badge → game badge
+# Reverse mapping: server badge â†’ game badge
 BADGE_SERVER_TO_GAME = {v: k for k, v in BADGE_GAME_TO_SERVER.items()}
 
 AUTH_MAP = {
@@ -240,6 +276,9 @@ class WardriveUpload(PluginBase):
         self._uploaded_sessions: set[str] = set()
         self._uploaded_meshtastic_sessions: set[str] = set()
         self._upload_receipts: dict[str, dict] = {}
+        self._upload_ack_times: dict[str, float] = {}
+        self._upload_ack_times_valid = True
+        self._upload_ack_times_raw = None
         self._upload_coverage: dict[str, dict] = {}
         self._upload_keep_exports: set[str] = set()
         self._next_upload_post = 0.0
@@ -273,7 +312,7 @@ class WardriveUpload(PluginBase):
         self._retention_input = ""
         self._retention_open_frame = -1
         self._retention_message = ""
-        # Auth push — PIN display
+        # Auth push â€” PIN display
         self._auth_pin = ""
         self._auth_pin_expiry = 0
         self._auth_dismissed_token = ""
@@ -284,6 +323,15 @@ class WardriveUpload(PluginBase):
         self._username = ""
         self._user_gang = ""
         self._user_stats: dict = {}
+        self._portal_badges_open = False
+        self._portal_badges_sel = 0
+        self._portal_badges_page_rows = 12
+        self._portal_badges_scope = ""
+        self._portal_badges_rows = ()
+        self._portal_badges_fetched_at = 0.0
+        self._portal_badges_fetch_account = None
+        self._portal_badges_message = ""
+        self._state_extra = {}
         # One coalescing local worker owns expensive Sync preparation. UI
         # callbacks only publish requests/read immutable snapshot references.
         self._sync_lock = threading.RLock()
@@ -377,7 +425,7 @@ class WardriveUpload(PluginBase):
         if self.app.level < 6:
             lvl = self.app.level
             title = self.app.level_title
-            self.msg(f"[Sync] Locked — reach Lv.6 WARDRIVER to unlock (Lv.{lvl} {title})", 10)
+            self.msg(f"[Sync] Locked â€” reach Lv.6 WARDRIVER to unlock (Lv.{lvl} {title})", 10)
             self.msg("[Sync] Earn XP: scan WiFi/BLE, capture handshakes, wardrive!", 13)
             return False
         return True
@@ -390,6 +438,7 @@ class WardriveUpload(PluginBase):
         self._entering_key = False
         self._entering_url = False
         self._pending_browser = False
+        self._portal_badges_open = False
         self._pending_delete = None
         if not self._api_key:
             self._log_add("Set your API key to start syncing", 10)
@@ -565,6 +614,11 @@ class WardriveUpload(PluginBase):
             return
         import pyxel
 
+        if self._portal_badges_open:
+            if not self._auth_pin_active():
+                self._update_portal_badges()
+            return
+
         if self._pending_browser:
             # The game dismisses a PIN before returning input to this browser.
             # In particular, a PIN's Y/Esc cannot confirm/cancel file deletion.
@@ -584,6 +638,7 @@ class WardriveUpload(PluginBase):
                 with self._upload_queue_lock():
                     self._api_key = self._key_input
                     self._save_secret("WARDRIVE_API_KEY", self._api_key)
+                    self._clear_portal_account_state()
                 self._log_add(f"API key saved ({len(self._api_key)} chars)", 11)
                 self._entering_key = False
                 self._key_input = ""
@@ -614,6 +669,7 @@ class WardriveUpload(PluginBase):
                     if not self._api_url.endswith("/"):
                         self._api_url += "/"
                     self._save_secret("WARDRIVE_API_URL", self._api_url)
+                    self._clear_portal_account_state()
                 self._log_add(f"Server URL saved", 11)
                 self._entering_url = False
                 self._url_input = ""
@@ -642,6 +698,12 @@ class WardriveUpload(PluginBase):
             return
         import pyxel
 
+        if self._portal_badges_open:
+            self._draw_portal_badges(w, h)
+            if self._auth_pin_active():
+                self._draw_auth_pin(w, h)
+            return
+
         if self._pending_browser:
             self._draw_pending_logs(w, h)
             if self._auth_pin_active():
@@ -653,7 +715,7 @@ class WardriveUpload(PluginBase):
         # Title bar
         pyxel.rect(0, 0, w, 12, 1)
         server_short = self._api_url.replace("https://", "").replace("http://", "").rstrip("/") if self._api_url else "no server"
-        pyxel.text(4, 3, f"WARS SYNC — {server_short[:40]}", 3)
+        pyxel.text(4, 3, f"WARS SYNC â€” {server_short[:40]}", 3)
         key_txt = f"KEY:{self._api_key[:8]}..." if self._api_key else "NO KEY"
         key_c = 11 if self._api_key else 8
         pyxel.text(w - 80, 3, key_txt, key_c)
@@ -717,6 +779,7 @@ class WardriveUpload(PluginBase):
 
     def _open_pending_logs(self, *, from_sync):
         import pyxel
+        self._portal_badges_open = False
         self._overlay_active = self._pending_browser = True
         self._pending_from_sync = from_sync
         self._entering_key = self._entering_url = False
@@ -750,8 +813,20 @@ class WardriveUpload(PluginBase):
 
     def _pending_can_delete(self, item):
         return (not self._uploading and bool(item.get("can_delete"))
-                and not item.get("active") and not item.get("confirmed")
-                and item.get("status") in ("ready", "waiting_gps", "empty_invalid"))
+                and not item.get("active")
+                and item.get("status") in ("ready", "waiting_gps", "empty_invalid", "confirmed"))
+
+    def _delete_pending_selection(self, item):
+        if self._uploading:
+            self._pending_message = "Upload in progress. Nothing was deleted."
+        else:
+            try:
+                result = self.delete_pending_log(item["session"], item["filename"], item["token"])
+                self._pending_message = ("Deleted " + item["filename"] + "." if result.get("deleted")
+                                         else result.get("reason") or "Log changed. Refresh and review it again.")
+            except (OSError, ValueError):
+                self._pending_message = "Could not delete this log. Refresh and try again."
+        self._refresh_pending_logs()
 
     def _update_pending_logs(self):
         import pyxel
@@ -770,16 +845,7 @@ class WardriveUpload(PluginBase):
                     self._consume_pending_escape()
             elif pyxel.btnp(pyxel.KEY_Y):
                 item, self._pending_delete = self._pending_delete, None
-                if self._uploading:
-                    self._pending_message = "Upload in progress. Nothing was deleted."
-                else:
-                    try:
-                        result = self.delete_pending_log(item["session"], item["filename"], item["token"])
-                        self._pending_message = ("Deleted " + item["filename"] + "." if result.get("deleted")
-                                                 else result.get("reason") or "Log changed. Refresh and review it again.")
-                    except (OSError, ValueError):
-                        self._pending_message = "Could not delete this log. Refresh and try again."
-                self._refresh_pending_logs()
+                self._delete_pending_selection(item)
             return
         if pyxel.btnp(pyxel.KEY_ESCAPE):
             self._pending_browser = False
@@ -813,6 +879,9 @@ class WardriveUpload(PluginBase):
             if not self._pending_can_delete(item):
                 self._pending_message = ("Upload in progress. Wait before deleting logs." if self._uploading
                     else item.get("reason") or "This log is protected and cannot be deleted.")
+                return
+            if item.get("confirmed"):
+                self._delete_pending_selection(dict(item))
                 return
             # Keep the exact reviewed file/token even if the list later changes.
             self._pending_delete = dict(item)
@@ -955,7 +1024,7 @@ class WardriveUpload(PluginBase):
         count = f"{self._pending_sel + 1 if total else 0}/{total}"
         pyxel.text(w - 4 - len(count) * 5, 18, count, 13)
         for x, label in ((6, "SESSION"), (112, "LOG FILE"), (226, "TYPE"),
-                         (280, "STATUS"), (366, "ROWS"), (424, "READY / NO GPS"), (510, "SIZE")):
+                         (280, "UPLOAD"), (366, "ROWS"), (424, "READY / NO GPS"), (510, "SIZE")):
             pyxel.text(x, 33, label, 3)
         self._pending_page_rows = max(1, (h - 152) // 12)
         self._pending_scroll = min(self._pending_scroll, max(0, total - self._pending_page_rows))
@@ -963,8 +1032,6 @@ class WardriveUpload(PluginBase):
             self._pending_scroll = self._pending_sel
         elif self._pending_sel >= self._pending_scroll + self._pending_page_rows:
             self._pending_scroll = self._pending_sel - self._pending_page_rows + 1
-        statuses = {"ready": "READY", "waiting_gps": "WAIT GPS", "empty_invalid": "EMPTY/INVALID",
-                    "confirmed": "CONFIRMED", "active": "ACTIVE", "unreadable": "UNREADABLE"}
         kinds = {"wardriving.csv": "WIFI/BLE", "adsb_aircraft.csv": "ADS-B",
                  "meshcore_nodes.csv": "MC", "meshtastic_nodes.csv": "MT"}
         for index, item in enumerate(self._pending_rows[self._pending_scroll:
@@ -977,7 +1044,7 @@ class WardriveUpload(PluginBase):
             values = ((6, str(item.get("session", ""))[:19]),
                 (112, str(item.get("filename", ""))[:21]),
                 (226, kinds.get(item.get("filename"), str(item.get("kind", ""))[:8].upper())),
-                (280, statuses.get(item.get("status"), "UNKNOWN")),
+                (280, "SENT" if item.get("confirmed") else "NOT SENT"),
                 (366, self._pending_count(item.get("records"))),
                 (424, (self._pending_count(item.get("eligible")) + "/" +
                        self._pending_count(item.get("no_gps")))[:15]),
@@ -993,7 +1060,7 @@ class WardriveUpload(PluginBase):
             item = self._pending_rows[self._pending_sel]
             pyxel.text(4, h - 82, (str(item.get("session", "")) + " / " +
                        str(item.get("filename", "")))[:124], 7)
-            reason = item.get("reason") or ("D: review deletion of this one export. Saved progress stays."
+            reason = item.get("reason") or ("D: delete this local export. Saved progress stays."
                 if self._pending_can_delete(item) else "This log is protected.")
             for index, line in enumerate(textwrap.wrap(reason, width=max(1, (w - 8) // 5))[:2]):
                 pyxel.text(4, h - 70 + index * 9, line, 13)
@@ -1005,13 +1072,13 @@ class WardriveUpload(PluginBase):
             bx, by, bw, bh = (w - 520) // 2, (h - 118) // 2, 520, 118
             pyxel.rect(bx, by, bw, bh, 0)
             pyxel.rectb(bx, by, bw, bh, 10)
-            pyxel.text(bx + 12, by + 8, "DELETE THIS UPLOAD LOG?", 10)
+            pyxel.text(bx + 12, by + 8, "DELETE THIS UNSENT LOG?", 10)
             pyxel.text(bx + 12, by + 25, str(item["session"])[:90], 7)
             pyxel.text(bx + 12, by + 37, str(item["filename"])[:90], 7)
             detail = (f"Records: {item.get('records', 0)}  Ready: {item.get('eligible', 0)}"
                       f"  No GPS: {item.get('no_gps', 0)}")
             pyxel.text(bx + 12, by + 52, detail[:98], 13)
-            pyxel.text(bx + 12, by + 68, "Only this CSV export is deleted.", 7)
+            pyxel.text(bx + 12, by + 68, "Not uploaded. Delete this CSV anyway?", 7)
             pyxel.text(bx + 12, by + 80, "Saved XP, device history and contacts stay.", 7)
             pyxel.text(bx + 12, by + 102, "[Y] Delete    [N/ESC] Cancel", 10)
         if self._retention_settings_open:
@@ -1037,6 +1104,7 @@ class WardriveUpload(PluginBase):
             ("upload_latest", "Upload Latest Session"),
             ("show_profile", "Show My Profile"),
             ("sync_badges", "Sync Badges"),
+            ("portal_badges", "Portal Badges"),
             ("set_key", "Set API Key"),
             ("test_api", "Test API Connection"),
             ("show_pending", "Manage Pending Logs"),
@@ -1059,19 +1127,24 @@ class WardriveUpload(PluginBase):
             self._show_profile()
         elif action == "sync_badges":
             self._start_badge_sync()
+        elif action == "portal_badges":
+            self._open_portal_badges()
         elif action == "test_api":
             self._test_api()
         elif action == "show_pending":
             self._open_pending_logs(from_sync=True)
         elif action == "reset":
-            previous = (self._uploaded_sessions.copy(), self._uploaded_meshtastic_sessions.copy(), self._upload_receipts.copy(), self._upload_coverage.copy(), self._upload_keep_exports.copy())
+            previous = (self._uploaded_sessions.copy(), self._uploaded_meshtastic_sessions.copy(), self._upload_receipts.copy(), self._upload_coverage.copy(), self._upload_keep_exports.copy(), self._upload_ack_times.copy(), self._upload_ack_times_valid, self._upload_ack_times_raw)
             self._uploaded_sessions.clear()
             self._uploaded_meshtastic_sessions.clear()
             self._upload_receipts.clear()
             self._upload_coverage.clear()
             self._upload_keep_exports.clear()
+            self._upload_ack_times.clear()
+            self._upload_ack_times_valid = True
+            self._upload_ack_times_raw = None
             if self._save_state() is False:
-                self._uploaded_sessions, self._uploaded_meshtastic_sessions, self._upload_receipts, self._upload_coverage, self._upload_keep_exports = previous
+                self._uploaded_sessions, self._uploaded_meshtastic_sessions, self._upload_receipts, self._upload_coverage, self._upload_keep_exports, self._upload_ack_times, self._upload_ack_times_valid, self._upload_ack_times_raw = previous
                 self._log_add("Cannot save history reset; history kept", 8)
             else:
                 self._log_add("Upload history cleared", 10)
@@ -1121,6 +1194,37 @@ class WardriveUpload(PluginBase):
         return hashlib.sha256(canonical.encode()).hexdigest()
 
     @staticmethod
+    def _valid_upload_ack_time(value):
+        try:
+            return type(value) in (int, float) and value > 0 and math.isfinite(value)
+        except (OverflowError, ValueError, TypeError):
+            return False
+
+    def _upload_ack_now(self):
+        value = getattr(self, "_upload_ack_clock", time.time)()
+        if not self._valid_upload_ack_time(value):
+            raise ValueError("Upload confirmation clock is unavailable")
+        return value
+
+    @classmethod
+    def _valid_upload_ack_metadata(cls, value):
+        return isinstance(value, dict) and all(
+            isinstance(key, str) and re.fullmatch(r"[a-f0-9]{64}", key)
+            and cls._valid_upload_ack_time(stamp) for key, stamp in value.items())
+
+    def _upload_ack_metadata_for_save(self):
+        if self._upload_ack_times_valid:
+            return self._upload_ack_times
+        raw = self._upload_ack_times_raw
+        try:
+            json.dumps(raw, allow_nan=False)
+        except (ValueError, TypeError, OverflowError):
+            # Retain malformed non-finite data as opaque text rather than
+            # letting unrelated authenticated receipt writes fail globally.
+            return json.dumps(raw, allow_nan=True, separators=(",", ":"))
+        return raw
+
+    @staticmethod
     def _retention_source_count(filename, content):
         """Reject omitted/malformed rows instead of certifying a partial log."""
         import csv
@@ -1138,13 +1242,28 @@ class WardriveUpload(PluginBase):
             from watchdogs.piglet_csv import collection_preamble
             if collection_preamble(lines[0]):
                 try:
-                    return sum(1 for _ in LootManager.iter_wardrive_fields(io.StringIO(text, newline="")))
+                    fields = list(LootManager.iter_wardrive_fields(io.StringIO(text, newline="")))
                 except (ValueError, csv.Error):
                     return None
-            rows = [line for line in lines[2:] if line.strip()]
-            if any(LootManager._wardrive_fields(line) is None for line in rows):
-                return None
-            return len(rows)
+            else:
+                rows = [line for line in lines[2:] if line.strip()]
+                if any(len(line.split(",")) < 11 or line.rstrip().rsplit(",", 1)[-1].strip().upper() not in ("WIFI", "BLE") for line in rows):
+                    return None
+                fields = [LootManager._wardrive_fields(line) for line in rows]
+                if any(row is None or row[10].strip().upper() != line.rstrip().rsplit(",", 1)[-1].strip().upper()
+                       for line, row in zip(rows, fields)):
+                    return None
+            for row in fields:
+                if (row is None or len(row) != 11 or row[10].strip().upper() not in ("WIFI", "BLE")
+                        or not re.fullmatch(r"(?:[0-9A-Fa-f]{2}:){5}[0-9A-Fa-f]{2}", row[0])):
+                    return None
+                try:
+                    lat, lon, alt = (float(row[i] or 0) for i in (6, 7, 8))
+                except (ValueError, TypeError):
+                    return None
+                if not (all(math.isfinite(x) for x in (lat, lon, alt)) and -90 <= lat <= 90 and -180 <= lon <= 180):
+                    return None
+            return len(fields)
         rows = list(csv.reader(io.StringIO(text), strict=True))
         if not rows:
             return None
@@ -1153,11 +1272,26 @@ class WardriveUpload(PluginBase):
             return None
         if filename == "adsb_aircraft.csv":
             expected = ["timestamp", "icao", "callsign", "lat", "lon", "alt_ft", "speed_kt", "heading"]
-            if [name.strip().lower() for name in header] != expected or any(not row[1] for row in body):
+            if ([name.strip().lower() for name in header] != expected
+                    or any(not re.fullmatch(r"[a-fA-F0-9]{6}", row[1]) for row in body)):
                 return None
         elif (not ({"node_id", "id"} & set(header))
               or not {"lat", "lon"}.issubset(header)):
             return None
+        for row in body:
+            if filename == "adsb_aircraft.csv":
+                values = row[3], row[4]
+            else:
+                values = row[header.index("lat")], row[header.index("lon")]
+                identifier = row[header.index("node_id" if "node_id" in header else "id")].strip().lower().lstrip("!")
+                if not re.fullmatch(r"[a-f0-9]{8,16}", identifier):
+                    return None
+            try:
+                lat, lon = (float(value or 0) for value in values)
+            except (ValueError, TypeError):
+                return None
+            if not (math.isfinite(lat) and math.isfinite(lon) and -90 <= lat <= 90 and -180 <= lon <= 180):
+                return None
         return len(body)
 
     def _retention_capture(self, session_dir, data):
@@ -1180,7 +1314,10 @@ class WardriveUpload(PluginBase):
                 token, digest, content = self._upload_log_token(path)
                 count = self._retention_source_count(filename, content)
                 parsed = getattr(self, parser)(path)
-                if not count or count != len(parsed):
+                # The normal upload representation intentionally deduplicates
+                # repeated observations and omits well-formed No-GPS rows.
+                # Certify it only after every source row passes validation.
+                if not count or not parsed:
                     continue
                 canonical = lambda row: json.dumps(row, sort_keys=True, separators=(",", ":"), allow_nan=False)
                 required = Counter(canonical(row) for row in parsed)
@@ -1195,7 +1332,7 @@ class WardriveUpload(PluginBase):
 
     def _retention_confirm_files(self, snapshots, data, *, account=None):
         """Prepare proof reads outside the DB lock, revalidate before recording."""
-        if not snapshots or self._sync_stop.is_set():
+        if not snapshots or self._sync_stop.is_set() or not self._upload_ack_times_valid:
             return
         loot = self.app.loot
         current_account = (self._api_url, self._api_key)
@@ -1206,6 +1343,9 @@ class WardriveUpload(PluginBase):
             return
         receipt_key = self._receipt_key(data)
         receipt_digest = self._retention_receipt_digest(receipt)
+        confirmed_at = self._upload_ack_times.get(receipt_key)
+        if confirmed_at is not None and not self._valid_upload_ack_time(confirmed_at):
+            return
         prepared = []
         for entry in snapshots:
             path = Path(loot._base) / entry["session"] / entry["filename"]
@@ -1233,7 +1373,7 @@ class WardriveUpload(PluginBase):
                     continue
             if files and not self._get_retention().record_many(files,
                     scope=self._retention_scope(), receipt_key=receipt_key,
-                    receipt_digest=receipt_digest):
+                    receipt_digest=receipt_digest, confirmed_at=confirmed_at):
                 self._sync_log("Upload confirmed; auto-clean proof could not be saved. Logs kept.", 10)
 
     def _retention_tick(self):
@@ -1303,7 +1443,7 @@ class WardriveUpload(PluginBase):
 
     def cleanup_uploaded_logs(self):
         """Remove only expired, unchanged exports with their own exact ACK."""
-        result = dict(deleted=0, skipped=0, errors=0)
+        result = dict(deleted=0, skipped=0, errors=0, pruned=0)
         loot = getattr(self.app, "loot", None) if self.app else None
         if loot is None or self._uploading or self._pending_browser or self._sync_stop.is_set():
             return result
@@ -1326,6 +1466,21 @@ class WardriveUpload(PluginBase):
             directory = base / proof["session"]
             path = directory / proof["filename"]
             try:
+                if (proof["scope"] == self._retention_scope() and proof["filename"] in self._upload_log_specs()
+                        and not directory.is_symlink() and directory.resolve().parent == base
+                        and proof["session"] != self._active_session_name()):
+                    try:
+                        path.lstat()
+                    except FileNotFoundError:
+                        with self._upload_queue_lock(), (lock if lock is not None else nullcontext()):
+                            try:
+                                path.lstat()
+                            except FileNotFoundError:
+                                if (not self._uploading and not self._pending_browser and not self._sync_stop.is_set()
+                                        and proof["session"] != self._active_session_name() and not directory.is_symlink()
+                                        and proof["scope"] == self._retention_scope() and proof in store.due()):
+                                    result["pruned"] += int(store.forget(proof))
+                                continue
                 receipt = self._stored_upload_proof(proof["receipt_key"])
                 if (self._uploading or self._pending_browser or not store.days
                         or proof["scope"] != self._retention_scope()
@@ -1452,10 +1607,11 @@ class WardriveUpload(PluginBase):
                 raise OSError("Log changed while inspecting")
             active = session_dir.name == self._active_session_name()
             status = "ready" if eligible else "waiting_gps" if no_gps else "empty_invalid"
-            reason = "Delete this local export only; saved progress and contacts stay."
+            reason = "NOT SENT: D asks before deleting this export. Saved progress and contacts stay."
             can_delete = True
             if eligible and confirmed:
-                status, can_delete, reason = "confirmed", False, "Confirmed upload data is protected."
+                status = "confirmed"
+                reason = "SENT: D deletes this local export immediately. Saved progress and upload history stay."
             if active:
                 status, can_delete, reason = "active", False, "Active session: close/restart before deleting its export."
             elif self._uploading:
@@ -1723,7 +1879,7 @@ class WardriveUpload(PluginBase):
         """Directory name of the currently-recording loot session, or ''
         if loot is not initialised. The active session keeps accumulating
         data while the game runs (ADS-B sniffer, GPS, MeshCore), so we
-        never permanently mark it as uploaded — otherwise rows appended
+        never permanently mark it as uploaded â€” otherwise rows appended
         after an upload silently disappear because the session is not
         re-queued. Reported by a US user who ran ADS-B overnight: 578
         new aircraft ICAOs were captured but never offered for upload
@@ -1788,18 +1944,23 @@ class WardriveUpload(PluginBase):
 
     def _store_receipt(self, data: dict, result: dict) -> bool:
         key = self._receipt_key(data)
-        previous = self._upload_receipts.copy()
-        self._upload_receipts[key] = json.loads(json.dumps(result))
-        try:
-            saved = self._save_state()
-        except Exception:
-            saved = False
-        if saved is False:
-            self._upload_receipts = previous
-            return False
-        self._receipt_generation += 1
-        self._pending_log_checks.clear()
-        return True
+        with self._upload_queue_lock():
+            previous = self._upload_receipts.copy()
+            previous_times = self._upload_ack_times.copy()
+            self._upload_receipts[key] = json.loads(json.dumps(result))
+            try:
+                if self._upload_ack_times_valid and _upload_receipt(result, data)[0] and not self._valid_upload_ack_time(self._upload_ack_times.get(key)):
+                    self._upload_ack_times[key] = self._upload_ack_now()
+                saved = self._save_state()
+            except Exception:
+                saved = False
+            if saved is False:
+                self._upload_receipts = previous
+                self._upload_ack_times = previous_times
+                return False
+            self._receipt_generation += 1
+            self._pending_log_checks.clear()
+            return True
 
     def _mesh_registry_url(self) -> str:
         return self._api_url.rsplit("/api/", 1)[0] + "/api/meshcore"
@@ -1831,7 +1992,11 @@ class WardriveUpload(PluginBase):
                 or type(result.get("meshcore_imported")) is not int
                 or ("meshcore_rejected" in result and type(result["meshcore_rejected"]) is not int)
                 or result.get("ok") is not True
-                or result.get("info") != "This payload was already uploaded recently — no new processing."
+                # Accept the documented Unicode notice and the exact legacy
+                # mojibake spelling only; neither is an acknowledgement.
+                or result.get("info") not in (
+                    "This payload was already uploaded recently — no new processing.",
+                    "This payload was already uploaded recently â€” no new processing.")
                 or result.get("meshcore_imported") != 0
                 or result.get("meshcore_rejected", 0) != 0
                 or data.get("networks") or data.get("aircraft")
@@ -2085,6 +2250,11 @@ class WardriveUpload(PluginBase):
     def _plan_upload_batches(self, data):
         """Deterministic lossless spans, bounded by the complete signed body."""
         empty = {key:[] for key in _UPLOAD_GROUPS}
+        # Reserve the actual optional game_xp field in the signed-body size,
+        # so adding portal metadata never defeats the 6 MiB batch limit.
+        game_xp = self._portal_game_xp()
+        if game_xp is not None:
+            empty["game_xp"] = game_xp
         base = len(json.dumps(empty,separators=(",",":")).encode("utf-8"))
         start = total = count = 0
         raw_size, group_counts = base, {key:0 for key in _UPLOAD_GROUPS}
@@ -2156,14 +2326,28 @@ class WardriveUpload(PluginBase):
             if self._payload_counts(part)!=batch["counts"] or self._receipt_key(part)!=batch["key"]:
                 return False
         key=self._receipt_key(data)
-        previous=dict(getattr(self,"_upload_coverage",{}))
-        self._upload_coverage=dict(previous,**{key:proof})
-        if self._save_state() is False:
-            self._upload_coverage=previous
-            return False
-        self._receipt_generation+=1
-        self._pending_log_checks.clear()
-        return True
+        with self._upload_queue_lock():
+            if not self._valid_coverage(proof):return False
+            previous=dict(getattr(self,"_upload_coverage",{}))
+            previous_times=self._upload_ack_times.copy()
+            self._upload_coverage=dict(previous,**{key:proof})
+            try:
+                if self._upload_ack_times_valid and not self._valid_upload_ack_time(self._upload_ack_times.get(key)):
+                    times=[self._upload_ack_times.get(batch["key"]) for batch in batches]
+                    # All child ACKs are required. Unknown historical part times
+                    # conservatively start at this complete-set confirmation.
+                    self._upload_ack_times[key]=(max(times) if all(self._valid_upload_ack_time(t) for t in times)
+                                                 else self._upload_ack_now())
+                saved=self._save_state()
+            except Exception:
+                saved=False
+            if saved is False:
+                self._upload_coverage=previous
+                self._upload_ack_times=previous_times
+                return False
+            self._receipt_generation+=1
+            self._pending_log_checks.clear()
+            return True
 
     def _remember_upload_keep(self, data):
         """Retain an export when an actual response reported new/updated data."""
@@ -2293,7 +2477,7 @@ class WardriveUpload(PluginBase):
                             if not current() or not self._remember_receipt(part,result):
                                 self._sync_log("  Server confirmed; cannot save receipt; left pending",8);return False
                         imported+=credit
-                        self._handle_upload_badges(result)
+                        self._handle_upload_badges_for_account(result, account)
                     duplicate_only &= self._duplicate_receipt(result,part)
                     leaves.append(dict(start=start,end=end,key=self._receipt_key(part),counts=self._payload_counts(part)))
                     self._sync_log(f"  Confirmed batch records {start+1}-{end}",11)
@@ -2562,7 +2746,7 @@ class WardriveUpload(PluginBase):
                                     report("  Server confirmed; cannot save receipt; left pending", 8)
                                     break
                                 self._retention_confirm_files(retention_files, data, account=upload_account)
-                            self._handle_upload_badges(result)
+                            self._handle_upload_badges_for_account(result, upload_account)
                             total_nets += imported
                             uploaded += 1
                             if self._source_upload_unchanged(session_dir,source_tokens):
@@ -2695,9 +2879,26 @@ class WardriveUpload(PluginBase):
         if uploaded > reused:
             self._badge_sync_worker()
 
+    def _portal_game_xp(self):
+        """Read local game XP for WDGWars display; never award or change XP."""
+        try:
+            xp = int(getattr(self.app, "xp", 0) or 0)
+            return xp if xp > 0 else None
+        except (ValueError, TypeError, OverflowError):
+            return None
+
     def _sign_payload(self, data: dict, *, api_key=None) -> bytes:
-        """Sign payload with HMAC-SHA256. Server verifies before processing."""
-        raw = json.dumps(data, separators=(",", ":")).encode("utf-8")
+        """Sign payload with HMAC-SHA256. Server verifies before processing.
+
+        LOCOSP's game_xp metadata accompanies real uploads, but does not
+        change the original record dictionaries, receipt keys or server credit.
+        """
+        payload = data
+        if any(data.get(group) for group in _UPLOAD_GROUPS):
+            xp = self._portal_game_xp()
+            if xp is not None:
+                payload = {**data, "game_xp": xp}
+        raw = json.dumps(payload, separators=(",", ":")).encode("utf-8")
         nonce = secrets.token_hex(8)
         data_b64 = base64.b64encode(raw)
         del raw
@@ -2716,6 +2917,211 @@ class WardriveUpload(PluginBase):
     # ------------------------------------------------------------------
     # Badge sync
     # ------------------------------------------------------------------
+    def _portal_account(self):
+        return (self._api_url, self._api_key)
+
+    def _portal_account_scope(self, account=None):
+        url, key = self._portal_account() if account is None else account
+        if not url or not key:
+            return ""
+        return hmac.new(key.encode(), ("wdg-portal-badges-v1\0" + url).encode(),
+                        hashlib.sha256).hexdigest()
+
+    @staticmethod
+    def _portal_badge_text(value, maximum=100):
+        if not isinstance(value, str):
+            return ""
+        value = unicodedata.normalize("NFKD", value)
+        value = "".join(c if 32 <= ord(c) < 127 else " " for c in value)
+        return " ".join(value.split())[:maximum]
+
+    @classmethod
+    def _parse_portal_badges(cls, badges, metadata=None):
+        """Keep server IDs separate from the existing game's achievement IDs."""
+        if not isinstance(badges, list) or len(badges) > 4096:
+            return None
+        catalog = {}
+        if isinstance(metadata, dict):
+            catalog = metadata
+        elif isinstance(metadata, list) and len(metadata) <= 4096:
+            catalog = {item.get("id", item.get("badge_id")): item for item in metadata
+                       if isinstance(item, dict) and isinstance(item.get("id", item.get("badge_id")), str)}
+        rows = {}
+        for badge in badges:
+            item = badge if isinstance(badge, dict) else {}
+            ident = item.get("id", item.get("badge_id")) if item else badge
+            if (not isinstance(ident, str) or not ident or len(ident) > 256
+                    or any(ord(c) < 32 or ord(c) == 127 for c in ident)):
+                return None
+            details = catalog.get(ident, {})
+            if isinstance(details, str):
+                details = {"name": details}
+            if not isinstance(details, dict):
+                details = {}
+            details = dict(details, **item)
+            label = cls._portal_badge_text(details.get("name") or details.get("label") or details.get("title"))
+            if not label:
+                label = cls._portal_badge_text(re.sub(r"[_\-.:/]+", " ", ident)).title()
+            label = label or "Unnamed portal badge"
+            description = cls._portal_badge_text(details.get("description"), 300)
+            rows[ident] = (ident, label, description)
+        return tuple(rows.values())
+
+    def _portal_badge_view(self):
+        # No I/O in drawing/input. A different key or URL cannot display the
+        # previous account even if an old HTTP worker has not returned yet.
+        scope = self._portal_account_scope()
+        if not scope or scope != self._portal_badges_scope:
+            return ()
+        return self._portal_badges_rows
+
+    def _portal_badge_state(self):
+        scope = self._portal_account_scope()
+        if not scope or scope != self._portal_badges_scope:
+            return None
+        return {"scope": scope, "badges": [dict(id=i, name=n, description=d)
+                 for i, n, d in self._portal_badges_rows],
+                "fetched_at": self._portal_badges_fetched_at}
+
+    def _clear_portal_account_state(self):
+        """Called under the existing account/upload lock after a key/URL edit."""
+        self._portal_badges_scope = ""
+        self._portal_badges_rows = ()
+        self._portal_badges_fetched_at = 0.0
+        self._portal_badges_fetch_account = None
+        self._portal_badges_message = "Refresh this account's portal badges."
+        self._portal_badges_sel = 0
+        self._username, self._user_gang, self._user_stats = "", "", {}
+        self._save_state()
+
+    def _remember_portal_badges(self, badges, *, metadata=None, account=None, replace=True):
+        account = self._portal_account() if account is None else account
+        with self._upload_queue_lock():
+            if (not self._callbacks_allowed() or account != self._portal_account()
+                    or not self._portal_account_scope(account)):
+                return False
+            # Keep known server labels when a later response contains only IDs.
+            catalog = {i: dict(name=n, description=d) for i, n, d in self._portal_badge_view()}
+            if isinstance(metadata, dict):
+                catalog.update(metadata)
+            elif isinstance(metadata, list) and len(metadata) <= 4096:
+                catalog.update({item.get("id", item.get("badge_id")): item for item in metadata
+                    if isinstance(item, dict) and isinstance(item.get("id", item.get("badge_id")), str)})
+            parsed = self._parse_portal_badges(badges, catalog)
+            if parsed is None:
+                self._portal_badges_message = "Invalid portal badge response; saved cache kept."
+                return False
+            old = (self._portal_badges_scope, self._portal_badges_rows,
+                   self._portal_badges_fetched_at)
+            if not replace:
+                combined = {row[0]: row for row in self._portal_badge_view()}
+                for row in parsed:
+                    combined[row[0]] = row
+                parsed = tuple(combined.values())
+                if len(parsed) > 4096:
+                    return False
+            self._portal_badges_scope = self._portal_account_scope(account)
+            self._portal_badges_rows = parsed
+            self._portal_badges_fetched_at = time.time()
+            if self._save_state() is False:
+                (self._portal_badges_scope, self._portal_badges_rows,
+                 self._portal_badges_fetched_at) = old
+                self._portal_badges_message = "Cannot save portal badges; previous cache kept."
+                return False
+            self._portal_badges_message = "Saved portal ownership. No local XP or new award rules."
+            return True
+
+    @staticmethod
+    def _portal_badge_metadata(result):
+        return result.get("badge_metadata", result.get("badges_meta", result.get("badge_catalog")))
+
+    def _open_portal_badges(self):
+        self._portal_badges_open = True
+        self._pending_browser = False
+        self._pending_delete = None
+        self._portal_badges_sel = 0
+        self._start_portal_badge_refresh()
+
+    def _start_portal_badge_refresh(self):
+        account = self._portal_account()
+        if not self._callbacks_allowed():
+            return
+        if not all(account):
+            self._portal_badges_message = "Set the server and API key first."
+            return
+        with self._sync_lock:
+            if self._portal_badges_fetch_account == account:
+                return
+            self._portal_badges_fetch_account = account
+            self._portal_badges_message = "Refreshing portal badges..."
+        def refresh():
+            try:
+                info = self.fetch_user_info()
+                if (info and account == self._portal_account()
+                        and self._callbacks_allowed()):
+                    self._remember_portal_badges(info.get("badges"),
+                        metadata=self._portal_badge_metadata(info), account=account)
+                elif account == self._portal_account() and self._callbacks_allowed():
+                    self._portal_badges_message = "Refresh unavailable; saved portal badges kept."
+            finally:
+                with self._sync_lock:
+                    if self._portal_badges_fetch_account == account:
+                        self._portal_badges_fetch_account = None
+        try:
+            if not self._start_background_worker(refresh, name="wdg-portal-badges"):
+                self._portal_badges_fetch_account = None
+        except BaseException:
+            self._portal_badges_fetch_account = None
+            raise
+
+    def _update_portal_badges(self):
+        import pyxel
+        if pyxel.btnp(pyxel.KEY_ESCAPE):
+            self._portal_badges_open = False
+            if self.app:
+                self.app._esc_consumed_frame = pyxel.frame_count
+            return
+        count = len(self._portal_badge_view())
+        step = (int(pyxel.btnp(pyxel.KEY_DOWN)) - int(pyxel.btnp(pyxel.KEY_UP)))
+        step += self._portal_badges_page_rows * (int(pyxel.btnp(pyxel.KEY_PAGEDOWN))
+                                               - int(pyxel.btnp(pyxel.KEY_PAGEUP)))
+        self._portal_badges_sel = max(0, min(max(0, count - 1), self._portal_badges_sel + step))
+        if pyxel.btnp(pyxel.KEY_HOME):
+            self._portal_badges_sel = 0
+        if pyxel.btnp(pyxel.KEY_END):
+            self._portal_badges_sel = max(0, count - 1)
+        if pyxel.btnp(pyxel.KEY_R):
+            self._start_portal_badge_refresh()
+
+    def _draw_portal_badges(self, w, h):
+        import pyxel
+        rows = self._portal_badge_view()
+        self._portal_badges_page_rows = max(1, (h - 106) // 12)
+        self._portal_badges_sel = min(self._portal_badges_sel, max(0, len(rows) - 1))
+        start = (self._portal_badges_sel // self._portal_badges_page_rows) * self._portal_badges_page_rows
+        pyxel.rect(0, 0, w, h, 0)
+        pyxel.rect(0, 0, w, 12, 1)
+        pyxel.text(4, 3, f"WARS SYNC - PORTAL BADGES: {len(rows)} OWNED", 3)
+        pyxel.text(4, 18, "Server ownership; separate from local game achievements and XP.", 13)
+        if not rows:
+            pyxel.text(8, 40, "No saved portal badges for this account. [R] Refresh", 7)
+        width = max(1, (w - 20) // 5)
+        for index in range(start, min(len(rows), start + self._portal_badges_page_rows)):
+            prefix = ">" if index == self._portal_badges_sel else " "
+            text = f"{prefix} {index + 1}. Portal badge: {rows[index][1]}"
+            pyxel.text(4, 34 + (index - start) * 12, text[:width],
+                       11 if index == self._portal_badges_sel else 7)
+        if rows:
+            description = rows[self._portal_badges_sel][2]
+            if description:
+                pyxel.text(4, h - 56, description[:width], 13)
+        message = self._portal_badges_message
+        if self._portal_badges_fetch_account not in (None, self._portal_account()):
+            message = "Refresh this account's portal badges."
+        pyxel.text(4, h - 38, message[:width], 13)
+        pyxel.text(4, h - 24, "[UP/DOWN] Select [PGUP/PGDN] Page [HOME/END] First/last", 13)
+        pyxel.text(4, h - 12, "[R] Refresh (GET only)  [ESC] Back", 13)
+
     def _get_game_badges(self) -> list[str]:
         """Get current game badges mapped to server IDs."""
         if not self.app or not self._callbacks_allowed():
@@ -2732,7 +3138,8 @@ class WardriveUpload(PluginBase):
         if not self.app or not self._callbacks_allowed():
             return []
         new = []
-        for srv_id in server_badges:
+        rows = self._parse_portal_badges(server_badges)
+        for srv_id, _name, _description in rows or ():
             if not self._callbacks_allowed():
                 break
             game_id = BADGE_SERVER_TO_GAME.get(srv_id)
@@ -2752,22 +3159,26 @@ class WardriveUpload(PluginBase):
     def _badge_sync_worker(self):
         if not self._callbacks_allowed():
             return
+        account = self._portal_account()
         try:
-            api_base = self._api_url.rsplit("/api/", 1)[0]
+            api_base = account[0].rsplit("/api/", 1)[0]
             url = f"{api_base}/api/badges/"
             game_badges = self._get_game_badges()
             payload = json.dumps({"badges": game_badges}).encode()
             req = Request(url, data=payload, method="POST")
             req.add_header("Content-Type", "application/json")
-            req.add_header("X-API-Key", self._api_key)
+            req.add_header("X-API-Key", account[1])
             with _open(req, timeout=15) as resp:
                 result = json.loads(resp.read().decode())
-            if not self._callbacks_allowed():
-                return
-            all_badges = result.get("badges", [])
-            game_imported = result.get("game_imported", 0)
-            server_awarded = result.get("server_awarded", [])
-            new_game = self._apply_server_badges(all_badges)
+            with self._upload_queue_lock():
+                if not self._callbacks_allowed() or account != self._portal_account():
+                    return
+                all_badges = result.get("badges", [])
+                self._remember_portal_badges(all_badges,
+                    metadata=self._portal_badge_metadata(result), account=account)
+                game_imported = result.get("game_imported", 0)
+                server_awarded = result.get("server_awarded", [])
+                new_game = self._apply_server_badges(all_badges)
             parts = []
             if game_imported:
                 parts.append(f"{game_imported} pushed")
@@ -2779,17 +3190,29 @@ class WardriveUpload(PluginBase):
                     self.msg(f"[BADGE] Unlocked: {b.upper().replace('_', ' ')}", 11)
             total = len(all_badges)
             info = ", ".join(parts) if parts else "in sync"
-            self._log_add(f"Badges: {total} total — {info}", 11)
+            self._log_add(f"Badges: {total} total â€” {info}", 11)
         except HTTPError as e:
             self._log_add(f"Badge sync: HTTP {e.code}", 8)
         except Exception as e:
             self._log_add(f"Badge sync: {e}", 8)
 
+    def _handle_upload_badges_for_account(self, result, account):
+        with self._upload_queue_lock():
+            if self._callbacks_allowed() and account == self._portal_account():
+                self._handle_upload_badges(result)
+
     def _handle_upload_badges(self, result: dict):
         """Process new_badges from upload response."""
+        if not self._callbacks_allowed():
+            return
+        if isinstance(result.get("badges"), list):
+            self._remember_portal_badges(result["badges"],
+                metadata=self._portal_badge_metadata(result))
         new_badges = result.get("new_badges", [])
         if not new_badges:
             return
+        self._remember_portal_badges(new_badges,
+            metadata=self._portal_badge_metadata(result), replace=False)
         new_game = self._apply_server_badges(new_badges)
         for b in new_game:
             self.msg(f"[BADGE] Unlocked: {b.upper().replace('_', ' ')}", 11)
@@ -2797,7 +3220,7 @@ class WardriveUpload(PluginBase):
             self._log_add(f"  +{len(new_game)} badge(s) from server!", 11)
 
     # ------------------------------------------------------------------
-    # /api/me — fetch user identity, stats and badges from server
+    # /api/me â€” fetch user identity, stats and badges from server
     # ------------------------------------------------------------------
     def _api_me_url(self) -> str:
         if not self._api_url:
@@ -2806,35 +3229,43 @@ class WardriveUpload(PluginBase):
         return f"{api_base}/api/me"
 
     def _validate_and_apply_user(self):
-        """Background worker — fetch /api/me after key save and apply identity."""
+        """Background worker â€” fetch /api/me after key save and apply identity."""
         if not self._callbacks_allowed():
             return
+        account = self._portal_account()
         info = self.fetch_user_info()
-        if info and self._callbacks_allowed():
-            self._on_user_info(info, sync_lora_name=True)
+        if info and self._callbacks_allowed() and account == self._portal_account():
+            self._on_user_info(info, sync_lora_name=True, account=account)
 
     def _show_profile(self):
-        """Menu action — refresh /api/me on demand and show stats in log."""
+        """Menu action â€” refresh /api/me on demand and show stats in log."""
         if not self._api_key:
             self._log_add("Set API key first!", 8)
             return
         self._log_add("Fetching profile from server...", 3)
-        self._start_background_worker(
-            lambda: self._on_user_info(
-                self.fetch_user_info() or {}, sync_lora_name=False),
-            name="wdg-sync-profile")
+        def refresh():
+            account = self._portal_account()
+            info = self.fetch_user_info()
+            if info and account == self._portal_account():
+                self._on_user_info(info, sync_lora_name=False, account=account)
+        self._start_background_worker(refresh, name="wdg-sync-profile")
 
     def fetch_user_info(self) -> dict | None:
-        """GET /api/me — returns dict with username, stats, badges, gang.
+        """GET /api/me â€” returns dict with username, stats, badges, gang.
         Returns None on any error. Logs status to plugin log."""
         if not self._api_url or not self._api_key or not self._callbacks_allowed():
             return None
+        account = self._portal_account()
         try:
-            req = Request(self._api_me_url())
-            req.add_header("X-API-Key", self._api_key)
+            req = Request(account[0].rsplit("/api/", 1)[0] + "/api/me")
+            req.add_header("X-API-Key", account[1])
             with _open(req, timeout=15) as resp:
-                data = json.loads(resp.read().decode())
-            if not self._callbacks_allowed():
+                raw = resp.read(2 * 1024 * 1024 + 1)
+            if len(raw) > 2 * 1024 * 1024:
+                return None
+            data = json.loads(raw.decode())
+            if (not self._callbacks_allowed() or account != self._portal_account()
+                    or not isinstance(data, dict)):
                 return None
             if not data.get("ok"):
                 err = data.get("error", "unknown error")
@@ -2854,8 +3285,14 @@ class WardriveUpload(PluginBase):
             self._log_add(f"  /api/me: {e}", 8)
             return None
 
-    def _on_user_info(self, info: dict, *, sync_lora_name: bool = True):
-        """Apply user info from /api/me — show stats, sync badges, update LoRa name."""
+    def _on_user_info(self, info: dict, *, sync_lora_name: bool = True, account=None):
+        with self._upload_queue_lock():
+            account = self._portal_account() if account is None else account
+            if account == self._portal_account():
+                self._apply_user_info(info, sync_lora_name=sync_lora_name, account=account)
+
+    def _apply_user_info(self, info: dict, *, sync_lora_name: bool, account):
+        """Apply user info from /api/me â€” show stats, sync badges, update LoRa name."""
         if not self._callbacks_allowed() or not info or not info.get("username"):
             return  # fetch failed; error already logged
         username = info.get("username", "")
@@ -2866,7 +3303,11 @@ class WardriveUpload(PluginBase):
         mesh = info.get("mesh", 0)
         cracked = info.get("cracked", 0)
         total = info.get("total", 0)
-        badges = info.get("badges", [])
+        raw_badges = info.get("badges", [])
+        badges = raw_badges if isinstance(raw_badges, list) else []
+        if "badges" in info:
+            self._remember_portal_badges(raw_badges,
+                metadata=self._portal_badge_metadata(info), account=account)
 
         self._username = username
         self._user_gang = gang
@@ -2913,9 +3354,164 @@ class WardriveUpload(PluginBase):
                     except Exception as e:
                         self._log_add(f"  LoRa name save error: {e}", 8)
             else:
-                # User picked a custom name — don't override silently
+                # User picked a custom name â€” don't override silently
                 self._log_add(
                     f"  LoRa node kept as '{current}' (custom)", 13)
+
+    # ------------------------------------------------------------------
+    # WDGWars portal parity (LOCOSP/WatchDogsGo 7427fbfc).
+    # Headless API accessors: no extra HTTP requests until explicitly invoked.
+    # ------------------------------------------------------------------
+    def _api_base(self) -> str:
+        """Root URL of the configured upload service, without its /api/ path."""
+        if not self._api_url or "/api/" not in self._api_url:
+            return ""
+        return self._api_url.rsplit("/api/", 1)[0]
+
+    def fetch_rabbits(self) -> list:
+        """GET /api/rabbits â€” White Rabbit targets; [] if unavailable."""
+        snapshot = self.fetch_rabbit_snapshot()
+        return snapshot["rabbits"] if snapshot is not None else []
+
+    def fetch_rabbit_snapshot(self) -> dict | None:
+        """One bounded read; distinguish an empty server snapshot from failure."""
+        account = self._portal_account()
+        base = account[0].rsplit("/api/", 1)[0] if "/api/" in account[0] else ""
+        if not base or not account[1] or not self._callbacks_allowed():
+            return None
+        try:
+            req = Request(f"{base}/api/rabbits")
+            req.add_header("X-API-Key", account[1])
+            with _open(req, timeout=15) as response:
+                raw = response.read(2 * 1024 * 1024 + 1)
+            if len(raw) > 2 * 1024 * 1024:
+                return None
+            result = json.loads(raw.decode("utf-8"))
+            if (not self._callbacks_allowed() or account != self._portal_account()
+                    or not isinstance(result, dict) or result.get("ok") is not True):
+                return None
+            rabbits = result.get("rabbits", [])
+            if (not isinstance(rabbits, list) or len(rabbits) > 512
+                    or any(not isinstance(row, dict) for row in rabbits)):
+                return None
+            return {"ok": True, "rabbits": rabbits, "now": result.get("now")}
+        except Exception as error:
+            log.debug("fetch_rabbits failed: %s", type(error).__name__)
+            return None
+
+    def fetch_member_territories(self, bbox, *, zoom=8) -> dict | None:
+        """Read compact WDGWars gang cells within a geographic bounding box.
+
+        bbox is (south, west, north, east); the API takes west,south,east,north.
+        The response is capped, authenticated and never changes player state.
+        """
+        base = self._api_base()
+        if not base or not self._api_key or not self._callbacks_allowed():
+            return None
+        try:
+            south, west, north, east = (float(v) for v in bbox)
+            if (not all(math.isfinite(v) for v in (south, west, north, east))
+                    or not (-90 <= south < north <= 90)
+                    or not (-180 <= west < east <= 180)
+                    or type(zoom) is not int or not 6 <= zoom <= 14):
+                return None
+            coords = f"{west:.6f},{south:.6f},{east:.6f},{north:.6f}"
+            req = Request(f"{base}/api/member-territories?compact=1&bbox={coords}&zoom={zoom}")
+            req.add_header("X-API-Key", self._api_key)
+            with _open(req, timeout=15) as response:
+                raw = response.read(2 * 1024 * 1024 + 1)
+            if len(raw) > 2 * 1024 * 1024 or not self._callbacks_allowed():
+                return None
+            result = json.loads(raw.decode("utf-8"))
+            if not isinstance(result, dict) or result.get("ok") is not True:
+                return None
+            return result if isinstance(result.get("cells"), list) else None
+        except Exception as error:
+            log.debug("fetch_member_territories failed: %s", type(error).__name__)
+            return None
+
+    def fetch_game_state(self, lat=None, lon=None) -> dict | None:
+        """GET /api/game-state, with coordinates only when explicitly passed."""
+        base = self._api_base()
+        if not base or not self._api_key or not self._callbacks_allowed():
+            return None
+        url = f"{base}/api/game-state"
+        if lat is not None or lon is not None:
+            if lat is None or lon is None:
+                return None
+            try:
+                latitude, longitude = float(lat), float(lon)
+                if not math.isfinite(latitude) or not math.isfinite(longitude):
+                    return None
+                if not (-90 <= latitude <= 90 and -180 <= longitude <= 180):
+                    return None
+            except (ValueError, TypeError, OverflowError):
+                return None
+            url += "?lat=%.6f&lng=%.6f" % (latitude, longitude)
+        try:
+            req = Request(url)
+            req.add_header("X-API-Key", self._api_key)
+            with _open(req, timeout=15) as response:
+                result = json.loads(response.read().decode("utf-8"))
+            if not self._callbacks_allowed() or not isinstance(result, dict):
+                return None
+            return result if result.get("ok") else None
+        except Exception as error:
+            log.debug("fetch_game_state failed: %s", type(error).__name__)
+            return None
+
+    def request_pair(self, label: str = "WatchDogsGo (uConsole)") -> dict | None:
+        """POST /api/device-pair action=request, without requiring an old key."""
+        base = self._api_base()
+        if not base or not self._callbacks_allowed():
+            return None
+        try:
+            payload = json.dumps({"action": "request", "label": label}).encode("utf-8")
+            req = Request(f"{base}/api/device-pair", data=payload, method="POST")
+            req.add_header("Content-Type", "application/json")
+            with _open(req, timeout=15) as response:
+                result = json.loads(response.read().decode("utf-8"))
+            if not self._callbacks_allowed() or not isinstance(result, dict):
+                return None
+            return result if result.get("ok") else None
+        except Exception as error:
+            log.debug("request_pair failed: %s", type(error).__name__)
+            return None
+
+    def poll_pair(self, code: str, poll_secret: str) -> dict:
+        """POST action=poll; return the service reply without saving its key."""
+        base = self._api_base()
+        if not base or not self._callbacks_allowed():
+            return {"ok": False, "error": "unavailable"}
+        try:
+            payload = json.dumps({"action": "poll", "code": code,
+                                  "poll": poll_secret}).encode("utf-8")
+            req = Request(f"{base}/api/device-pair", data=payload, method="POST")
+            req.add_header("Content-Type", "application/json")
+            with _open(req, timeout=15) as response:
+                result = json.loads(response.read().decode("utf-8"))
+            if not self._callbacks_allowed():
+                return {"ok": False, "error": "unavailable"}
+            return result if isinstance(result, dict) else {"ok": False, "error": "invalid_response"}
+        except HTTPError as error:
+            return {"ok": False, "error": "bad_request" if error.code == 403
+                    else f"http_{error.code}"}
+        except Exception as error:
+            log.debug("poll_pair failed: %s", type(error).__name__)
+            return {"ok": False, "error": "unavailable"}
+
+    def adopt_api_key(self, api_key: str) -> None:
+        """Explicitly accept a paired 64-hex API key using existing storage."""
+        if (not isinstance(api_key, str) or
+                re.fullmatch(r"[0-9a-fA-F]{64}", api_key) is None):
+            raise ValueError("Invalid paired API key")
+        if not self._callbacks_allowed():
+            raise RuntimeError("The game is shutting down")
+        with self._upload_queue_lock():
+            self._save_secret("WARDRIVE_API_KEY", api_key)
+            self._api_key = api_key
+            self._clear_portal_account_state()
+        self._start_auth_poll()
 
     # ------------------------------------------------------------------
     # API test
@@ -2942,7 +3538,7 @@ class WardriveUpload(PluginBase):
             with _open(req, timeout=10) as resp:
                 result = json.loads(resp.read().decode())
                 total = result.get("total", "?")
-                self._log_add(f"API OK — {total} records on server", 11)
+                self._log_add(f"API OK â€” {total} records on server", 11)
         except HTTPError as e:
             if e.code == 401:
                 self._log_add("API: Invalid key (401)", 8)
@@ -2963,12 +3559,24 @@ class WardriveUpload(PluginBase):
 
     def _load_state(self):
         # Load uploaded sessions
+        data = {}
         p = self._state_file()
         if p.is_file():
             try:
                 data = json.loads(p.read_text())
+                if not isinstance(data, dict):
+                    data = {}
+                known = {"uploaded", "uploaded_meshtastic", "receipts", "coverage",
+                         "keep_exports", "portal_badge_cache_v1", "upload_ack_times_v1"}
+                self._state_extra = {k: v for k, v in data.items() if k not in known}
                 self._uploaded_sessions = set(data.get("uploaded", []))
                 self._uploaded_meshtastic_sessions = set(data.get("uploaded_meshtastic", []))
+                ack_times=data.get("upload_ack_times_v1",{})
+                self._upload_ack_times_valid=self._valid_upload_ack_metadata(ack_times)
+                if self._upload_ack_times_valid:
+                    self._upload_ack_times=dict(ack_times)
+                else:
+                    self._upload_ack_times_raw=ack_times
                 receipts = data.get("receipts", {})
                 if isinstance(receipts, dict):
                     self._upload_receipts = {k:v for k,v in receipts.items()
@@ -2986,21 +3594,49 @@ class WardriveUpload(PluginBase):
         conf = _load_secrets_conf()
         self._api_key = conf.get("WARDRIVE_API_KEY", "")
         self._api_url = conf.get("WARDRIVE_API_URL", "") or _default_endpoint()
+        cached = data.get("portal_badge_cache_v1")
+        if (isinstance(cached, dict) and cached.get("scope")
+                and cached.get("scope") == self._portal_account_scope()):
+            rows = self._parse_portal_badges(cached.get("badges"))
+            stamp = cached.get("fetched_at", 0)
+            try:
+                finite_stamp = type(stamp) in (float, int) and math.isfinite(stamp)
+            except (OverflowError, ValueError, TypeError):
+                finite_stamp = False
+            if rows is not None and finite_stamp:
+                self._portal_badges_scope = cached["scope"]
+                self._portal_badges_rows = rows
+                self._portal_badges_fetched_at = stamp
 
     def _save_state(self):
+        with self._upload_queue_lock():
+            return self._save_state_locked()
+
+    def _save_state_locked(self):
         temporary = None
         try:
             path = self._state_file()
             previous = path.stat() if path.exists() else None
+            state = dict(getattr(self, "_state_extra", {}))
+            if previous is not None:
+                disk = json.loads(path.read_text())
+                if not isinstance(disk, dict):
+                    raise ValueError("Invalid existing Sync state")
+                known = {"uploaded", "uploaded_meshtastic", "receipts", "coverage",
+                         "keep_exports", "portal_badge_cache_v1", "upload_ack_times_v1"}
+                state.update({k: v for k, v in disk.items() if k not in known})
             descriptor, temporary = tempfile.mkstemp(prefix=".wardrive-state-", dir=path.parent)
             with os.fdopen(descriptor, "w", encoding="utf-8") as stream:
-                json.dump({
+                state.update({
                 "uploaded": sorted(self._uploaded_sessions),
                 "uploaded_meshtastic": sorted(self._uploaded_meshtastic_sessions),
                 "receipts": self._upload_receipts,
+                "upload_ack_times_v1": self._upload_ack_metadata_for_save(),
                 "coverage": getattr(self,"_upload_coverage",{}),
                 "keep_exports": sorted(getattr(self,"_upload_keep_exports",set())),
-                }, stream, allow_nan=False)
+                "portal_badge_cache_v1": self._portal_badge_state(),
+                })
+                json.dump(state, stream, allow_nan=False)
                 stream.flush()
                 os.fsync(stream.fileno())
             if previous is not None and hasattr(os, "chown"):
@@ -3045,7 +3681,7 @@ class WardriveUpload(PluginBase):
             self.app._term_add(f"[Sync] {text}", raw=True)
 
     # ------------------------------------------------------------------
-    # Auth push — game as authenticator
+    # Auth push â€” game as authenticator
     # ------------------------------------------------------------------
     def _start_auth_poll(self):
         """Start background polling for auth requests from web."""

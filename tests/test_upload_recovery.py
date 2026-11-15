@@ -446,6 +446,22 @@ class UploadRecoveryTests(unittest.TestCase):
         self.assertEqual(p._pending_sessions(), [])
         self.assertEqual(self.new_plugin()._pending_sessions(), [])
 
+    def test_unicode_and_legacy_duplicate_notices_require_the_same_exact_registry_proof(self):
+        for notice in (DUPLICATE_CACHE_RESPONSE["info"],
+                       "This payload was already uploaded recently â€” no new processing."):
+            with self.subTest(notice=notice):
+                p = self.new_plugin()
+                payload = self.payload(p)
+                with patch("plugins.wardrive_upload._open", return_value=self.response([])):
+                    self.assertFalse(p._verify_duplicate_mesh(payload, dict(DUPLICATE_CACHE_RESPONSE, info=notice)))
+                with patch("plugins.wardrive_upload._open", return_value=self.response(self.registry_rows(payload))):
+                    self.assertTrue(p._verify_duplicate_mesh(payload, dict(DUPLICATE_CACHE_RESPONSE, info=notice)))
+                self.assertTrue(p._cached_mesh_verification(payload))
+                self.assertIsNone(p._cached_receipt(payload))
+                self.assertNotIn(p._receipt_key(payload), p._upload_ack_times)
+                p._handle_upload_badges.assert_not_called()
+                p._badge_sync_worker.assert_not_called()
+
     def test_worker_saves_registry_verification_before_marking_without_new_credit(self):
         p = self.plugin
         payload = self.payload()

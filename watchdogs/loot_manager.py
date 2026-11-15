@@ -553,7 +553,10 @@ class LootManager:
                 tmp = self._db_path.with_suffix(".tmp")
                 mode = self._db_path.stat().st_mode & 0o777 if self._db_path.exists() else 0o600
                 with open(tmp, "w", encoding="utf-8") as fh:
-                    json.dump(db, fh, indent=2)
+                    # The compact C encoder avoids thousands of small writes
+                    # while the progress lock is held. Atomic replacement and
+                    # both durability barriers still finish before success.
+                    fh.write(json.dumps(db, separators=(",", ":")))
                     fh.flush()
                     os.fsync(fh.fileno())
                 os.chmod(tmp, mode)

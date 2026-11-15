@@ -113,8 +113,14 @@ CMD_SCAN_AIRTAG = "scan_airtag"
 # feed in watchdogs/game_updates.py. It does not pull the checkout's legacy
 # origin or treat ordinary development commits as published updates.
 
-# Firmware flash settings (ESP32-C5)
-FIRMWARE_RELEASE_URL = "https://api.github.com/repos/LOCOSP/projectZero/releases/latest"
+# Firmware discovery uses this fork's published KG/SOLO manifests and app
+# images. Firmware versions come from the manifest, not the game release tag.
+# The upstream branch is retained only for isolated legacy safety fixtures;
+# production uses the KG client and never a stock or Piglet fallback.
+UPSTREAM_FIRMWARE_ENABLED = False
+FIRMWARE_RELEASE_URL = "https://api.github.com/repos/KiloGramowy/WDG-Wars-Go-2.0-KG-Edition/releases/latest"
+# Retained transport profiles. The KG installer supports only its approved
+# XIAO-C5 target and writes the verified application image, never these offsets.
 FLASH_CHIP = "esp32c5"
 FLASH_MODE = "dio"
 FLASH_FREQ = "80m"
@@ -174,8 +180,7 @@ SURVIVAL_WIKI_URL = "http://localhost:8080"
 SURVIVAL_CTOS_MAP_URL = "http://localhost:8082/index.html"
 SURVIVAL_NAV_CMD = ["flatpak", "run", "app.organicmaps.desktop"]
 
-# Firmware update check
-FIRMWARE_RELEASE_URL = "https://api.github.com/repos/LOCOSP/projectZero/releases/latest"
+# Legacy board aliases retained for existing integrations.
 FLASH_BOARDS = {
     "wroom": {
         "label": "ESP32-C5 WROOM-1 (Dev Kit)",

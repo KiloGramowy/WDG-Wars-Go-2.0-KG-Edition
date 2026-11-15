@@ -55,6 +55,7 @@ class UploadedLogRetentionCleanupTests(unittest.TestCase):
         plugin._badge_sync_worker = Mock()
         plugin._handle_upload_badges = Mock()
         plugin._get_retention()._clock = lambda: self.now
+        plugin._upload_ack_clock = lambda: self.now
         return plugin
 
     def data(self, plugin=None):
@@ -249,11 +250,14 @@ class UploadedLogRetentionCleanupTests(unittest.TestCase):
         self.assertEqual(result["deleted"], 3)
         self.assertTrue((self.session / filename).exists())
 
-    def test_no_gps_wifi_row_keeps_the_whole_mixed_file(self):
+    def test_valid_no_gps_residual_does_not_block_full_normal_wifi_payload_retention(self):
         path = self.session / "wardriving.csv"
         path.write_text(path.read_text() +
             "02:00:00:00:00:FF,NoGPS,WPA2,now,6,-60,0,0,0,0,WIFI\n")
-        self.uploaded_and_aged_except("wardriving.csv")
+        self.uploaded_and_aged()
+        progress = self.progress()
+        self.assertEqual(self.plugin.cleanup_uploaded_logs()["deleted"], 4)
+        self.assertEqual(self.progress(), progress)
 
     def test_wifi_observation_in_place_of_preheader_is_not_silently_certified(self):
         path = self.session / "wardriving.csv"
@@ -269,18 +273,21 @@ class UploadedLogRetentionCleanupTests(unittest.TestCase):
         path.write_text("".join(lines))
         self.uploaded_and_aged_except("adsb_aircraft.csv")
 
-    def test_deduplicated_extra_aircraft_row_keeps_its_unsent_history(self):
+    def test_legitimate_aircraft_duplicate_does_not_block_complete_normal_payload_retention(self):
         path = self.session / "adsb_aircraft.csv"
         rows = path.read_text().splitlines(keepends=True)
         path.write_text("".join(rows) + rows[-1])
-        self.uploaded_and_aged_except("adsb_aircraft.csv")
+        self.uploaded_and_aged()
+        progress = self.progress()
+        self.assertEqual(self.plugin.cleanup_uploaded_logs()["deleted"], 4)
+        self.assertEqual(self.progress(), progress)
 
     def test_invalid_extra_mesh_row_keeps_its_unsent_history(self):
         path = self.session / "meshcore_nodes.csv"
         path.write_text(path.read_text() + "now,not-a-node,Client,Invalid,12.5,34.5,-90,0\n")
         self.uploaded_and_aged_except("meshcore_nodes.csv")
 
-    def test_no_gps_extra_mesh_row_keeps_its_unsent_history(self):
+    def test_valid_no_gps_mesh_residual_does_not_block_complete_normal_payload_retention(self):
         path = self.session / "meshtastic_nodes.csv"
         lines = path.read_text().splitlines(keepends=True)
         # Native header may include extra provenance fields; retain its shape.
@@ -292,7 +299,10 @@ class UploadedLogRetentionCleanupTests(unittest.TestCase):
         buffer = io.StringIO()
         csv.writer(buffer).writerow(row)
         path.write_text("".join(lines) + buffer.getvalue())
-        self.uploaded_and_aged_except("meshtastic_nodes.csv")
+        self.uploaded_and_aged()
+        progress = self.progress()
+        self.assertEqual(self.plugin.cleanup_uploaded_logs()["deleted"], 4)
+        self.assertEqual(self.progress(), progress)
 
     def test_changed_after_confirmation_is_kept_without_another_ack(self):
         self.uploaded_and_aged()
@@ -413,12 +423,15 @@ class UploadedLogRetentionCleanupTests(unittest.TestCase):
             self.assertEqual(self.plugin.cleanup_uploaded_logs()["deleted"], 0)
         self.assertEqual(len(self.files()), 4)
 
-    def test_historical_exact_ack_starts_age_at_first_verification_not_old_mtime(self):
+    def test_historical_exact_ack_without_saved_time_starts_at_verification_not_old_mtime(self):
         data = self.data()
         self.assertTrue(self.plugin._remember_receipt(data, dict(ok=True,
             imported=len(data["networks"]), aircraft_imported=len(data["aircraft"]),
             meshcore_imported=len(data["meshcore_nodes"]))))
         self.assertTrue(self.plugin._mark_uploaded(self.session, meshtastic=True))
+        # Simulate a receipt persisted by the older version, which had no ACK clock.
+        self.plugin._upload_ack_times.clear()
+        self.assertTrue(self.plugin._save_state())
         for name in EXPORTS:
             os.utime(self.session / name, (1, 1))
         self.assertFalse(self.proof_rows())
@@ -546,7 +559,9 @@ class UploadedLogRetentionCleanupTests(unittest.TestCase):
             self.plugin._retention_tick()
         self.assertTrue(all(path.exists() for path in paths[:8]))
         self.assertTrue(all(not path.exists() for path in paths[8:]))
-        self.assertEqual(len(self.files()), 4)
+        # Seeding can now recover the authentic old ACK time for the original
+        # exports too, so these four are legitimately due rather than re-aged.
+        self.assertEqual(len(self.files()), 0)
 
     def test_tick_handles_historical_scan_error_without_crashing_or_deleting(self):
         self.assertTrue(self.plugin._set_retention_days(1))

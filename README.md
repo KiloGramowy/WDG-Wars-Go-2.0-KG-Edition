@@ -8,32 +8,46 @@
 <p align="center"><em>🕶️ Pocket cyberdeck. Bigger toolbox. WatchDogsGo by LOCOSP, expanded by KiloGramowy.</em></p>
 
 <!-- latest-public-update:start -->
-## 🚀 Latest update — 0.9.20
+## 🚀 Latest update — 0.9.21
 
-**📡 Go SOLO. 🐷 Send the Pig. Keep the Loot.**
+**🗺️ LET THE MAP FOLLOW. 🐇 SPOT THE RABBIT. 💾 KEEP THE LOOT.**
 
-❌ **Before:** repeating SNIFF scans were WDG's wardrive route, Piglet CSV needed a separate import workflow, and unchanged backgrounds and CSV repeats did unnecessary work.
+*The 0.9.20 Piglet brought home the CSV. Now the map wants to join the road trip. Your CPU has already done enough paperwork.* 😏
+
+❌ **Before:** new streets needed manual map downloads, WDGWars territory stayed off the map, and busy Wi-Fi/BLE work could make the screen wait.
 
 ✅ **Now:**
 
-- 📡 **WARDRIVING SOLO:** FULL SPECTRUM, KG SETTINGS, BLE alone or alternating Wi-Fi/BLE, confirmed START/STOP, **720-minute GPS cache**, Startup GPS Backfill and a live GPS trail. Compatible JanOS extension required.
-- 🐷 **Piglet KG Collection:** paired local delivery from `/logs` and `/uploaded`, whole-CSV background import, truthful progress, durable ACK and protected retries. **UConsole Piglet sends only to its paired uConsole; Normal Piglet retains its existing behavior.** One physical Piglet is validated; multiple devices remain unsupported.
-- 🗺️ **Less repeated work:** cached tile backgrounds and an exact CSV index, with clearer Sync preparation and **10,000-record / 6 MiB** upload batches.
-- 💾 **Safer maintenance:** XP-save retries, stop-aware Sync callbacks, flash preflight/port ownership, clearer OTA errors, opt-in uploaded-log Auto-clean and roomier HUD counters. Existing **15 / 10 / 1** Wi-Fi/BLE XP rules stay.
+- 🗺️ **Auto Map + Turf:** **TAB → SYSTEM → Auto Map + Turf → Enter** makes both maps follow **fresh measured GPS**. Your choice is remembered (**default OFF**). Download **10 km** around a center, consider the next area after **3 km**, refresh nearby gang sectors after **five minutes**. Manual **Download Map** stays. *The map finally packed its own suitcase.*
+- 🟩 **Gang turf on the map:** saved, gang-colored sector **outlines** at zoom **9+**, with **OWN / TURF** for an occupied measured-GPS sector and **an asterisk (*)** for a snapshot over five minutes old. No new capture rule or free XP for walking into somebody else's square. *Your shoes are not a capture API.*
+- 🐇 **White Rabbit:** open, unclaimed, unexpired server targets appear as **white bunny markers** on the existing map. The existing Wars Sync key powers reads at startup and **at most every 60 seconds**, independent of Auto Map/GPS. Account-bound cache is last-known data, not a new capture feature. *The bunny brought its coordinates.*
+- 🏅 **Portal Badges:** **PLUGINS → Watch Dogs Go Wars Sync → Portal Badges → Enter** opens the complete returned server-owned collection, even badges without native icons. Scroll with arrows/Page/Home/End; **R** refreshes by read-only GET, **Esc** returns. Native achievements and XP remain separate. *A bigger trophy cabinet, not imaginary trophies.*
+- ⚡ **Smoother Wi-Fi + BLE for everyone:** scan presentation, idle Collection checks, compact saves and serial bursts cause less GUI waiting — **no extra switch**. Real **START/STOP ACK**, scan timing, data formats and XP rules stay. A complete valid message after damaged input may be recovered, but missing packets are never invented. *The map no longer queues behind a CSV.*
+- 🗑️ **Pending Upload Logs, your call:** visible **SENT / NOT SENT**. Select one closed CSV: **SENT + D** deletes immediately; **NOT SENT + D** warns it was not uploaded, then **Y** deletes or **N / Esc** keeps it — including no-GPS exports that cannot upload. XP, progress and receipts stay; active/upload locks and **Auto-clean rules stay unchanged**. *Delete the paperwork, keep the loot.*
+- 🧹 **Auto-clean follows the receipt:** **Pending Upload Logs → A** keeps **Keep all / 1 / 5 / 15 / 31 days / custom**. **After 5 days** counts from the first complete confirmed upload, not the session date, restart or file timestamp. Rechecking the same unchanged file/account does not reset it; all batches need ACKs. Legitimate duplicates/no-GPS leftovers no longer strand a fully confirmed supported upload. Legacy flags cannot invent age; unsent/no-GPS-only and invalid/unreadable data are not aged into removal by this policy. *The receipt owns the calendar.*
+- 🛡️ **Firmware KG/SOLO:** **SYSTEM → Firmware KG/SOLO** checks **our KG Edition fork** and shows detected/latest KG. **R** refreshes; **Enter** begins a compatible, verified **manual** install/reinstall. **No automatic flash, no stock/Piglet fallback.** Firmware **KG 1.7.0** is separate from game version **0.9.21**.
+- 📦 **Wardriving Collection:** keeps Piglet KG CSV and adds supported Dark3D eleven-column WiGLE `.log` imports, typed peer status, unchanged PC1/durable ACK and deduplication. This is host compatibility. Modified Dark3D Collection firmware awaits its own approved public release; no such image is supplied here. **Firmware documentation and future `.bin`: [Dark3D C5 UConsole](https://github.com/KiloGramowy/Dark3D-C5-Wardriver-UConsole) (currently private; separate Release approval required).** *Two dialects, one receipt desk.*
+- 💾 **Your streets and loot stay:** saved tiles/turf remain available for cached viewing; turning Auto Map OFF does not delete them. A no-fix restart can restore the last saved automatic **view**, never fake GPS. Existing SOLO, Piglet Collection, **720-minute GPS cache**, uploads, settings and **15 / 10 / 1 XP** rules stay. Tile downloads need the existing **Stadia key**; sectors need the existing **Wars Sync key**.
 
-*Your CPU has enough paperwork. Let Piglet carry the CSV.* 😏
+📸 **0.9.21 map previews:** [Auto Map + Turf](docs/media/0.9.21-automap-sectors.png) · [White Rabbit](docs/media/0.9.21-rabbit-world.png). *Illustrative images, not a physical device test.*
+
+*Piglet keeps the CSV. SOLO keeps the hunt. The map keeps up. Your loot stays yours.* 🐷🐕
+
+**Fresh RC results are recorded separately by exact commit; the counts below are historical and precede the final combined candidate.**
+
+**Receipts, not fairy tales:** the earlier shared scan/Collection baseline passed **1,679 Linux tests (0 skipped)** and **1,665 Windows tests (14 platform/root skips; all passed on Linux)**. A bounded real uConsole run had no sampled second-long GUI gap (**151.93 ms maximum**) and three closed sessions reconciled **1,150 received = saved = STOP-confirmed** observations with no observed gaps in those sessions. Real map/turf, Rabbit and Portal Badges UI checks passed. **Physical 3 km movement, full network-loss recovery, a new Piglet transfer and firmware flashing remain unverified.** These are finite checks, not a universal FPS or lossless-RF guarantee.
+
+**[📦 Release 0.9.21](https://github.com/KiloGramowy/WDG-Wars-Go-2.0-KG-Edition/releases/tag/v0.9.21)** · **[📝 All releases](https://github.com/KiloGramowy/WDG-Wars-Go-2.0-KG-Edition/releases)** · **[📚 Update guide](https://github.com/KiloGramowy/WDG-Wars-Go-2.0-KG-Edition/blob/main/docs/UPDATING.md)**
+
+🎮 **Fully open source, with the existing Git/source updater:** **TAB → SYSTEM → Update Game → R → Enter**, then **Y** to install or **N / Esc** to cancel. Updaters **0.9.19.1+** restart after success; running **0.9.17 / 0.9.18 / 0.9.19** needs one manual relaunch after its first upgrade. **Game OTA never flashes JanOS or Piglet.**
 
 ### 🔒 Privacy hotfix — same radios, fewer breadcrumbs
 
 **Before:** some examples and validation notes included a real test location and its GPS coordinates. **Now:** current source examples use neutral test data and location-free validation notes. RF profiles, country support and game behavior stay unchanged. The cyberdeck keeps its toolbox; your whereabouts stay yours. 🕶️
 
-**Scope:** this correction is on current **main**, with the software version still **0.9.20**. It does **not** activate a new OTA update or rewrite older commits, tags or their source archives.
+**Scope:** version **0.9.21** retains the neutral source examples and location-free validation notes. This preserves the earlier 0.9.20 privacy correction; it does not rewrite older commits, tags or downloaded archives.
 
-**[📦 Release 0.9.20](https://github.com/KiloGramowy/WDG-Wars-Go-2.0-KG-Edition/releases/tag/v0.9.20)** · **[📝 All releases](https://github.com/KiloGramowy/WDG-Wars-Go-2.0-KG-Edition/releases)** · **[📚 Full changelog](docs/UPDATE_PREVIEW.txt)**
-
-**[🐷 Download Piglet BIN](firmware/piglet-collection/piglet-kg-uconsole-xiao-c5-app.bin?raw=1)** · **[🔌 Piglet installation, pairing and rollback](docs/PIGLET_COLLECTION_INSTALL.md)** · **[📡 SOLO firmware guide](firmware/wardriving-solo/README.md)**
-
-🎮 **Update in game:** **TAB → SYSTEM → Update Game → R → Enter**, then **Y** to install or **N / Esc** to cancel. Updaters **0.9.19.1+ restart automatically**; running **0.9.17 / 0.9.18 / 0.9.19** needs one manual relaunch after its first upgrade. See the [update and recovery guide](docs/UPDATING.md). **Updating the game does not flash either ESP32.**
+**Historical 0.9.20 archives:** the original `v0.9.20` tag and its automatic GitHub source archives retain the older snapshot. For corrected 0.9.20 source use the refreshed named **WatchDogsGo-0.9.20.zip** in the [0.9.20 Release](https://github.com/KiloGramowy/WDG-Wars-Go-2.0-KG-Edition/releases/tag/v0.9.20). The 0.9.21 source is a separate release.
 
 ---
 <!-- latest-public-update:end -->
@@ -59,9 +73,193 @@ The edit combines recorded uConsole footage with a current native UI tour. Exter
 | 🧰 **From LOCOSP** | WDGWars Chat and Reticulum/LoRa, Monster RF SubGHz, Emergency Radio, Proximity Radar, CRISIS, sound controls, visual polish and the original in-game updater. |
 | 🛠️ **From KiloGramowy** | Meshtastic integration beside MeshCore, local AUTO GPS, persistent mesh discoveries, WARDRIVING SOLO, Piglet KG Collection, scan/upload fixes, clean shutdown and the expanded release updater. |
 
-**2.0 is the edition name; the software version is 0.9.20.** Original authorship and the upstream fork relationship are retained. See the [full 0.9.20 release notes](docs/RELEASE_0.9.20.md) for WARDRIVING SOLO, Piglet KG Collection, performance and maintenance changes.
+**2.0 is the edition name; the software version is 0.9.21.** Original authorship and the upstream fork relationship are retained. See the [full 0.9.20 release notes](docs/RELEASE_0.9.20.md) for WARDRIVING SOLO, Piglet KG Collection, performance and maintenance changes.
 
 💾 **Coming from LOCOSP's version?** 0.9.18 preserves saved XP, level, badges and contacts when upgrading the older loot database. A separate clone needs your existing data folder: [keep your progress when upgrading](docs/UPGRADING_FROM_LOCOSP.md).
+
+## 🗺️ New in 0.9.21 — follow the roads, know the turf
+
+*Your map has learned to pack ahead. You still have to remember your own shoes.* 👟
+
+❌ **Before:** extending street-map coverage required **Download Map**, and no
+automatic local WDGWars gang-sector layer followed measured GPS.
+
+✅ **Now:** **TAB → SYSTEM → Auto Map + Turf → Enter** enables both background
+layers. **Default: OFF; choice remembered.** The map uses a **10 km radius**
+and considers a new area after **3 km** from the last completed center; nearby
+sectors refresh after **five minutes** when fresh GPS, the required key and
+server are available. **Manual Download Map stays.**
+
+At zoom **9 / NEIGHBORHOOD or closer**, saved gang sectors appear as coloured
+**outlines** over the existing map. Colours use the game's 16-colour palette.
+A cached occupied measured-GPS sector can show **OWN / TURF**; **`*` marks a
+snapshot older than five minutes**. Walking into a square does not capture it.
+
+Tiles require the existing **Stadia Maps key**; sectors require **Wars Sync**.
+Successfully downloaded data stays local for cached viewing. OFF stops automatic
+area requests and hides turf without deleting its cache. With ON and no fresh
+fix after restart, the last completed saved automatic center can supply the
+**initial view**. It is not a GPS fix and cannot drive automatic downloads,
+RF AUTO or SOLO backfill. A new area still requires a measured sample younger
+than **two seconds**.
+
+**Default street-basemap credits:** © [Stadia Maps](https://stadiamaps.com/attribution/) · © [OpenMapTiles](https://openmaptiles.org/) · © [OpenStreetMap contributors](https://www.openstreetmap.org/copyright).
+
+![Illustrative Auto Map + Turf tile and sector preview](docs/media/0.9.21-automap-sectors.png)
+
+*0.9.21 map illustration supplied by the owner; not evidence of live GPS or a new device test.*
+
+## 🐇 White Rabbit — spot the ears
+
+*The rabbit brought coordinates, not a free capture button. Follow the ears.* 🥕
+
+❌ **Before:** public 0.9.20 had no rabbit markers; the API client introduced
+during private 0.9.21 DEV still needed its map integration.
+
+✅ **Now:** open, unclaimed and unexpired server targets appear automatically
+as **white bunny markers** on the existing map. Normal map pan/zoom applies;
+there is no extra rabbit screen or key.
+
+The existing Wars Sync account/key enables the first read and **at most one
+refresh per 60 seconds**. Rabbit reads are **independent of GPS and the Auto
+Map switch** and send no player coordinates. Saved targets belong to the same
+account; expired targets disappear while offline, and the next good response
+removes caught/claimed targets. Offline availability remains last-known data.
+
+These are map markers. They add **no capture request, new hacking target,
+local XP award or capture rule**. The bunny brings its own coordinates.
+
+![Illustrative White Rabbit global map preview](docs/media/0.9.21-rabbit-world.png)
+
+*0.9.21 map illustration supplied by the owner; not a live target availability or user-location record.*
+
+## 🏅 Portal Badges — the whole shelf
+
+*No trophy left behind. We enlarged the cabinet, not your XP.* 🏆
+
+❌ **Before:** badges outside the game's native mapping had no complete
+server-owned list in the game UI.
+
+✅ **Now:** **TAB → PLUGINS → Watch Dogs Go Wars Sync → Portal Badges → Enter**
+opens the account's complete returned ownership list, including IDs with no
+native achievement icon. Use **Up / Down**, **Page Up / Page Down**,
+**Home / End**, **R** for a read-only refresh and **Esc** to return to Sync.
+Opening the list also refreshes by GET.
+
+Names/descriptions come from server metadata when available; otherwise an ID
+gets a readable **Portal badge** label. The saved list is bound to its account.
+It does not award XP or create new native achievements. Existing native badge
+sync and local **15 / 10 / 1 Wi-Fi/BLE XP** rules keep their meaning. Your
+existing Wars Sync key is used; no new local API server is installed.
+
+## 🛡️ Firmware KG/SOLO — the right source for the board
+
+*Stock firmware can keep its version numbers. SOLO keeps its seat.* 🐕
+
+❌ **Before:** stock upstream version alerts and the old Flash ESP32 route
+could point KG users at JanOS without SOLO.
+
+✅ **Now:** **SYSTEM → Firmware KG/SOLO** checks **our KG Edition repository**
+when the connected board reports its version and after reconnect. **R** refreshes
+the check. The panel shows **Detected KG**, **Latest KG** and the KG source.
+The firmware version comes from its manifest, not the game's Release tag:
+the published game **0.9.20** currently carries **JanOS 1.7.0 + SOLO**.
+
+**Enter** starts a manual installation/reinstall of a verified compatible KG
+package. **Esc** closes the panel; a running installation continues. There is
+**no automatic flash** and no stock JanOS/Piglet fallback. Older packages and
+unverified hardware/layout combinations are refused; a missing or invalid KG
+package is reported rather than replaced with another firmware source.
+
+The approved [published KG/SOLO package](https://github.com/KiloGramowy/WDG-Wars-Go-2.0-KG-Edition/blob/v0.9.20/firmware/wardriving-solo/README.md)
+is application-only for the specific **XIAO ESP32-C5 revision 1.0 / 8 MiB**
+board/layout. Downloads are checked before board access. **Update Game remains
+game-only; WDGWars keeps its existing API path.**
+
+The **KG 1.7.0** host label changes display text, not firmware. Raw serial logs,
+the numeric version and actual SOLO capability checks retain their meaning;
+the label alone does not prove SOLO support.
+
+## 📡 Shared Wi-Fi + BLE correction — automatic in 0.9.21
+
+*The map is here to hunt, not to queue at the CSV filing desk.* ☕
+
+❌ **Before:** combined scan traffic or an idle Collection check could make the
+map/menus wait for storage. A damaged board message could hide a complete
+observation following it.
+
+✅ **Now:** everyone upgrading to 0.9.21 gets the host correction automatically;
+**there is no new toggle**. Busy scan presentation and Collection checks defer
+work, large saves use one compact write pass and incoming bursts are split once.
+Commands omit an artificial **100 ms** wait while preserving actual board
+START/STOP acknowledgements and the existing scan profiles/timings.
+
+Only a complete valid follow-up observation passes resynchronization; partial
+or absent records are not reconstructed. STOP diagnostics keep sequence gaps
+visible. **No blanket lossless/zero-lag guarantee and no firmware flash.**
+The earlier shared scan candidate passed 1679 Linux software methods; Windows
+passed 1665 with 14 platform/root skips, covered by Linux. Those historical
+results precede the final combined RC and are not its fresh validation.
+A bounded physical 120-second combined-scan window showed no sampled second-long
+frame gap; three closed captures accounted for 1150 raw/durable/STOP observations
+with zero observed gaps or malformed messages. Status telemetry sometimes lagged;
+this is not universal FPS or lossless reception, or recovery of old missing rows.
+
+## 🗑️ Pending Upload Logs — sent or not, keep the loot
+
+❌ **Before:** confirmed-upload status could block manual deletion, and the
+list did not make the sent/not-sent choice clear enough.
+
+✅ **Now:** **PLUGINS → Pending Upload Logs** shows **SENT / NOT SENT**.
+Select one **closed CSV**:
+
+- **SENT + D** immediately deletes the selected CSV, without confirmation.
+- **NOT SENT + D** warns that it was not uploaded; **Y** deletes it,
+  **N / Esc** keeps it. Closed no-GPS exports that cannot upload are included.
+
+Only the selected local CSV is removed; saved XP, progress, contacts and server
+receipts remain. Current writing sessions and active-upload locks stay protected.
+Deletion is not an upload confirmation or new server credit. **Automatic cleanup
+keeps its existing eligibility rules and your Auto-clean choice.**
+
+*The CSV can leave the filing cabinet. Your loot stays home.* 🧾
+
+## 🧹 Auto-clean — give the receipt the calendar
+
+❌ **Before:** complete supported uploads with duplicate/no-GPS leftovers could
+miss cleanup eligibility; a legacy flag or old log date could not prove upload age.
+
+✅ **Now:** **Pending Upload Logs → A** retains **Keep all / 1 / 5 / 15 /
+31 days / custom**. **Up / Down → Enter** applies; **Esc** cancels.
+**After 5 days** means five elapsed days after the first recorded complete
+upload confirmation for the unchanged file/account. Batched uploads need all
+required ACKs; rechecking or restarting does not restart that clock.
+
+Legitimate duplicates/no-GPS leftovers may remain in a fully acknowledged
+supported export. A pure no-GPS **NOT SENT** file has no confirmed-upload
+retention clock and keeps the existing manual D choice. Structurally invalid
+or unreadable files are retained. Legacy flags without usable ACK times cannot
+be backdated from capture dates or file timestamps. Progress, receipts,
+active/upload protection and the chosen retention option remain.
+
+*Dates belong on receipts. Guesswork belongs in the rabbit's alibi.* 🐇
+
+## 📦 New in 0.9.21 — Wardriving Collection, one receipt desk
+
+❌ **Before:** Piglet KG WiGLE 1.6 fourteen-column CSV was the receiver's input.
+✅ **Now:** **WARDRIVING → Wardriving Collection** also accepts supported Dark3D
+WiGLE 1.4 eleven-column `.log` files, retaining original bytes and supplied GPS,
+time and metadata. Typed authenticated peers use **PIGLET KG CONNECTED** or
+**C5 WARDRIVER CONNECTED**, with the existing **30-second** expiry; hotspot
+readiness is separate. PC1, durable ACK, whole-file deduplication and existing
+XP rules remain. This is host compatibility, not a new physical sender test
+or a Dark3D firmware package. Modified Dark3D Collection sender firmware is
+not publicly supplied and awaits its own separately approved release. *Two dialects. No double payroll.*
+
+📥 **Dark3D C5 UConsole firmware docs and future `.bin`:** [Dark3D C5 UConsole](https://github.com/KiloGramowy/Dark3D-C5-Wardriver-UConsole) (**currently private**; separate Release approval required).
+
+**WDG Wars Go remains fully open source**, including the KG changes. The existing
+verified Git/source updater and normal Python plugin discovery are retained.
 
 ## 📡 New in 0.9.20 — WARDRIVING SOLO
 
@@ -186,7 +384,7 @@ Hardware improvements include better separation of the XIAO pentest board from a
 
 **SYSTEM → Update Game originated in LOCOSP's newer version.** That version introduced background version checks and an in-game Git update action, including operation under sudo. Our release keeps the familiar menu entry and expands it with the verified release source, full release notes, one notice per update, explicit installation confirmation and code-only recovery described below.
 
-![Current Update Game window with the verified release source](docs/media/update-game.png)
+![Historical Update Game window (0.9.17) with the verified release source](docs/media/update-game.png)
 
 *🖼️ The panels show the current installed UI on uConsole with isolated empty player data and automatic hardware connections disabled. Connected boards, compatible peers and local services provide the live results.*
 
@@ -301,7 +499,7 @@ Open **ADDONS → Meshtastic Profile** or **ADDONS → MeshCore Region**. Each p
 
 📌 **Local means local.** An approval covers the displayed circle, not an entire country. AUTO uses its conservative inner area and does not discover nearby nodes' RF settings. RF changes preserve channel/key configuration.
 
-🇪🇸 **Real Meshtastic SFNarrow traffic was received during receiver validation:** EU_868, **869.618 MHz · BW 62.5 kHz · SF7 · CR 4/5**. This does not establish one preset for all Spain or for MeshCore. EU/UK LongFast remains available; MeshCore has its own catalog.
+**Real Meshtastic SFNarrow reception was verified:** EU_868, **869.618 MHz · BW 62.5 kHz · SF7 · CR 4/5**. This single test does not establish a universal preset for Meshtastic or MeshCore. EU/UK LongFast remains available; MeshCore has its own catalog.
 
 📚 **[Complete RF profiles, GPS checks and sources →](docs/RADIO_PROFILES.md)**
 
@@ -348,7 +546,7 @@ Collecting pending uploads should not be an extra side quest. 🧾
 
 **0.9.20 upload preparation:** Sync builds its local-session snapshot in the background. Large manual uploads target **10,000 records / 6 MiB signed bodies** with bounded retry and complete acknowledgement coverage. Memory still grows with file size; unconfirmed rows remain pending.
 
-**🗑️ Pending logs, without the souvenir collection.** Open **PLUGINS → Pending Upload Logs** to inspect each session's Wi-Fi/BLE, ADS-B, MeshCore and Meshtastic export, including files waiting for GPS. This local browser does not need an API key or the network-sync level unlock. Select a log, press **D**, then **Y** to delete that file or **N / Esc** to cancel. **R** refreshes the list; arrow keys and **Page Up / Page Down / Home / End** navigate it.
+**🗑️ Pending logs, without the souvenir collection.** Open **PLUGINS → Pending Upload Logs** to inspect each session's Wi-Fi/BLE, ADS-B, MeshCore and Meshtastic export, including files waiting for GPS. This local browser does not need an API key or the network-sync level unlock. Select one closed log. In **0.9.21**, **SENT + D** deletes immediately; **NOT SENT + D** warns it was not uploaded, then **Y** deletes or **N / Esc** cancels. Active sessions and upload locks remain protected. **R** refreshes the list; arrow keys and **Page Up / Page Down / Home / End** navigate it.
 
 After an upload attempt, closed-session logs with no usable GPS records are removed automatically, without a confirmation popup. Files containing positioned records are retained, including mixed files with both positioned and unpositioned entries. Active sessions, uploads in flight and confirmed positioned exports are protected. Deleting an export keeps saved XP, levels, achievements, contacts and known Wi-Fi/BLE identities; the next reception of a known device still earns the normal repeat award. Deletion does not count as an upload or grant server credit.
 
@@ -374,7 +572,7 @@ Power ownership is explicit: hardware switched on or acquired by WDG is released
 
 **SYSTEM → Update Game** keeps its original menu row. Inside, a small KiloGramowy avatar sits above the current version and scrollable release notes. The startup screen keeps **by LOCOSP**, with **Modified by KiloGramowy** underneath. Version numbers keep their original numeric format.
 
-![Update Game window](docs/media/update-game.png)
+![Historical Update Game window (0.9.17)](docs/media/update-game.png)
 
 The game checks this fork in the background at each launch. A published release gets **one** main-screen notice: **OK** opens its notes; **No / Esc** lets you carry on. The notice is remembered across restarts. The next approved release can show a new notice, and **Update Game stays white** while a confirmed update remains available.
 
@@ -437,11 +635,11 @@ Explore with a uConsole and compatible hardware, see discoveries on the map, sav
 
 Future work will be documented as it is implemented and checked. More field tests, more refinements, more reasons to take the uConsole outside. **Stay tuned!** 📡
 
-## 🧪 Validation at a glance
+## 🧪 Validation history at a glance
 
 | Check | Recorded result |
 | --- | --- |
-| 📡 SFNarrow RX | Real public traffic received on uConsole; test location withheld. |
+| 📡 SFNarrow RX | Real public traffic received on uConsole. |
 | 💬 Background text RX | Received and stored with the chat closed. |
 | 📨 Public text TX | Local TX_DONE recorded; remote delivery was not established. |
 | 🔁 WiFi / BLE | Seven complete WiFi and seven BLE phases on XIAO ESP32-C5 / JanOS 1.7.0, with GPS and CSV output. |
@@ -452,6 +650,10 @@ Future work will be documented as it is implemented and checked. More field test
 The release includes the tested shutdown fix and updater. Screenshots show UI states; they do not independently prove RF reception, approved AUTO operation or chat delivery. Not every preset, region or US RF/antenna configuration has been physically validated.
 
 🔬 **[Evidence and test limits →](docs/VALIDATION.md)**
+
+The table above records earlier releases. Fresh 0.9.21 RC checks are tied to
+the exact private RC commit; they do not establish a new physical uConsole
+run. [0.9.21 changes, update controls and limits](docs/ota-0.9.21/CHANGELOG_AND_UPDATE_GUIDE.md).
 
 ## 🛠️ Hardware and installation
 
@@ -506,6 +708,9 @@ cd ~/python/WatchDogsGo-KiloGramowy
 Optional driver sources/private replay fixtures can cause skips. Software checks do not replace a physical RF test.
 
 ## 📚 Read more
+
+- 🗺️ [0.9.21 complete Release/Discord text](docs/ota-0.9.21/RELEASE_AND_DISCORD_EN.md)
+- 🔄 [0.9.21 changelog, update controls and limits](docs/ota-0.9.21/CHANGELOG_AND_UPDATE_GUIDE.md)
 
 - 🕹️ [Feature guide and everyday controls](docs/FEATURE_GUIDE.md)
 - 🛰️ [RF catalog and local AUTO GPS](docs/RADIO_PROFILES.md)

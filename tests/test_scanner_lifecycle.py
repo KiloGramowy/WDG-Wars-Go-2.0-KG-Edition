@@ -96,6 +96,9 @@ class ReconnectBarrierTests(unittest.TestCase):
         g._esp32 = False
         g.state.connected = False
         g._fw_version = '1.7.0'
+        g._fw_generation = 10
+        g._fw_remote_version = '1.7.3'
+        g._fw_update_available = True
         connection = SimpleNamespace(is_open=True, setup=Mock(), close=Mock(),
                                      send_command=Mock(return_value=success))
         ENV['detect_esp32_port'] = lambda: '/dev/ttyACM1'
@@ -111,7 +114,11 @@ class ReconnectBarrierTests(unittest.TestCase):
         self.assertFalse(g._esp_stop_timed_out)
         self.assertIsNone(g._pending_cmd)
         self.assertTrue(g._start_scan_cmd('scan_bt', 'ble_scan', 'BLE'))
-        connection.send_command.assert_called_once_with('stop')
+        self.assertEqual([c.args[0] for c in connection.send_command.call_args_list], ['stop', 'version'])
+        self.assertEqual(g._fw_version, '')
+        self.assertEqual(g._fw_generation, 11)
+        self.assertEqual(g._fw_remote_version, '')
+        self.assertFalse(g._fw_update_available)
         PX.frame_count = 115
         g._dispatch_pending_esp_command()
         self.assertFalse(g._ble_scan_only)
@@ -119,25 +126,33 @@ class ReconnectBarrierTests(unittest.TestCase):
         g._dispatch_pending_esp_command()
         self.assertTrue(g._ble_scan_only)
         self.assertFalse(g._esp_stop_waiting)
-        self.assertEqual([c.args[0] for c in connection.send_command.call_args_list], ['stop', 'scan_bt'])
+        self.assertEqual([c.args[0] for c in connection.send_command.call_args_list], ['stop', 'version', 'scan_bt'])
 
     def test_direct_start_cannot_bypass_new_reconnect_stop_barrier(self):
         g, connection = self.reconnect_game()
         self.assertFalse(g._start_scan_cmd('scan_networks', 'wifi_scan', 'WiFi'))
-        connection.send_command.assert_called_once_with('stop')
+        self.assertEqual([c.args[0] for c in connection.send_command.call_args_list], ['stop', 'version'])
+        self.assertEqual(g._fw_version, '')
+        self.assertEqual(g._fw_generation, 11)
+        self.assertEqual(g._fw_remote_version, '')
+        self.assertFalse(g._fw_update_available)
         self.assertFalse(g._anything_running_on_esp())
         self.assertFalse(any(m.startswith('[START]') for m in messages(g)))
         g._handle_esp_operation_state('all operations stopped.')
         PX.frame_count = 115
         g._dispatch_pending_esp_command()
         self.assertTrue(g._start_scan_cmd('scan_networks', 'wifi_scan', 'WiFi'))
-        self.assertEqual([c.args[0] for c in connection.send_command.call_args_list], ['stop', 'scan_networks'])
+        self.assertEqual([c.args[0] for c in connection.send_command.call_args_list], ['stop', 'version', 'scan_networks'])
 
     def test_reconnect_stop_is_not_written_twice_by_outer_stop_request(self):
         g, connection = self.reconnect_game()
         self.assertTrue(g._request_esp_stop())
         self.assertTrue(g._esp_stop_waiting)
-        connection.send_command.assert_called_once_with('stop')
+        self.assertEqual([c.args[0] for c in connection.send_command.call_args_list], ['stop', 'version'])
+        self.assertEqual(g._fw_version, '')
+        self.assertEqual(g._fw_generation, 11)
+        self.assertEqual(g._fw_remote_version, '')
+        self.assertFalse(g._fw_update_available)
 
     def test_failed_reconnect_handshake_closes_port_and_reports_no_connection(self):
         g, connection = self.reconnect_game(success=False)

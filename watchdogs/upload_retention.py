@@ -205,7 +205,7 @@ class UploadedLogRetention:
                 return True
             return self._persist(days, copy.deepcopy(self._proofs))
 
-    def record_many(self, files, *, scope, receipt_key, receipt_digest):
+    def record_many(self, files, *, scope, receipt_key, receipt_digest, confirmed_at=None):
         """Record files already covered by a complete, durable caller ACK."""
         if (not isinstance(files, (list, tuple)) or not _hex(scope)
                 or not _hex(receipt_key) or not _hex(receipt_digest)):
@@ -220,6 +220,9 @@ class UploadedLogRetention:
             now = self._clock()
             if not _epoch(now):
                 return False
+            stamp = now if confirmed_at is None else confirmed_at
+            if not _epoch(stamp) or stamp > now:
+                return False
         except Exception:
             return False
         with self._lock:
@@ -232,12 +235,13 @@ class UploadedLogRetention:
             for item in items:
                 key = _identity(item)
                 previous = updated.get(key)
-                confirmed_at = (previous["confirmed_at"] if previous is not None
-                    and previous["digest"] == item["digest"] and previous["scope"] == scope
-                    else now)
+                first = stamp
+                if previous is not None and previous["digest"] == item["digest"] and previous["scope"] == scope:
+                    first = (previous["confirmed_at"] if confirmed_at is None
+                             else min(previous["confirmed_at"], stamp))
                 updated[key] = dict(item, scope=scope, receipt_key=receipt_key,
                                     receipt_digest=receipt_digest,
-                                    confirmed_at=confirmed_at)
+                                    confirmed_at=first)
             if updated == self._proofs:
                 return True
             return self._persist(self._days, updated)

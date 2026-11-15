@@ -22,14 +22,14 @@ ROOT=Path(__file__).resolve().parents[1]
 SOURCE=ROOT/'watchdogs/app.py'
 TREE=ast.parse(SOURCE.read_text(encoding='utf8'))
 GAME=next(n for n in TREE.body if isinstance(n,ast.ClassDef) and n.name=='WatchDogsGame')
-METHODS={'_run_flash','_start_flash_esp32','_update_flash_screen','_poll_serial',
+METHODS={'_run_flash','_start_flash_esp32','_update_flash_screen','_draw_flash_screen','_poll_serial',
          '_try_reconnect_esp32','_send','_handle_serial_line','_toggle_usb','_check_fw_update'}
 METHODS.update(n.name for n in GAME.body if isinstance(n,ast.FunctionDef) and n.name.startswith('_flash'))
 TABLES={}
 for node in ast.parse((ROOT/'watchdogs/config.py').read_text(encoding='utf8')).body:
     if isinstance(node,ast.Assign):
         for target in node.targets:
-            if isinstance(target,ast.Name) and target.id in {'FLASH_BOARDS','FIRMWARE_RELEASE_URL'}:
+            if isinstance(target,ast.Name) and target.id in {'FLASH_BOARDS','FIRMWARE_RELEASE_URL','UPSTREAM_FIRMWARE_ENABLED'}:
                 TABLES[target.id]=ast.literal_eval(node.value)
 GAME_PYTHON='/game/.venv/bin/python3'
 
@@ -57,8 +57,9 @@ class FakeSerial:
 
 class FlashEnvironment:
     """Run production methods, never a physical device or an external request."""
-    def __init__(self,probe_results=None,aio=True):
+    def __init__(self,probe_results=None,aio=True,allow_upstream=True):
         from watchdogs import esp32_flash as helper
+        from watchdogs import kg_firmware as kg
         self.helper=helper
         self.temporary=tempfile.TemporaryDirectory(prefix='wdg-flash-test-')
         self.root=Path(self.temporary.name)
@@ -69,14 +70,63 @@ class FlashEnvironment:
         self.power_result=True;self.flash_code=0;self.during_flash=None;self.process=None
         self.now=100.;self.detect_port='/dev/ttyACM1';self.port_exists={}
         self.firmware_entries=None;self.reverse_assets=False;self.download_error=None;self.during_download=None;self.buttons=set()
+        self.kg_calls=[];self.kg_fetch_error=self.kg_bind_error=self.kg_preflight_error=None
+        self.kg_verify_error=None;self.kg_verify_calls=0;self.kg_verify_error_after=1
+        self.during_kg_fetch=self.during_kg_preflight=None
+        self.kg_package=SimpleNamespace(version='1.7.0',image_name='janos-1.7.0-solo-xiao-c5-app.bin')
+        self.kg_identity=object();self.kg_bound_missing=False
+        self.kg_bound_error=None;self.kg_bound_port=None
+        self.recovery_commands=[];self.recovery_error=None;self.recovery_code=0;self.during_recovery=None
+        def kg_fetch():
+            self.kg_calls.append(('metadata',))
+            if self.during_kg_fetch:self.during_kg_fetch(self.game)
+            if self.kg_fetch_error:raise self.kg_fetch_error
+            return self.kg_package
+        def kg_download(package,path):
+            self.kg_calls.append(('download',package.version))
+            if self.download_error:raise self.download_error
+            Path(path).write_bytes(b'KG SYNTHETIC IMAGE; NEVER PHYSICAL FIRMWARE')
+            return Path(path)
+        def kg_verify(package,path):
+            self.kg_calls.append(('verify',package.version));self.kg_verify_calls+=1
+            if self.kg_verify_error and self.kg_verify_calls>=self.kg_verify_error_after:raise self.kg_verify_error
+        def kg_bind(port):
+            self.kg_calls.append(('bind',port))
+            if self.kg_bind_error:raise self.kg_bind_error
+            return self.kg_identity
+        def kg_bound(identity):
+            self.kg_calls.append(('bound-port',))
+            if identity is not self.kg_identity:raise AssertionError('Wrong synthetic bound identity')
+            if self.kg_bound_error:raise self.kg_bound_error
+            return None if self.kg_bound_missing else self.kg_bound_port or self.detect_port
+        def kg_preflight(package,image,python,port,attempt,**kwargs):
+            self.kg_calls.append(('preflight',port,kwargs.get('board')))
+            if self.during_kg_preflight:self.during_kg_preflight(self.game)
+            if self.kg_preflight_error:
+                child=getattr(self.kg_preflight_error,'process',None)
+                if child is not None and kwargs.get('on_process'):kwargs['on_process'](child)
+                raise self.kg_preflight_error
+        self.kg_helpers=SimpleNamespace(fetch_latest_package=kg_fetch,download_image=kg_download,
+            verify_image=kg_verify,version_tuple=kg.version_tuple,bind_usb_identity=kg_bind,
+            find_bound_port=kg_bound,preflight_device=kg_preflight,KGFirmwareError=kg.KGFirmwareError)
+        # Old flash safety mechanisms remain covered with an explicitly
+        # synthetic enabled channel. Production defaults never enable this.
+        settings=dict(TABLES)
+        if allow_upstream:
+            settings.update(UPSTREAM_FIRMWARE_ENABLED=True,
+                            FIRMWARE_RELEASE_URL='https://example.invalid/synthetic-firmware-release')
+        self.config=SimpleNamespace(**settings)
+        self.draw_calls=[]
         owner=self
         class FakeThread:
             def __init__(self,target,args=(),kwargs=None,daemon=False,**unused):
-                self.target,self.args,self.kwargs=target,args,kwargs or {};owner.threads.append(self)
+                self.target,self.args,self.kwargs,self.daemon=target,args,kwargs or {},daemon;owner.threads.append(self)
             def start(self):owner.events.append(('thread-start',))
         self.fake_time=SimpleNamespace(time=lambda:self.now,monotonic=lambda:self.now,sleep=self.sleep)
-        self.px=SimpleNamespace(frame_count=90,KEY_UP=1,KEY_DOWN=2,KEY_RETURN=3,KEY_ESCAPE=4)
+        self.px=SimpleNamespace(frame_count=90,KEY_UP=1,KEY_DOWN=2,KEY_RETURN=3,KEY_ESCAPE=4,KEY_R=5)
         self.px.btnp=lambda key:key in self.buttons
+        for name in ('rect','rectb','line','text'):
+            setattr(self.px,name,lambda *args,_name=name:self.draw_calls.append((_name,args)))
         fake_threading=SimpleNamespace(Thread=FakeThread,Lock=threading.Lock,RLock=threading.RLock,
                                        get_ident=threading.get_ident)
         def path(value,*rest):
@@ -88,21 +138,21 @@ class FlashEnvironment:
             kwargs['run']=self.run;return helper.check_esptool(executable,**kwargs)
         self.helpers=SimpleNamespace(**{key:getattr(helper,key) for key in dir(helper) if not key.startswith('__')})
         self.helpers.check_esptool=check_tool;self.helpers.run_esptool=self.fake_flash_process
-        modules={'config':SimpleNamespace(**TABLES),'esp32_flash':self.helpers,
+        modules={'config':self.config,'esp32_flash':self.helpers,'kg_firmware':self.kg_helpers,
                  'json':json,'zipfile':zipfile,'subprocess':SimpleNamespace(run=self.run,Popen=self.forbidden_popen,
                      PIPE=subprocess.PIPE,STDOUT=subprocess.STDOUT,DEVNULL=subprocess.DEVNULL,TimeoutExpired=subprocess.TimeoutExpired),
                  'tempfile':tempfile,'shutil':shutil,'threading':fake_threading,'time':self.fake_time,'re':re,'queue':queue,
                  'os':os,'logging':logging,'urllib.request':SimpleNamespace(Request=Request,urlopen=self.urlopen),
                  'pathlib':SimpleNamespace(Path=path)}
         def fake_import(name,globals=None,locals=None,fromlist=(),level=0):
-            if name not in modules or (level and name not in ('config','esp32_flash')):
+            if name not in modules or (level and name not in ('config','esp32_flash','kg_firmware')):
                 raise AssertionError('Unexpected flash method import: '+name)
             return modules[name]
         env=dict(__name__='flash_harness',__package__='flash_harness',
                  __builtins__=dict(vars(builtins),__import__=fake_import),sys=SimpleNamespace(executable=GAME_PYTHON),
                  time=self.fake_time,threading=fake_threading,pyxel=self.px,re=re,logging=logging,queue=queue,
                  detect_esp32_port=self.detect,SerialManager=lambda port:FakeSerial(self,port),
-                 C_ERROR=1,C_DIM=2,C_WARNING=3,C_SUCCESS=4,C_TEXT=5)
+                 C_ERROR=1,C_DIM=2,C_WARNING=3,C_SUCCESS=4,C_TEXT=5,C_COAST=6,C_HACK_CYAN=7,W=640,H=360)
         node=ast.ClassDef(name='GameHarness',bases=[],keywords=[],decorator_list=[],
                           body=[copy.deepcopy(n) for n in GAME.body if isinstance(n,ast.FunctionDef) and n.name in METHODS])
         exec(compile(ast.fix_missing_locations(ast.Module(body=[node],type_ignores=[])),str(SOURCE),'exec'),env)
@@ -128,6 +178,17 @@ class FlashEnvironment:
         return SimpleNamespace(returncode=outcome,stdout='esptool v5.4.0\n5.4.0\n' if outcome==0 else '',stderr='No module named esptool' if outcome else '')
     def forbidden_popen(self,*args,**kwargs):raise AssertionError('An actual flash subprocess is forbidden in app tests')
     def fake_flash_process(self,command,on_line,*,on_process=None,**kwargs):
+        if 'write-flash' not in command:
+            if command[-1]!='get-security-info':raise AssertionError('Unexpected non-writing recovery command')
+            self.events.append(('recovery',tuple(command)));self.recovery_commands.append((command,kwargs))
+            self.process=FakeProcess(self)
+            if on_process:on_process(self.process)
+            if self.during_recovery:self.during_recovery(self.game)
+            on_line('Synthetic read-only old-application reset')
+            self.process.returncode=self.recovery_code
+            if self.recovery_error:raise self.recovery_error
+            if self.recovery_code:raise self.helper.FlashError('Synthetic recovery exited with code '+str(self.recovery_code))
+            return
         self.events.append(('flash',tuple(command)));self.flash_commands.append((command,kwargs));self.process=FakeProcess(self)
         if on_process:on_process(self.process)
         if self.during_flash:self.during_flash(self.game)
@@ -138,7 +199,7 @@ class FlashEnvironment:
         url=getattr(request,'full_url',getattr(request,'url',str(request)));self.events.append(('download',url))
         if self.download_error:raise self.download_error
         if self.during_download:self.during_download(url)
-        if url==TABLES['FIRMWARE_RELEASE_URL']:
+        if url==self.config.FIRMWARE_RELEASE_URL:
             assets=[{'name':'projectZerobyLOCOSP-1.7.0.zip','browser_download_url':'https://example.invalid/wroom.zip'},
                     {'name':'projectZerobyLOCOSP-xiao-1.7.0.zip','browser_download_url':'https://example.invalid/xiao.zip'}]
             return io.BytesIO(json.dumps({'tag_name':'v1.7.0','assets':assets[::-1] if self.reverse_assets else assets}).encode())

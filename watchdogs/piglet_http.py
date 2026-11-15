@@ -16,6 +16,8 @@ MAX_JSON = 16384
 MAX_REPLY = 8192
 PEER_ACTIVITY_SECONDS = 30.0
 MAX_PEER_SESSIONS = 16
+DEVICE_TYPES = ("piglet-kg", "dark3d-c5")
+_LEGACY_PIGLET = re.compile(r"piglet-[0-9a-f]{12}\Z")
 _HEX32 = re.compile(r"[0-9a-f]{32}\Z")
 _HEX64 = re.compile(r"[0-9a-f]{64}\Z")
 
@@ -297,16 +299,21 @@ class _Handler(BaseHTTPRequestHandler):
             store = owner.store
             callback = None
             activity_session = activity_device = None
+            activity_type = None
             if (self.command, path) == ("GET", "/pc/v1/hello"):
                 self._keys(query, ())
                 if self._body(0, allow_empty=True):
                     raise CollectionError("GET body is not supported")
                 result = dict(protocol=1, collector_id=store.collector_id, max_chunk=MAX_CHUNK,
-                              source_items=1)
+                              source_items=1, device_types=list(DEVICE_TYPES))
             elif (self.command, path) == ("POST", "/pc/v1/begin"):
                 self._keys(query, ())
                 body = self._json()
-                self._keys(body, ("device_id", "pending_files"), ("source_items",))
+                self._keys(body, ("device_id", "pending_files"), ("source_items", "device_type"))
+                if "device_type" in body:
+                    if not isinstance(body["device_type"], str) or body["device_type"] not in DEVICE_TYPES:
+                        raise CollectionError("Unsupported Collection device type")
+                    activity_type = body["device_type"]
                 if "source_items" in body:
                     if type(body["source_items"]) is not int or body["source_items"] != 1:
                         raise CollectionError("Unsupported Collection source-item metadata")
@@ -364,8 +371,9 @@ class _Handler(BaseHTTPRequestHandler):
                 try:
                     activity = getattr(owner, "_record_activity", None)
                     if callable(activity):
+                        metadata = {"device_type": activity_type} if activity_type is not None else {}
                         activity(activity_session, activity_device,
-                                 finished=path == "/pc/v1/finish" and result.get("finished") is True)
+                                 finished=path == "/pc/v1/finish" and result.get("finished") is True, **metadata)
                 except Exception:
                     # Optional telemetry cannot change an already flushed reply.
                     pass
@@ -421,14 +429,16 @@ class PigletHTTPService:
         self._lock = threading.RLock()
         self._peer_lock = threading.Lock()
         self._peers = {}
+        self._peer_types = {}
         self._activity_clock = time.monotonic
 
     def _prune_peers(self, now):
         for session, (_, touched) in tuple(self._peers.items()):
             if now - touched >= PEER_ACTIVITY_SECONDS:
                 self._peers.pop(session, None)
+                self._peer_types.pop(session, None)
 
-    def _record_activity(self, session_id, device_id=None, *, finished=False):
+    def _record_activity(self, session_id, device_id=None, *, finished=False, device_type=None):
         """Track verified successful RPCs only; never write transfer metadata.
 
         A reconnect can poll an already durable session after this service has
@@ -439,11 +449,19 @@ class PigletHTTPService:
             server = self._server
             if server is None or server.stopping.is_set() or not _HEX32.fullmatch(session_id):
                 return
+            if device_type is not None and device_type not in DEVICE_TYPES:
+                return
             with self._peer_lock:
                 self._prune_peers(self._activity_clock())
                 cached = self._peers.get(session_id)
+                cached_type = self._peer_types.get(session_id)
             if cached is not None:
                 device_id = cached[0]
+                # A fast validated poll may arrive after begin's reply flush
+                # but before its activity callback. Let that begin supply the
+                # missing declaration; an established type remains unchanged.
+                if device_type is None or cached_type is not None:
+                    device_type = cached_type
             elif device_id is None:
                 if not self.store._lock.acquire(blocking=False):
                     return
@@ -453,6 +471,8 @@ class PigletHTTPService:
                     self.store._lock.release()
             if not isinstance(device_id,str) or not re.fullmatch(r"[A-Za-z0-9_-]{12,64}",device_id):
                 return
+            if device_type is None and _LEGACY_PIGLET.fullmatch(device_id):
+                device_type = "piglet-kg"
             with self._peer_lock:
                 if server.stopping.is_set():
                     return
@@ -462,11 +482,16 @@ class PigletHTTPService:
                     for key,(device,_) in tuple(self._peers.items()):
                         if device == device_id:
                             self._peers.pop(key,None)
+                            self._peer_types.pop(key,None)
                     return
                 if session_id not in self._peers and len(self._peers) >= MAX_PEER_SESSIONS:
                     oldest = min(self._peers, key=lambda key:self._peers[key][1])
                     self._peers.pop(oldest)
+                    self._peer_types.pop(oldest,None)
+                if self._peer_types.get(session_id) is not None:
+                    device_type = self._peer_types[session_id]
                 self._peers[session_id] = (device_id,now)
+                self._peer_types[session_id] = device_type
         except Exception:
             # Activity is optional presentation metadata, not an import receipt.
             return
@@ -479,6 +504,18 @@ class PigletHTTPService:
         with self._peer_lock:
             self._prune_peers(self._activity_clock())
             return sorted({device for device,_ in self._peers.values()})
+
+    def connected_peers(self):
+        """Recent validated peers; C5 types require an explicit authenticated declaration."""
+        server, thread = self._server, self._thread
+        if server is None or thread is None or not thread.is_alive() or server.stopping.is_set():
+            return []
+        with self._peer_lock:
+            self._prune_peers(self._activity_clock())
+            peers = {}
+            for session,(device,_) in sorted(self._peers.items(), key=lambda item:item[1][1]):
+                peers[device] = dict(device_id=device,device_type=self._peer_types.get(session))
+            return [peers[device] for device in sorted(peers)]
 
     @property
     def address(self):
@@ -499,6 +536,7 @@ class PigletHTTPService:
             server = _LocalServer((self.ap_address, self.port), _Handler, self)
             with self._peer_lock:
                 self._peers.clear()
+                self._peer_types.clear()
             thread = threading.Thread(target=server.serve_forever, kwargs={"poll_interval": .05},
                                       name="piglet-http", daemon=True)
             self._server, self._thread = server, thread
@@ -513,6 +551,9 @@ class PigletHTTPService:
     def stop(self, timeout=3.0):
         with self._lock:
             if self._server is None:
+                with self._peer_lock:
+                    self._peers.clear()
+                    self._peer_types.clear()
                 return True
             server, thread = self._server, self._thread
             if threading.current_thread() in server._workers:
@@ -521,6 +562,7 @@ class PigletHTTPService:
             server.stopping.set()
             with self._peer_lock:
                 self._peers.clear()
+                self._peer_types.clear()
             server.disconnect_clients()
             server.shutdown()
             thread.join(timeout=max(0, timeout - (time.monotonic() - started)))

@@ -1,6 +1,6 @@
 # 📡 JanOS WARDRIVING SOLO — XIAO ESP32-C5
 
-This is the compatible **JanOS 1.7.0 + SOLO** extension for **WDGWars GO 0.9.20**.
+This is the compatible **JanOS 1.7.0 + SOLO** extension for **WDGWars GO 0.9.20 and the 0.9.21 source candidate**.
 Original JanOS/projectZero by **LOCOSP**. SOLO preserves the existing firmware
 commands and adds the confirmed `wardrive_solo` UART contract.
 
@@ -41,9 +41,13 @@ software bridge/PTY. WROOM and Linux/AC1200 SOLO are not validated by this image
 
 **Update Game updates game files; it does not flash the ESP32.** Stock JanOS
 without this extension leaves SOLO unavailable with an explanatory message.
-The existing ESP32 FLASH wizard downloads stock upstream JanOS; it does not
-install this SOLO application and can replace the extension. Do not use its
-stock three-image procedure for this app-only package.
+In 0.9.21, **SYSTEM → Firmware KG/SOLO** checks the own-fork manifest, with **R**
+to refresh and **Enter** to begin a separately confirmed compatible manual
+installation/reinstall. Checks never flash automatically or fall back to stock
+JanOS/Piglet. **Esc** closes the panel without cancelling an active installation.
+The client is covered by Cloud software checks; its new physical flash/recovery
+route remains NOT VERIFIED. The 0.9.20 stock-wizard warning is historical; never
+apply a stock three-image procedure to this app-only package.
 
 ## 🛠️ Installation and recovery boundaries
 

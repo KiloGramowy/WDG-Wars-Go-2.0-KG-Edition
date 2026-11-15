@@ -1,6 +1,8 @@
 """Delayed HTTP responses cannot update a game after Sync starts unloading."""
 import io
 import json
+from pathlib import Path
+import tempfile
 import threading
 import time
 from types import SimpleNamespace
@@ -16,6 +18,9 @@ class SyncShutdownLifecycleTests(unittest.TestCase):
             self.plugin = WardriveUpload()
         self.plugin._api_url = "https://example.invalid/api/upload/"
         self.plugin._api_key = "synthetic-shutdown-test-key"
+        self.temp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temp.cleanup)
+        self.plugin._state_file = lambda: Path(self.temp.name) / "state.json"
         self.app = SimpleNamespace(_shutting_down=False, _term_add=Mock(), msg=Mock(),
                                    _badges=set(), _earn_badge=Mock(),
                                    _mc_node_name="WatchDogs_synthetic", _mc_channels_list=[])

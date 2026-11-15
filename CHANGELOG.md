@@ -1,15 +1,13 @@
-# 0.9.20 — Go SOLO. Send the pig. Keep the loot. 📡🐷
+# 0.9.21 — GPS-following map and WDGWars portal integration
 
-❌ **Before:** wardriving relied on SNIFF, with no paired Piglet CSV workflow.
-✅ **Now:** WARDRIVING SOLO profiles and Piglet KG Collection lead this release,
-with map/CSV reuse, background Sync preparation, safer large uploads, durable saves,
-flash preparation, uploaded-log Auto-clean, startup/shutdown and UI corrections.
-Existing reward rules remain unchanged. Game updates do not flash ESP32 firmware.
+- Release 0.9.21 builds on the public 0.9.20 baseline; numeric runtime 0.9.21 is compatible with the existing updater parser. Public OTA and firmware stay unchanged.
+- Include the existing opt-in Auto Map + Turf implementation and LOCOSP portal API/approved upload metadata integration prepared for 0.9.21.
+- Use the existing fresh measured GPS sampler for automatic download neighborhoods and the current-territory hint; manual map panning or an old display fix cannot supply a network position.
+- Tolerate non-object automatic-map settings and normalize/validate disk cache numbers and cells before scheduling or rendering. Reading an invalid cache does not delete it.
+- Fix the offline downloader regression so it executes the real downloader, and include automatic-map polling in the updater UI harness.
+- Preserve inherited SOLO, Piglet, GPS/backfill, XP, saved data, upload receipts, settings and firmware. See [current validation](docs/ota-0.9.21/PREPUBLICATION_CHECKLIST.md) and [release scope](docs/ota-0.9.21/CHANGELOG_AND_UPDATE_GUIDE.md). Device installation and authenticated live territory compatibility remain unconfirmed.
 
-Read the [canonical full release notes](docs/RELEASE_0.9.20.md),
-[SOLO firmware guide](firmware/wardriving-solo/README.md) and
-[Piglet installation guide](docs/PIGLET_COLLECTION_INSTALL.md) for exact timings,
-controls, hardware compatibility and validation limits.
+---
 
 # 0.9.19.1 — gradual ADS-B and mesh map expiry after stopping reception
 
@@ -83,7 +81,7 @@ minor versions.
   `origin/<branch>` and compares commits, so it works on any branch/repo and
   always matches what the updater actually pulls.
 
-## [0.9.13] — 2026-06-04
+## 0.9.13 — 2026-06-04
 
 Companion to 0.9.12 — handles the transient HTTP 413 the same user
 (dtmcnamara) saw on the larger of two sessions during a sync. Now
@@ -134,7 +132,7 @@ limit.
 
 ---
 
-## [0.9.12] — 2026-06-04
+## 0.9.12 — 2026-06-04
 
 Bugfix for the **Captured Passwords** screen in `LOOT DATABASE`. A user
 reported the count and the list were inflated with every Evil Twin /
@@ -181,7 +179,7 @@ without touching anything on disk.
 
 ---
 
-## [0.9.11] — 2026-05-08
+## 0.9.11 — 2026-05-08
 
 Quality-of-life follow-up to 0.9.10. The Stadia Maps tile endpoint
 returns `HTTP 401 Unauthorized` for every request that doesn't carry
@@ -212,7 +210,7 @@ their download path is unchanged.
 
 ---
 
-## [0.9.10] — 2026-05-02
+## 0.9.10 — 2026-05-02
 
 Re-enabled offline map tile downloads, this time backed by Stadia Maps
 instead of the previously-disabled CartoDB Dark Matter source.
@@ -242,7 +240,7 @@ individually whether to opt in by adding their own free API key.
 
 ---
 
-## [0.9.9] — 2026-05-02
+## 0.9.9 — 2026-05-02
 
 Two community contributions cherry-picked from FusedStamen's fork —
 the rest of his branch (handshake architecture change, AWUS packet
@@ -310,7 +308,7 @@ PRs #4, #5 and #6 closed with cherry-pick reference.
 
 ---
 
-## [0.9.8] — 2026-04-26
+## 0.9.8 — 2026-04-26
 
 Surface the new `aircraft_already_seen` field that wdgwars.pl now
 returns alongside `aircraft_imported`. Companion to 0.9.6 — the server
@@ -351,7 +349,7 @@ addressed end-to-end.
 
 ---
 
-## [0.9.7] — 2026-04-26
+## 0.9.7 — 2026-04-26
 
 Accept any character device as a "serial port" so community PTY bridges
 work without patching the entry point.
@@ -393,7 +391,7 @@ auto-detect (which finds nothing).
 
 ---
 
-## [0.9.6] — 2026-04-24
+## 0.9.6 — 2026-04-24
 
 Hotfix for a data-loss bug in `plugins/wardrive_upload.py` reported by
 a US user running ADS-B overnight:
@@ -439,7 +437,7 @@ about it. Forwarded to the wdgwars admin separately.
 
 ---
 
-## [0.9.5] — 2026-04-24
+## 0.9.5 — 2026-04-24
 
 Runtime-selectable regional presets for the MeshCore radio. MeshCore
 upstream recently moved the default US/Canada preset from the legacy
@@ -496,7 +494,7 @@ from the in-game menu, without editing JSON by hand.
 
 ---
 
-## [0.9.4] — 2026-04-24
+## 0.9.4 — 2026-04-24
 
 Installer hardening after a user bug report: the Debian package
 `dump1090-mutability` that the installer pointed at has been an
@@ -554,7 +552,7 @@ falls back to `btmgmt public-addr` when it is missing.
 
 ---
 
-## [0.9.3] — 2026-04-21
+## 0.9.3 — 2026-04-21
 
 Hotfix for `wdgwars.pl` upload flow. The server now sits behind Cloudflare
 with Bot Fight Mode enabled, which drops HTTP requests carrying a generic
@@ -598,7 +596,7 @@ Done: 0/4 sessions
 
 ---
 
-## [0.9.2] — 2026-04-20
+## 0.9.2 — 2026-04-20
 
 Integration pass for the **LilyGO T-Watch Ultra** (PipBoy-3000 firmware).
 The watch firmware ≥ v0.4 hardened its BLE surface by requiring
@@ -666,7 +664,7 @@ makes the first-pair flow work end-to-end on the uConsole.
 
 ---
 
-## [0.9.1] — 2026-04-19
+## 0.9.1 — 2026-04-19
 
 Readability, performance and data-loss protection. No new gameplay.
 
@@ -877,7 +875,7 @@ points and the terminal is actively streaming.
 
 ---
 
-## [0.9.0] — 2026-04-12 (early access release)
+## 0.9.0 — 2026-04-12 (early access release)
 
 First public release. The core gameplay loop is complete and stable. Several
 advanced attacks are present in the menu but marked **(WIP)** because they
@@ -991,18 +989,3 @@ The major pre-release milestones were:
   WiGLE-compatible upload, badge system)
 - **Bruce Firmware integration** — pull request to upstream
   `BruceDevices/firmware` adding native upload to wdgwars.pl
-
-[0.9.13]: https://github.com/LOCOSP/WatchDogsGo/compare/v0.9.12...v0.9.13
-[0.9.12]: https://github.com/LOCOSP/WatchDogsGo/compare/v0.9.11...v0.9.12
-[0.9.11]: https://github.com/LOCOSP/WatchDogsGo/compare/v0.9.10...v0.9.11
-[0.9.10]: https://github.com/LOCOSP/WatchDogsGo/compare/v0.9.9...v0.9.10
-[0.9.9]: https://github.com/LOCOSP/WatchDogsGo/compare/v0.9.8...v0.9.9
-[0.9.8]: https://github.com/LOCOSP/WatchDogsGo/compare/v0.9.7...v0.9.8
-[0.9.7]: https://github.com/LOCOSP/WatchDogsGo/compare/v0.9.6...v0.9.7
-[0.9.6]: https://github.com/LOCOSP/WatchDogsGo/compare/v0.9.5...v0.9.6
-[0.9.5]: https://github.com/LOCOSP/WatchDogsGo/compare/v0.9.4...v0.9.5
-[0.9.4]: https://github.com/LOCOSP/WatchDogsGo/compare/v0.9.3...v0.9.4
-[0.9.3]: https://github.com/LOCOSP/WatchDogsGo/compare/v0.9.2...v0.9.3
-[0.9.2]: https://github.com/LOCOSP/WatchDogsGo/compare/v0.9.1...v0.9.2
-[0.9.1]: https://github.com/LOCOSP/WatchDogsGo/compare/v0.9.0...v0.9.1
-[0.9.0]: https://github.com/LOCOSP/WatchDogsGo/releases/tag/v0.9.0

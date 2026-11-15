@@ -133,7 +133,7 @@ class XpDurabilityTests(unittest.TestCase):
             _, raw = seed(root)
             with loot_at(root) as loot:
                 value = game(loot)
-                with patch("json.dump", side_effect=MemoryError("synthetic memory failure")), \
+                with patch("watchdogs.loot_manager.json.dumps", side_effect=MemoryError("synthetic memory failure")), \
                         self.assertLogs(level="WARNING"):
                     self.assertFalse(value._save_xp_if_dirty())
                 self.assertTrue(value._xp_dirty)

@@ -223,7 +223,7 @@ def _convert_tile_pil(png_bytes: bytes) -> bytes:
 
 def download_tiles(lat: float, lon: float, maps_dir: Path,
                    radius_km: float = 100.0,
-                   callback=None) -> dict:
+                   callback=None, *, stop_on_error=False) -> dict:
     """Download Stadia Maps Alidade Smooth Dark tiles around lat/lon.
 
     Uses tiered radii per zoom level to keep download size reasonable.
@@ -280,6 +280,11 @@ def download_tiles(lat: float, lon: float, maps_dir: Path,
             errors += 1
             if callback and errors <= 5:
                 callback(done / total * 100, f"ERR tile {z}/{tx}_{ty}: {e}")
+            if stop_on_error:
+                # Auto-download: an offline connection must not retry hundreds
+                # of independent HTTP timeouts. Keep already cached tiles and
+                # write the manifest; the next scheduled attempt fills gaps.
+                break
 
         done += 1
         if callback and done % 20 == 0:

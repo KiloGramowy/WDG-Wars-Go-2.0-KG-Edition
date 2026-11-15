@@ -96,11 +96,8 @@ WDGWars Chat and Monster RF retain their native initial CONNECTING labels while 
 
 Crops preserve the original pixels and layout. The compact chat detail and Monster panel trim unused blank space; they do not combine or rearrange UI regions. GPS/footer regions are excluded and no credentials appear in these views. Full raw captures, capture tooling and preservation records remain private; per-image source hashes and crop bounds are recorded in the supplementary manifest.
 
-## 0.9.20 native UI previews
+## Default downloaded street-basemap credits
 
-`wardriving-menu.png`, `wardriving-solo-profile.png` and `piglet-collection.png`
-come from the release candidate's real Pyxel drawing methods, executed on Linux
-in an isolated offscreen display. No game initializer, serial/radio/network/GPS,
-player history or pairing credentials were started or loaded. All radios are
-offline and Collection is stopped. These images illustrate the current controls;
-they are not evidence of physical reception. Existing accepted media remain.
+**Default street-basemap credits:** © [Stadia Maps](https://stadiamaps.com/attribution/) · © [OpenMapTiles](https://openmaptiles.org/) · © [OpenStreetMap contributors](https://www.openstreetmap.org/copyright).
+
+The game's existing default tile service is **Alidade Smooth Dark**. The two owner-supplied 0.9.21 illustrations retain their recorded provenance; these default-provider credits do not establish the source of their particular pixels. No image or video pixels were changed for this attribution correction.

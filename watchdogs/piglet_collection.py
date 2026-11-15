@@ -13,7 +13,8 @@ import threading
 import time
 import uuid
 
-from .piglet_csv import NATIVE_HEADER, PREAMBLE, native_row, piglet_records
+# Keep the store's existing parser hook while dispatching both source schemas.
+from .piglet_csv import NATIVE_HEADER, PREAMBLE, collection_records as piglet_records, native_row
 
 MAX_SIZE = 2 * 1024**3
 MAX_CHUNK = 16384
@@ -146,6 +147,10 @@ class PigletCollectionStore:
         columns = {row[1] for row in self._sql.execute("PRAGMA table_info(job_devices)")}
         if "expected_floor" not in columns:
             self._sql.execute("ALTER TABLE job_devices ADD COLUMN expected_floor INTEGER NOT NULL DEFAULT 0")
+        # Original names remain in the durable index. Existing Piglet archives
+        # keep their .csv paths; Dark3D sources are retained as raw .log files.
+        self._raw_suffixes = {row["sha"]: ".log" for row in self._sql.execute(
+            "SELECT sha,name FROM files") if row["name"].lower().endswith(".log")}
         self._sql.execute("UPDATE job_devices SET expected_floor=MAX(expected_floor,"
                           "COALESCE((SELECT MAX(expected) FROM sessions WHERE job=job_devices.job "
                           "AND device=job_devices.device),0))")
@@ -196,8 +201,9 @@ class PigletCollectionStore:
             raise CollectionError("File was not offered in this session", 404)
         return row
 
-    def _path(self, sha):
-        return self.raw / (sha + ".csv")
+    def _path(self, sha, *, name=None):
+        suffix = (".log" if name.lower().endswith(".log") else ".csv") if name is not None else self._raw_suffixes.get(sha, ".csv")
+        return self.raw / (sha + suffix)
 
     def begin(self, device_id, pending_files, *, source_items=0):
         if (not isinstance(device_id, str) or not re.fullmatch(r"[A-Za-z0-9_-]{12,64}", device_id)
@@ -234,10 +240,14 @@ class PigletCollectionStore:
     def offer(self, session_id, name, size, sha256, *, source_id=None):
         if (not isinstance(name, str) or not name or len(name.encode("utf-8")) > 255
                 or PurePosixPath(name).name != name or PureWindowsPath(name).name != name
-                or any(ord(c) < 32 for c in name) or not name.lower().endswith(".csv")
+                or any(ord(c) < 32 for c in name) or not name.lower().endswith((".csv", ".log"))
                 or type(size) is not int or not 0 <= size <= MAX_SIZE
                 or not isinstance(sha256, str) or not _SHA.fullmatch(sha256)):
             raise CollectionError("Invalid closed CSV offer")
+        # An empty Piglet CSV still has no valid preamble/header. Reject before
+        # digest-based receipt reuse can alias it to an accepted empty .log.
+        if size == 0 and not name.lower().endswith(".log"):
+            raise CollectionError("Empty Piglet CSV has no source header")
         with self._lock, self._sql:
             session = self._session(session_id)
             if session["source_items"]:
@@ -262,7 +272,7 @@ class PigletCollectionStore:
             if row is None:
                 if shutil.disk_usage(self.root).free < size + 1024 * 1024:
                     raise CollectionError("Not enough storage for this CSV; source kept", 507)
-                path = self._path(sha256)
+                path = self._path(sha256, name=name)
                 if path.exists():
                     # Creation/fsync may have succeeded just before the first
                     # index transaction failed. Only our own empty, independent
@@ -290,6 +300,10 @@ class PigletCollectionStore:
                 _fsync_directory(self.raw)
                 self._sql.execute("INSERT INTO files(sha,size,name,import_id,created,summary_complete,owner_job) VALUES(?,?,?,?,?,1,?)",
                                   (sha256, size, name, uuid.uuid4().hex, time.time(), session["job"]))
+                if name.lower().endswith(".log"):
+                    self._raw_suffixes[sha256] = ".log"
+                else:
+                    self._raw_suffixes.pop(sha256, None)
             elif row["size"] != size:
                 raise CollectionError("Digest was offered with a different size", 409)
             self._sql.execute("INSERT OR IGNORE INTO session_files VALUES(?,?,?)", (session_id, sha256, name))
@@ -762,10 +776,10 @@ class PigletCollectionStore:
             for record in piglet_records(self._path(sha)):
                 if self._stop.is_set():
                     raise InterruptedError()
-                writer.writerow(native_row(record))
+                fields = native_row(record)
+                writer.writerow(fields)
                 if record["protocol"] == "ble":
-                    fields = record["source_fields"]
-                    bt_writer.writerow((fields[3],record["mac"],fields[6],fields[1],False,False,fields[7],fields[8]))
+                    bt_writer.writerow((fields[3],record["mac"],fields[5],fields[1],False,False,fields[6],fields[7]))
                 count += 1
                 if count % 256 == 0:
                     with self._lock, self._sql:
@@ -779,8 +793,25 @@ class PigletCollectionStore:
                 stream.flush()
                 os.fsync(stream.fileno())
         with (stage / "collection_source.json").open("w", encoding="utf-8") as out:
-            json.dump(dict(protocol=1,sha256=sha,size=file["size"],name=file["name"],
-                raw_archive=str(self._path(sha)),import_id=file["import_id"],whole_source_rows=True,records=count),out)
+            source = dict(protocol=1,sha256=sha,size=file["size"],name=file["name"],
+                raw_archive=str(self._path(sha)),import_id=file["import_id"],whole_source_rows=True,records=count)
+            if self._path(sha).suffix == ".log":
+                # Preserve the source schema alongside normalized game exports.
+                # Raw bytes (including BOM/EOL and all original fields) stay in
+                # raw_archive. Protocol 1 supplies no filesystem timestamp.
+                if file["size"] == 0:
+                    source.update(source_preamble="", source_header=[], source_format="dark3d-empty-log")
+                else:
+                    with self._path(sha).open("r", encoding="utf-8-sig", errors="surrogateescape", newline="") as original:
+                        source["source_preamble"] = original.readline(16385).rstrip("\r\n")
+                        source["source_header"] = next(csv.reader(original, strict=True))
+                    source["source_format"] = "dark3d-wigle-1.4" if source["source_preamble"].startswith("WigleWifi-1.4,") else "piglet-wigle-1.6"
+                with self._lock:
+                    source["source_offers_at_import"] = [dict(device_id=row["device"], session_id=row["session"],
+                        name=row["name"], source_id=row["source_id"] if row["source_items"] else None)
+                        for row in self._sql.execute("SELECT ss.*,s.device,s.source_items FROM session_sources ss "
+                            "JOIN sessions s ON s.id=ss.session WHERE ss.sha=? ORDER BY ss.session,ss.source_id", (sha,))]
+            json.dump(source,out)
             out.flush()
             os.fsync(out.fileno())
         _fsync_directory(stage)

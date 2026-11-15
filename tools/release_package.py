@@ -37,6 +37,7 @@ REQUIRED_FILES = frozenset(("README.md", "LICENSE", "THIRD_PARTY_NOTICES.md",
 TOKEN_PATTERN = re.compile(r"\b(?:gh[pousr]_[A-Za-z0-9]{30,}|github_pat_[A-Za-z0-9_]{45,}|AKIA[A-Z0-9]{16})\b")
 KEY_PATTERN = re.compile(r"-----BEGIN (?:RSA |EC |OPENSSH |DSA )?PRIVATE KEY-----\s+[A-Za-z0-9+/=\r\n]{80,}-----END ")
 PRIVATE_PATH_PATTERN = re.compile(r"192\.168\.1\.133|/home/x/(?:auto-gps-|meshtastic-rx-|update-preview-)|C:[/\\]uConsole[/\\]2026[-/]")
+PRIVATE_PROJECT_PATTERN = re.compile(r"https?://chatgpt\.com/g/g-p-[^\s/)]+/c/", re.I)
 
 
 def digest(data):
@@ -128,6 +129,42 @@ def worktree(repo):
     return files, modes
 
 
+def source_profile(files, modes, profile_path):
+    """Select an explicit reviewed source tree without exporting private history.
+
+    Profiles may replace presentation documents, never omit or rewrite runtime,
+    assets, firmware or tests. Every selected byte still comes from the pinned
+    snapshot. The ordinary unprofiled validator remains strict.
+    """
+    safe_name(profile_path)
+    try:
+        profile = json.loads(files[profile_path])
+        entries = profile["entries"]
+        if type(profile.get("schema")) is not int or profile["schema"] != 1 or not isinstance(entries, dict):
+            raise ValueError
+    except (KeyError, ValueError, TypeError):
+        raise PackageError("Source profile is missing or malformed") from None
+    selected, selected_modes = {}, {}
+    for target, origin in entries.items():
+        safe_name(target)
+        safe_name(origin)
+        if origin not in files or target == "RELEASE_SOURCE.json":
+            raise PackageError("Source profile references a missing or reserved file: " + target)
+        if forbidden(origin) or forbidden(target):
+            raise PackageError("Source profile includes a forbidden artifact: " + target)
+        selected[target], selected_modes[target] = files[origin], modes[origin]
+    protected = REQUIRED_FILES - {"README.md"}
+    protected = protected | {name for name in files if name.startswith(
+        ("watchdogs/", "plugins/", "assets/", "firmware/", "tests/", "updates/"))}
+    protected = protected | {name for name in files if "/" not in name and (
+        name.endswith((".py", ".sh", ".desktop")) or name in
+        ("watchdogs-launcher", "secrets.conf.example", ".gitattributes", ".gitignore"))}
+    for name in sorted(protected):
+        if entries.get(name) != name:
+            raise PackageError("Source profile cannot omit or replace runtime, resources or tests: " + name)
+    return selected, selected_modes, entries
+
+
 def image_dimensions(data):
     if data.startswith(b"\x89PNG\r\n\x1a\n") and len(data) >= 24:
         return list(struct.unpack(">II", data[16:24]))
@@ -199,6 +236,8 @@ def validate(files):
         # Test fixtures intentionally contain private-looking sample addresses.
         if not name.startswith(("tests/", "tools/", "test_")) and PRIVATE_PATH_PATTERN.search(text):
             errors.append("Device-specific operational path requires review: " + name)
+        if not name.startswith(("tests/", "tools/", "test_")) and PRIVATE_PROJECT_PATTERN.search(text):
+            errors.append("Private project conversation link requires review: " + name)
         if not name.endswith(".md"):
             continue
         for target in links(text):
@@ -212,7 +251,10 @@ def validate(files):
                     external_links.add(target)
                 continue
             checked_links += 1
-            if resolved not in files:
+            # Git tracks files, not directory entries. A directory link is
+            # valid only when this exact snapshot contains a child below it.
+            if resolved not in files and not any(
+                    child.startswith(resolved.rstrip("/") + "/") for child in files):
                 errors.append("Broken local link: " + name + " -> " + target)
     main = "docs/media/media-manifest.json"
     coverage = set()
@@ -250,13 +292,18 @@ def validate(files):
         external_link_count=len(external_links), errors=sorted(set(errors)), warnings=warnings)
 
 
-def export(repo, ref, output):
+def export(repo, ref, output, profile_path=None):
     repo, output = repo.resolve(), output.resolve()
     if output.is_relative_to(repo):
         raise PackageError("Write the review archive outside the source checkout")
     if output.exists() or output.with_suffix(output.suffix + ".sha256").exists():
         raise PackageError("Refusing to overwrite an existing review archive or checksum")
     files, modes, commit, tree = snapshot(repo, ref)
+    origins = {name: name for name in files}
+    profile_sha256 = None
+    if profile_path is not None:
+        profile_sha256 = digest(files.get(profile_path, b""))
+        files, modes, origins = source_profile(files, modes, profile_path)
     if "RELEASE_SOURCE.json" in files:
         raise PackageError("Keep the generated RELEASE_SOURCE.json outside Git before exporting another snapshot")
     result = validate(files)
@@ -266,7 +313,8 @@ def export(repo, ref, output):
     prefix = "WatchDogsGo-" + commit[:12] + "/"
     provenance = dict(schema=1, source_commit=commit, source_tree=tree,
         source_history_included=False, private_review_artifact=True,
-        files=[dict(path=name, bytes=len(data), sha256=digest(data), git_mode=modes[name])
+        profile_sha256=profile_sha256,
+        files=[dict(path=name, source_path=origins[name], bytes=len(data), sha256=digest(data), git_mode=modes[name])
                for name, data in sorted(files.items())])
     entries = dict(files)
     entries["RELEASE_SOURCE.json"] = (json.dumps(provenance, indent=2, sort_keys=True) + "\n").encode()
@@ -301,19 +349,25 @@ def main():
     check = actions.add_parser("validate")
     check.add_argument("--ref", default="HEAD")
     check.add_argument("--worktree", action="store_true")
+    check.add_argument("--profile", help="Explicit reviewed source selection JSON in the snapshot")
     build = actions.add_parser("export")
     build.add_argument("--ref", required=True)
     build.add_argument("--output", type=Path, required=True)
+    build.add_argument("--profile", help="Explicit reviewed source selection JSON in the snapshot")
     args = parser.parse_args()
     try:
         if args.action == "export":
-            result = export(args.repo, args.ref, args.output)
+            result = export(args.repo, args.ref, args.output, args.profile)
         elif args.worktree:
-            files, _ = worktree(args.repo)
+            files, modes = worktree(args.repo)
+            if args.profile:
+                files, _, _ = source_profile(files, modes, args.profile)
             result = validate(files)
             result["source"] = "worktree, including uncommitted reviewed changes"
         else:
-            files, _, commit, tree = snapshot(args.repo, args.ref)
+            files, modes, commit, tree = snapshot(args.repo, args.ref)
+            if args.profile:
+                files, _, _ = source_profile(files, modes, args.profile)
             result = validate(files)
             result.update(source_commit=commit, source_tree=tree)
         print(json.dumps(result, indent=2))

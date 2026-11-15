@@ -27,7 +27,7 @@ def _profile(protocol, label, region, frequency, bw, sf, cr, source,
 
 PROFILES = {
     'sfnarrow': _profile('meshtastic','ES SFNarrow','EU_868',869618000,62500,7,5,ES_SOURCE,
-                         'public RF RX verified 2026-10-29; no coverage boundary'),
+                         'Public RF RX verified; not a coverage boundary'),
     'longfast': _profile('meshtastic','EU/UK LongFast','EU_868',869525000,250000,11,5,MT_SOURCE),
     'us_longfast': _profile('meshtastic','USA LongFast slot 20','US',906875000,250000,11,5,MT_SOURCE),
     'us_longturbo': _profile('meshtastic','USA LongTurbo slot 14','US',908750000,500000,11,8,MT_SOURCE),

@@ -1,4 +1,7 @@
-# Piglet Collection protocol 1
+# Wardriving Collection — protocol 1 (DEV)
+
+The current host menu is **WARDRIVING → Wardriving Collection**. Legacy protocol
+names, including `/pc/v1` and `X-Piglet-Session`, remain unchanged.
 
 This is a local, authenticated, resumable transfer of closed Piglet KG CSV files.
 An acknowledgement means a durable game import, not an upload to WDGWars or WiGLE.
@@ -22,7 +25,7 @@ The target is concurrent STA and virtual AP on the existing uConsole Wi-Fi PHY.
 The AP must use the STA channel. No fallback may disconnect STA or switch to a
 different adapter without the owner's decision. Channel change or STA loss stops
 the owned AP/receiver and preserves unfinished files. Creating the virtual AP and
-NetworkManager connection occurs only on explicit receiver START after preflight.
+NetworkManager connection requires a separately approved hardware deployment.
 
 The collector ID is a persistent random 32-character lowercase hexadecimal value.
 A device ID is a stable 12–64-character identifier, restricted to letters, digits,
@@ -33,14 +36,15 @@ integer, at most 2 GiB in protocol 1. Default maximum chunk is 16,384 bytes.
 ### Receiver readiness and recent peer activity
 
 **Hotspot: ACTIVE** identifies the running local AP/receiver. The separate peer
-label **ACTIVE PIGLET KG** requires a successful authenticated Collection request
-within the last **30 seconds**. With the receiver running but no recent qualifying
-request, show **WAITING FOR PIGLET KG**; when the receiver is inactive, show
+labels **PIGLET KG CONNECTED** and **C5 WARDRIVER CONNECTED** require successful
+authenticated Collection activity and validated peer metadata within the last
+**30 seconds**. With the receiver running but no recent qualifying
+request, show **WAITING FOR WARDRIVER**; when the receiver is inactive, show
 **NOT CONNECTED**. A lost peer ages out within 30 seconds. Pending CSV import work
-must never refresh or preserve the ACTIVE peer label.
+must never refresh or preserve the CONNECTED peer label.
 
-This is a runtime activity registry based on existing requests. It introduces no
-new wire messages, heartbeat command or player-database write, and does not assert
+This is a bounded runtime activity registry based on existing requests. It introduces no
+new endpoint, heartbeat command or player-database write, and does not assert
 that a TCP connection or radio association is still alive.
 
 ## Requests
@@ -51,7 +55,7 @@ Unknown IDs, invalid state, bad digest or bad offset never acknowledge a file.
 
 ### GET /pc/v1/hello
 
-Reply 200: `{"protocol":1,"collector_id":"<32hex>","max_chunk":16384,"source_items":1}`.
+Reply 200: `{"protocol":1,"collector_id":"<32hex>","max_chunk":16384,"source_items":1,"device_types":["piglet-kg","dark3d-c5"]}`.
 `source_items:1` advertises the optional source-path accounting extension below.
 It does not change protocol 1 or the PC1 receipt signature.
 
@@ -60,6 +64,17 @@ It does not change protocol 1 or the PC1 receipt signature.
 Body: `{"device_id":"<id>","pending_files":3}`.
 Reply: `{"protocol":1,"collector_id":"<32hex>","session_id":"<32hex>"}`.
 This is a connection/batch session, not a game loot session.
+
+When hello advertises `device_types`, a new sender may add the optional
+`"device_type":"dark3d-c5"` or `"device_type":"piglet-kg"` to begin. Other values
+are rejected before a transfer session is created. This authenticated declaration
+is presentation metadata, not hardware attestation, and does not alter PC1 receipts.
+Legacy begin remains accepted with its original store/callback signature. The
+existing Piglet firmware's exact lowercase `piglet-<12hex>` identity is recognized
+after successful authenticated begin/session lookup; other undeclared senders
+remain unknown. A C5 type is never guessed from an arbitrary device-name prefix.
+Type metadata is volatile and expires with the existing activity registry; a C5
+reconnecting after receiver restart should declare its type in a new begin.
 
 After a supporting hello, the sender adds `"source_items":1` to begin. The
 collector echoes `"source_items":1`; without that echo the sender retains its
@@ -70,6 +85,9 @@ inventory. Each must be offered in the new session.
 ### POST /pc/v1/file
 
 Body: `{"sha256":"<64hex>","size":12345,"name":"scan.csv"}`.
+The 0.9.21 receiver also accepts a basename ending in `.log`; file contents select
+the strict WiGLE 1.4 eleven-column Dark3D or 1.6 fourteen-column Piglet parser.
+Names and source upload markers do not constitute Collection acknowledgement.
 Reply includes `sha256`, `size`, `offset`, and `state`:
 `receiving`, `processing`, `committed` or `error`. A committed file additionally
 returns its durable `receipt`. A previously committed digest must return that
@@ -227,17 +245,9 @@ unavailable receiver ends this attempt without waiting indefinitely.
 After Collection (success or failure), release its STA connection, then execute
 the original boot sequence: home Wi-Fi, fallback AP at `192.168.4.1`, a full
 60-second AP budget, and the existing rolling five-minute **Stay** extension.
-For standalone UConsole Piglet, this same full WebUI deadline also applies when
-home STA connects. When the deadline ends, disconnect STA and enter the existing
-scan flow, even with autoStartAfterUpload=false. Deliberate pauses, SD errors and
-saved ESP-NOW Core/Node boot behavior retain their existing rules. Normal Piglet
-retains its original startup, autoStartAfterUpload and upload behavior. No new
-PAUSE gesture, WebUI activation method or concurrent Piglet AP/Collection is added.
-
-UConsole mode refuses direct external CSV uploads before connection/send,
-including startup and manual WebUI routes. Existing external-service credentials
-remain stored for Normal mode. A missing collector does not permit an external
-upload or an automatic mode switch.
+Original scan eligibility and configured ESP-NOW Core/Node boot behavior remain.
+An existing home STA connection still pauses scanning as before. No new PAUSE
+gesture, WebUI activation method or concurrent Piglet AP/Collection is added.
 
 Transfer closed CSV from both `/logs` and `/uploaded`, excluding the current log,
 startup GPS pending data and non-observation files. The first UConsole-mode
@@ -253,26 +263,36 @@ paths until their exact content has a valid Collection ACK. Once acknowledged,
 does not move again. Existing configured retention then applies, without a second
 cleanup system or changing its settings. Normal-mode retention/upload behavior
 remains unchanged. Hash and transmit with bounded buffers, regular GPS draining
-and yield. Secure the available source archive and configuration before migration.
-Individual WebUI CSV downloads are not a complete SD image; record anything the
-running firmware does not expose rather than claiming a complete backup.
+and yield. Secure the available source archive and configuration before migration;
+the recorded physical procedure distinguishes verified CSV copies from a complete
+SD image, whose prerequisite was separately waived by the owner.
 Preserve all original scan schedules, GPS/cache/backfill and deduplication rules.
 Resume network failures from the receiver's durable offset with bounded retry;
 on failure retain data and continue into the original boot sequence. Do not follow
 redirects or turn a Collection ACK into a WDGWars/WiGLE upload marker. No new
 WiGLE integration, automatic external uploader or retention policy is introduced
-on uConsole by Collection. Imports remain in the existing manual upload queue.
+on the uConsole by this task. Imports remain in the existing manual upload queue.
 
-## Compatibility and validation limits
+## Observed single-Piglet checkpoint — 8 November 2026
 
-This release is validated with **one physical Piglet**. The present device-ID
-construction is not verified as collision-safe across several C5 Piglets;
-multiple physical Piglets remain unsupported pending correction and independent
-verification. The protocol's device/session fields do not themselves establish
-multi-device firmware compatibility.
+The physical job completed **18 announced source items / 12 distinct raw
+contents**, covering all **13 original backed-up source paths** and later aliases
+or empty headers. It imported **245,018 observations** (**230,644 Wi-Fi /
+14,374 BLE**), produced **11 nonempty native upload sessions** and ended with
+**zero unfinished files**. All raw hashes, stored fourteen-column source fields,
+GPS and native-export values matched the archive, including **101 unknown dates**
+and **three raw-byte radio names**. Controlled interruption/resumption retained
+previously paid work; there were no exact source-record duplicates. Base rewards
+were **739,938 XP**, with **26,147 new Wi-Fi / 14,318 new BLE identities**.
 
-The [installation guide](PIGLET_COLLECTION_INSTALL.md#-12-what-was-actually-verified)
-distinguishes compiled/mocked tests, physical delivery, no-collector handover and
-unverified fresh GPS/full-SD/power-loss/throughput cases. Software peer-label tests
-are not a fresh physical association/expiry measurement. See the
-[canonical release notes](RELEASE_0.9.20.md) for the public candidate results.
+Two additional empty-source IDs could not be independently mapped to captured
+pathnames; both have the verified **296-byte empty CSV** content digest. Do not
+invent names or confuse source aliases with repeated observation rewards.
+
+The maintained host now includes the whole-file importer and final peer-status
+labels, installed by normal game restart without another firmware flash. Recent
+authenticated activity and its 30-second expiry are software-tested; **a fresh
+physical connection/expiry cycle for these labels was not performed**. Forced
+power loss, fresh GPS acquisition, sustained throughput and multiple physical
+Piglets remain outside this confirmation. This is **0.9.20 DEV, unreleased**;
+the protocol record does not publish a firmware artifact or OTA update.

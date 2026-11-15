@@ -71,7 +71,7 @@ class WardriveSoloUI(unittest.TestCase):
         self.assertEqual([row[3] for row in cats["WARDRIVING"]],
                          ["solo_wifi", "solo_ble", "piglet_collection"])
         self.assertEqual(cats["WARDRIVING"][2],
-                         ("3", "Piglet Collection", "_piglet_collection", "piglet_collection", None))
+                         ("3", "Wardriving Collection", "_piglet_collection", "piglet_collection", None))
 
     def test_all_eight_full_tab_labels_fit_original_panel(self):
         cats = ENV["MENU_CATS"] + [("PLUGINS", [])]

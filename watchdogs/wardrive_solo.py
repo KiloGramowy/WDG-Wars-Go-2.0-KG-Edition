@@ -65,6 +65,8 @@ class WardriveSoloController:
         self._last_emitted = 0
         self._stop_deadline = None
         self.invalid_events = self.sequence_gaps = self.dropped_observations = 0
+        self.framing_errors = self.recovered_observations = 0
+        self._session_diag_base = (0, 0, 0)
 
     @property
     def busy(self):
@@ -117,6 +119,9 @@ class WardriveSoloController:
         pending.update(sent_mono=mono, sent_utc=wall, deadline=mono + ACK_TIMEOUT)
         if pending["kind"] == "start":
             self._rf_unconfirmed, self._rf_session = True, pending["session"]
+            self._last_seq = 0
+            self._session_diag_base = (self.sequence_gaps, self.invalid_events,
+                                       self.recovered_observations)
         self.state = "await_" + pending["kind"]
         return True
 
@@ -212,11 +217,26 @@ class WardriveSoloController:
             line = line[2:]
         if not isinstance(line, str) or not line.startswith(PREFIX):
             return False
+        invalid_counted = recovered = False
         try:
             if len(line) > MAX_LINE_BYTES or len(line.rstrip("\r\n").encode("utf-8")) > MAX_LINE_BYTES:
                 raise ValueError("Oversized event")
-            event = json.loads(line[len(PREFIX):], object_pairs_hook=_unique_object,
-                               parse_constant=_invalid_json_number)
+            try:
+                event = json.loads(line[len(PREFIX):], object_pairs_hook=_unique_object,
+                                   parse_constant=_invalid_json_number)
+            except json.JSONDecodeError as error:
+                # A UART fragment can precede a complete later observation.
+                # Never search a successfully decoded JSON object (SSID/name
+                # text is untrusted), arbitrary console output or control ACKs.
+                self.invalid_events += 1
+                self.framing_errors += 1
+                invalid_counted = True
+                if error.msg == "Extra data":
+                    return True  # A complete first JSON plus later data is ambiguous.
+                event = self._recover_observation(line)
+                if event is None:
+                    return True
+                recovered = True
             received = self._monotonic() if monotonic is None else monotonic
             if (not isinstance(event, dict) or type(event.get("v")) is not int or event["v"] != 1
                     or not isinstance(event.get("boot_id"), str) or not _TOKEN.fullmatch(event["boot_id"])
@@ -247,7 +267,10 @@ class WardriveSoloController:
             elif kind == "state":
                 self._state_event(event, received)
             elif kind == "observation":
+                previous_seq = self._last_seq
                 self._observation(event, received)
+                if recovered and self._last_seq > previous_seq:
+                    self.recovered_observations += 1
             elif kind == "stopped":
                 self._stopped(event)
             elif kind == "error":
@@ -264,8 +287,39 @@ class WardriveSoloController:
             if self.boot_id == event["boot_id"]:
                 self._last_emitted = event["emitted_monotonic_us"]
         except (ValueError, TypeError, KeyError, UnicodeError, OverflowError, RecursionError):
-            self.invalid_events += 1
+            if not invalid_counted:
+                self.invalid_events += 1
         return True
+
+    def _recover_observation(self, line):
+        """Return one unambiguous complete suffix for the current RF session.
+
+        The caller has already bounded and rejected the canonical JSON line.
+        An extra marker in a valid JSON string must never create another event;
+        quoted keys in such strings are escaped and cannot parse as this suffix.
+        Multiple later markers are deliberately ambiguous, so remain rejected.
+        """
+        if self._active_session is None or self.boot_id is None or line.count(PREFIX) != 2:
+            return None
+        marker = line.find(PREFIX, len(PREFIX))
+        payload = line[marker + len(PREFIX):]
+        if not payload.startswith("{"):
+            return None
+        try:
+            event = json.loads(payload, object_pairs_hook=_unique_object,
+                               parse_constant=_invalid_json_number)
+        except (ValueError, TypeError, RecursionError):
+            return None
+        if (not isinstance(event, dict) or type(event.get("v")) is not int or event["v"] != 1
+                or event.get("event") != "observation" or event.get("boot_id") != self.boot_id
+                or event.get("session") != self._active_session
+                or not _uint(event.get("seq")) or event["seq"] <= self._last_seq
+                or event.get("protocol") not in ("wifi", "ble")
+                or not self._active_target[1 if event["protocol"] == "wifi" else 2]):
+            return None
+        # Ordinary observation validation, capture clocks and recorder acceptance
+        # still run exactly once. No missing observation is reconstructed.
+        return event
 
     def _sessions(self):
         return (self._active_session, self._rf_session,
@@ -396,7 +450,15 @@ class WardriveSoloController:
             return
         if not _uint(event.get("last_seq")) or not _uint(event.get("dropped")) or event["last_seq"] < self._last_seq:
             raise ValueError("Malformed stop summary")
+        self.sequence_gaps += event["last_seq"] - self._last_seq
+        self._last_seq = event["last_seq"]
         self.dropped_observations += event["dropped"]
-        if event["dropped"]:
-            self._notice(f"SOLO stopped: {event['dropped']} observation(s) dropped by firmware")
+        gap_base, invalid_base, recovered_base = self._session_diag_base
+        gaps = self.sequence_gaps - gap_base
+        invalid = self.invalid_events - invalid_base
+        recovered = self.recovered_observations - recovered_base
+        if gaps or invalid or recovered or event["dropped"]:
+            self._notice(f"SOLO stopped: host sequence gaps {gaps}; invalid frames {invalid}; "
+                         f"recovered complete observations {recovered}; "
+                         f"{event['dropped']} observation(s) dropped by firmware")
         self.stop_acknowledged()

@@ -1,6 +1,6 @@
 # Contributing to Watch Dogs Go
 
-Contributions to this uConsole fork should preserve the original LOCOSP game style and existing player data. The repository remains private during release preparation; use a separate checkout for development.
+Contributions to this public KG Edition repository should preserve the original LOCOSP game style and existing player data. Use a separate checkout; see [the development workflow](DEVELOPMENT.md). A source checkout and an installed uConsole are separate targets.
 
 ## TL;DR
 
@@ -8,7 +8,7 @@ Contributions to this uConsole fork should preserve the original LOCOSP game sty
   attach only reviewed, redacted excerpts from `~/.watchdogs/last_run.log` and `~/.watchdogs/launcher.log`.
 - **Feature ideas** → open an issue with the `enhancement` label first,
   let's talk before you write code.
-- **Pull requests** → use the repository's default branch: `codex/wdg-go-wars-release` in the development repository, or `main` in the clean private review repository. Small focused PRs
+- **Pull requests** → target `main` in this public repository. Release publication and installed-device changes require separate review. Small focused PRs
   merge faster than big ones.
 - **Be nice.** This is meant to be fun.
 
@@ -47,8 +47,8 @@ them privately if you'd rather.
 ## Setting up a dev environment
 
 ```bash
-git clone --branch codex/wdg-go-wars-release --single-branch https://github.com/KiloGramowy/esp32-watch-dogs.git
-cd esp32-watch-dogs
+git clone --branch develop --single-branch https://github.com/KiloGramowy/WDG-Wars-Go-DEV.git
+cd WDG-Wars-Go-DEV
 bash setup.sh        # creates .venv and installs dependencies in this separate checkout
 ./run.sh            # the launcher obtains sudo for GPIO/serial
 ```

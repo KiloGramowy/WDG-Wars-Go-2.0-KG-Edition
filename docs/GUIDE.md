@@ -19,11 +19,11 @@ Open-world hacking RPG for the ClockworkPi uConsole with real WiFi/BLE scanning,
 
 ### Quick Start
 
-The public KG release is available without private GitHub access. Use a separate checkout and preserve existing player/configuration data; follow [the migration guide](UPGRADING_FROM_LOCOSP.md) before starting an existing player in another checkout. The [README installation section](../README.md#-hardware-and-installation) is the maintained entry point. For the 0.9.20 additions, use the [SOLO guide](WARDRIVING_SOLO_0.9.20.md) and [Piglet installation guide](PIGLET_COLLECTION_INSTALL.md).
+This review repository is private and needs GitHub access. Use a separate checkout; preserve the current installation and its player/configuration data. The [README installation section](../README.md#-hardware-and-installation) is the maintained entry point.
 
 ```bash
-git clone --branch main --single-branch https://github.com/KiloGramowy/WDG-Wars-Go-2.0-KG-Edition.git WatchDogsGo-KiloGramowy
-cd WatchDogsGo-KiloGramowy
+git clone --branch codex/wdg-go-wars-release --single-branch https://github.com/KiloGramowy/esp32-watch-dogs.git
+cd esp32-watch-dogs
 bash setup.sh       # creates venv and installs dependencies in this separate checkout
 ./run.sh            # obtains sudo, auto-detects ESP32 and starts the game
 ```
@@ -169,7 +169,7 @@ A **PLUGINS** tab is added when plugins provide menu entries. See the [plugin gu
 
 ## PipBoy Watch Integration
 
-Connect the game to a [PipBoy Watch](https://github.com/LOCOSP/twatchultra) (LilyGo T-Watch Ultra with ESP32-S3) for NFC scanning, remote recon, GPS, and LoRa mesh — all controlled from the game UI.
+Connect the game to a PipBoy Watch (LilyGo T-Watch Ultra with ESP32-S3) for NFC scanning, remote recon, GPS, and LoRa mesh — all controlled from the game UI.
 
 ### Requirements
 
@@ -489,29 +489,45 @@ loot/
 
 Open **SYSTEM → Update Game** for the installed numeric version, full scrollable notes and the small avatar. The startup screen retains LOCOSP’s credit and adds **Modified by KiloGramowy** underneath. Startup checks run in the background; a release notice appears once for that release, and opening it never installs code. A separate confirmation is required.
 
-The public stable feed supplies approved KG releases. Use the [update guide](UPDATING.md) for release-source checks, installation controls, data preservation and code-only recovery. Do not use a blanket `git pull` on an installation maintained through a deployment manifest.
+The published game feed still offers **0.9.20**; **0.9.21 is private DEV**, not a public OTA. Use the [update guide](UPDATING.md) for release-source checks, data preservation and code-only recovery. Do not use a blanket `git pull` on an installation maintained through a deployment manifest.
 
 ---
 
-## ESP32 Flashing
+## Firmware KG/SOLO — updates from the KG Edition repository
 
-### With AIO v2 (no disassembly needed)
+Open **SYSTEM → Firmware KG/SOLO**. The game checks **our KG Edition release
+repository** when the connected board first reports its version and after
+reconnect. **R** refreshes metadata. The panel shows **Detected KG**, **Latest
+KG**, the KG source and the supported target/package. It reads the firmware
+manifest, not the game tag: the published game **0.9.20** carries firmware
+**JanOS 1.7.0 + SOLO**.
 
-1. **SYSTEM → Flash ESP32**
-2. Select **XIAO ESP32-C5**
-3. Game automatically:
-   - Closes serial connection
-   - USB power cycles ESP32 (GPIO 23)
-   - Downloads latest [projectZero](https://github.com/LOCOSP/projectZero) firmware
-   - Flashes via esptool with auto-bootloader (USB-JTAG DTR/RTS)
-   - Reconnects after reboot
+**Enter starts a manual KG firmware installation/reinstall.** The selected
+package is refreshed, downloaded and checked before board access. Older firmware
+and unsupported or unverified board/layout combinations are refused. **Esc
+closes the window; an installation already underway continues.** Automatic
+checks do not flash automatically. A missing or invalid KG package is reported,
+with no stock JanOS or Piglet fallback.
 
-### Without AIO v2
+The published [KG/SOLO package guide](https://github.com/KiloGramowy/WDG-Wars-Go-2.0-KG-Edition/blob/v0.9.20/firmware/wardriving-solo/README.md)
+and [manifest](https://github.com/KiloGramowy/WDG-Wars-Go-2.0-KG-Edition/blob/v0.9.20/firmware/wardriving-solo/manifest.json)
+specify **XIAO ESP32-C5 revision 1.0 / 8 MiB**, application-only **ota_0 at
+0x20000**, with the exact verified partition layout. This is not a WROOM,
+Piglet or bridge image. A matching chip name alone does not identify the
+physical board. The installer checks chip/revision, flash, layout, active
+application and security state before writing; unsupported or ambiguous results
+stop the operation. Retain the documented recovery backup for the exact board.
 
-1. Hold **BOOT** button on XIAO
-2. Press **RESET** while holding BOOT
-3. Release BOOT
-4. Select Flash from menu
+The host displays **KG 1.7.0** for the reported version. The label changes
+presentation only: raw serial logs, the numeric version and actual SOLO
+capability checks retain their meaning. It does not certify that an installed
+image matches the package's checksum.
+
+The old stock projectZero wizard described historical 0.9.20 behavior. The
+current route uses the KG source while retaining original
+[LOCOSP/projectZero](https://github.com/LOCOSP/projectZero) credits and provenance.
+**Update Game remains game-only, and WDGWars uses its existing API path.**
+Updating the game does not automatically flash either ESP32.
 
 ---
 
@@ -542,7 +558,7 @@ Legacy `.janos_meshcore.json` and `.janos_meshcore_key` names are migration inpu
 - LilyGo T-Watch Ultra (ESP32-S3)
 - Connection: BLE (Nordic UART Service)
 - Features: NFC (PN532), LoRa, GPS, WiFi/BLE recon, compass
-- Firmware: [PipBoy-3000](https://github.com/LOCOSP/twatchultra)
+- Firmware: PipBoy-3000
 
 ### AIO v2 GPIO Map
 | Module | GPIO |

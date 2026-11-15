@@ -499,6 +499,7 @@ class AlternationTests(unittest.TestCase):
 
     def test_verified_reconnect_keeps_selected_but_does_not_resume_plan(self):
         self.both()
+        previous_generation = getattr(self.g, '_fw_generation', 0)
         del self.g._try_reconnect_esp32
         connection = SimpleNamespace(is_open=True, setup=Mock(), close=Mock(),
                                      send_command=Mock(return_value=True))
@@ -509,7 +510,11 @@ class AlternationTests(unittest.TestCase):
         self.assertEqual(self.g._wardrive_selected, {'wardriving', 'bt_scanning'})
         self.ack()
         self.advance(30)
-        connection.send_command.assert_called_once_with('stop')
+        self.assertEqual([c.args[0] for c in connection.send_command.call_args_list], ['stop', 'version'])
+        self.assertEqual(self.g._fw_version, '')
+        self.assertEqual(self.g._fw_generation, previous_generation + 1)
+        self.assertEqual(self.g._fw_remote_version, '')
+        self.assertFalse(self.g._fw_update_available)
 
     def test_scan_pause_uses_monotonic_clock_despite_wall_clock_jump(self):
         self.both()

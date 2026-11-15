@@ -1,45 +1,48 @@
 # 🐷 Piglet Collection — install, pair, deliver
 
-**WDGWars GO 0.9.20 — separate Piglet firmware installation.**
-This guide is for the **separate Piglet KG device**. It does not flash the
-embedded uConsole XIAO or replace JanOS. **Updating the WDG game does not flash
-Piglet; updating Piglet does not install the WDG game.**
+> **0.9.21 DEV host navigation:** open **WARDRIVING → Wardriving Collection**.
+> The package/version labels below retain the original 0.9.20 package checkpoint;
+> its Piglet firmware, timing and recovery instructions are unchanged. Current
+> Dark3D receiver support and firmware limits are described in
+> [Wardriving Collection](ota-0.9.21/CHANGELOG_AND_UPDATE_GUIDE.md).
 
-Original Piglet projects and dependencies retain their credits and licenses in
-the firmware package. Piglet KG modifications by **KiloGramowy**.
+**🚧 WDGWars GO 0.9.20 DEV / UNRELEASED.** Public stable remains **0.9.19.2**.
+This is the installation guide for the **separate Piglet KG device**. It does not
+flash the embedded uConsole XIAO, replace JanOS or install a public OTA update.
+Updating the WDG game and updating Piglet firmware are two separate operations.
 
 ## 📦 1. Choose the supported package
 
 Use the files in [`firmware/piglet-collection/`](../firmware/piglet-collection/README.md)
-from the public **[v0.9.20 release](https://github.com/KiloGramowy/WDG-Wars-Go-2.0-KG-Edition/releases/tag/v0.9.20)**.
-Keep the BIN, manifest and checksums from that **same tag**, rather than mixing
-later branch files with an older downloaded image.
+on **`KiloGramowy/WDG-Wars-Go-DEV` → `codex/0.9.20-dev-performance`**. Keep the BIN,
+manifest and checksums from the **same commit**, rather than mixing later branch
+files with an older downloaded image.
 
 | File | Purpose |
 | --- | --- |
-| [`piglet-kg-uconsole-xiao-c5-app.bin`](../firmware/piglet-collection/piglet-kg-uconsole-xiao-c5-app.bin) | Application image compiled from the included source |
+| [`piglet-kg-uconsole-xiao-c5-app.bin`](../firmware/piglet-collection/piglet-kg-uconsole-xiao-c5-app.bin) | Application image compiled from the included source candidate |
 | [`SHA256SUMS`](../firmware/piglet-collection/SHA256SUMS) | Integrity checks for the package files |
 | [`manifest.json`](../firmware/piglet-collection/manifest.json) | Image size/hash, hardware/build profile, source provenance and validation limits |
-| [`source/Piglet/`](../firmware/piglet-collection/source/Piglet/Piglet.ino) | Complete application sketch used for this package |
+| [`source/Piglet/`](../firmware/piglet-collection/source/Piglet/) | Complete application sketch used for this candidate |
 | [`BUILD.md`](../firmware/piglet-collection/BUILD.md) and [`build.py`](../firmware/piglet-collection/build.py) | Pinned build configuration and reproducible build procedure |
 | [`device_backup.py`](../firmware/piglet-collection/device_backup.py) | Read-only, strict hardware/layout/OTA validation and two full backups |
-| [`tests/`](../firmware/piglet-collection/tests/test_collection_source_regression.py) | Software regressions supplied with the packaged source |
+| [`tests/`](../firmware/piglet-collection/tests/) | Software regressions supplied with the source candidate |
 
-| Compatibility item | This package |
+| Compatibility item | This candidate |
 | --- | --- |
 | Physical target | **Seeed XIAO ESP32-C5**, validated ESP32-C5 **revision v1.0** |
 | Flash / PSRAM build profile | **8 MiB flash / 8 MiB PSRAM**, QIO flash at 80 MHz, USB CDC enabled |
 | Existing partition scheme | **`default_8MB`**, active **app0** on the validated device |
 | Image type | **Application only**; not a merged image or full-flash dump |
 | Write offset / slot capacity | **`0x10000` / `0x330000` bytes** (3,342,336 bytes) |
-| Firmware identifier | Piglet KG **v1.0.1** base display label; exact image identity comes from the manifest, BIN hash and packaged source hash |
+| Firmware identifier | Piglet KG **v1.0.1** base display label; final DEV identity comes from the manifest, BIN hash and packaged source hash |
 | BIN bytes | **1,970,496** |
 | BIN SHA256 | **`bf7919af370c6bfbd2016683927d6cfa623864dc1e38eb7912087ecabda715ad`** |
 
 The package supports only that verified board/profile. USB enumeration alone
 cannot identify flash size, PSRAM, partition layout or firmware. If your device
 has another board, memory profile, partition table or active application slot,
-stop before writing and check compatibility. This package does not replace a
+stop before writing and check compatibility. This candidate does not replace a
 partition table to make another device match. It upgrades an **existing compatible
 Piglet installation**; an application-only BIN is not a first-flash package for a
 blank board.
@@ -67,7 +70,7 @@ Linux port naming is not a claim that the full procedure was tested on Linux.
 ## 🔎 3. Verify the files before flashing
 
 Download the BIN with GitHub's **Download raw file** action, not the HTML page.
-Download `SHA256SUMS` and `manifest.json` from the same release tag.
+Download `SHA256SUMS` and `manifest.json` from the same branch commit.
 
 ```powershell
 Get-FileHash -LiteralPath .\piglet-kg-uconsole-xiao-c5-app.bin -Algorithm SHA256
@@ -181,8 +184,8 @@ After the documented reset/reconnect, confirm:
 
 - The real Piglet application starts, mounts its existing SD and finds its existing
   settings and files.
-- The existing OLED/CSV firmware label is **v1.0.1**. This package deliberately
-  keeps that base label; it does **not** independently identify this image. The
+- The existing OLED/CSV firmware label is **v1.0.1**. This candidate deliberately
+  keeps that base label; it does **not** independently identify the DEV fix. The
   verified BIN/readback SHA256 and manifest/source identity establish which image
   was installed.
 - The original OLED and WebUI work, and **Normal Piglet / UConsole Piglet** is
@@ -197,11 +200,11 @@ and use the rollback section; do not reset SD, NVS or the migration ledger.
 
 ## 🔗 7. Pair once using your own uConsole
 
-Both compatible **WDG 0.9.20 host code** and the Piglet image are required.
+Both compatible **WDG 0.9.20 DEV host code** and the Piglet image are required.
 The game update does not flash Piglet, and the Piglet image does not install the
 receiver on uConsole.
 
-1. In WDG open **WARDRIVING → Piglet Collection**. The screen shows pairing details
+1. In WDG open **WARDRIVING → Wardriving Collection**. The screen shows pairing details
    before START. **P** hides/shows them. Copy **your own console's** values.
 2. Open Piglet's original WebUI at the home-Wi-Fi IP shown on its OLED. If it uses
    its fallback AP, join that AP and open **http://192.168.4.1/**. Preserve the
@@ -237,8 +240,8 @@ does not need external-service credentials or internet access.
 | uConsole label | Meaning |
 | --- | --- |
 | **Hotspot: ACTIVE** | Local AP/receiver is ready |
-| **ACTIVE PIGLET KG** | A valid authenticated Collection request occurred within the last **30 seconds** |
-| **WAITING FOR PIGLET KG** | Receiver is running without recent qualifying peer activity |
+| **PIGLET KG CONNECTED** | A valid authenticated Collection request and recognized Piglet identity were seen within the last **30 seconds** |
+| **WAITING FOR WARDRIVER** | Receiver is running without recent qualifying peer activity |
 | **NOT CONNECTED** | Receiver is inactive |
 | **DOWNLOADING CSV: n%** | Received bytes for the current CSV |
 | **IMPORT CSV: n%** | File-weighted processing across the whole announced job |
@@ -343,42 +346,76 @@ security state is incompatible, stop instead of substituting an erase/repartitio
 
 ## 🧪 12. What was actually verified
 
-**Build and software:** the included XIAO-C5 sketch compiled with the pinned
-Arduino core and libraries. The compiled partition table matched the supported
-layout. Source regressions, offline production-function mocks, WebUI tests,
-portable receipt/lifecycle programs and read-only backup-helper fixtures cover
-mode isolation, ACK/retention, deadlines, storage failures and hardware checks.
-The public release notes record the final candidate's test results separately.
+**Software, rerun from this packaged source:** **20 Python source regressions**,
+**two Python tests compiling/executing the production upload, HTTP, STA/AP and SD
+functions with offline mocks**, **14 real WebUI Node tests**, plus **two C++17
+receipt/lifecycle programs** all passed. **No skips.** The tests cover refusal
+before external log connection/send and upload-side SD changes, unchanged Normal
+upload behavior, mode capture, WebUI labels/routes, STA/AP deadlines/Stay and
+storage failures. They do not send real logs to external services.
+The read-only device backup helper has **13 additional passing offline fixtures**,
+including hardware, partition checksum/layout, OTA CRC/slot and a mocked complete
+two-read flow. Its parser also accepted the verified physical flash backup and
+its real OTA selection. Parser/mocked checks do not constitute a physical USB run
+of the distributed helper.
 
-**Earlier physical validation of this exact BIN:** two independent 8 MiB backups
-matched before the application-only **0x10000 / 460800-baud** installation. Exact
-app readback matched the packaged SHA256. Flash outside written app sectors,
-including bootloader, partition table, OTA data and NVS, remained unchanged.
+**Build and physical flash, 11 November 2026:** the included XIAO-C5 sketch
+compiled with the pinned Arduino core/libraries. Its compiled partition table
+matched the existing device layout. Two independent **8 MiB** pre-update flash
+reads matched. The application-only **0x10000 / 460800-baud** write was followed
+by an exact complete app readback with the packaged SHA256. Flash outside the
+written application's sectors remained unchanged: **`0x0–0x10000`** and
+**`0x1f2000–0x800000`**. No bootloader, partition, OTA-data or NVS write was made.
 
-The application mounted its existing SD, retained compared configuration and
-completed paired delivery with real ACKs. Repeated no-collector boots retained
-pending CSV. Direct external-upload routes returned **403 / Collection-only**.
-The full home-Wi-Fi WebUI window closed and real Wi-Fi/KG BLE output resumed,
-including with `autoStartAfterUpload=false`. These are short functional checks,
-not sustained throughput or power measurements.
+**Application boot and paired Collection:** the corrected Piglet booted, mounted
+its SD and delivered pending files through the real paired collector with valid
+ACKs. The pending queue cleared and the already-completed migration state stayed
+complete. Compared configuration fields were unchanged. All three tested manual
+external-upload routes (**`/wigle/uploadAll`**, **`/wdgwars/uploadAll`** and
+**`/wigle/upload`**) returned **HTTP 403 / Collection-only**; runtime status
+reported **`externalLogUploadsAllowed: false`**. The connected-home-STA WebUI
+started with the full 60-second budget and **closed automatically**. During the
+**212-second physical capture**, real Wi-Fi scan output and KG BLE scan output
+continued after that handover. No assertion, Guru Meditation or SD error was
+observed in that capture. This is a short functional check, not a sustained RF
+throughput or power benchmark.
 
-Normal-mode external uploads were checked with offline mocks. A real full-SD/FAT
-failure, forced power loss, a fresh valid GPS fix and sustained throughput remain
-unconfirmed for this firmware correction. NMEA input alone does not prove a fresh
-fix or a newly geotagged CSV. App-only rollback is prepared from verified backups;
-a successful backup does not establish that a physical rollback was performed.
+**Collector unavailable, router available:** a separate **150-second boot capture**
+reported the collector unavailable, issued **no Collection ACK**, retained the
+pending file and preserved completed migration/configuration state. Manual
+external-upload routes again returned **403**. The full WebUI window closed and
+real Wi-Fi/KG BLE scanning resumed without a Guru Meditation or SD error in the
+capture. This confirms that router access does not bypass UConsole-only delivery.
 
-The pre-existing **MSPI dummy-cacheline/PSRAM configuration** warning remains a
-limitation. The application subsequently confirmed 8 MiB PSRAM and scanned, but
-that does not prove long-term memory stability.
+**Exact final CLI and repeated no-collector boot:** the documented
+**`--before usb-reset --after hard-reset verify-flash`** command confirmed the
+application digest and restarted the real application. A further **110-second**
+no-collector capture retained the earlier unacknowledged CSV, kept the additional
+pending item queued and preserved configuration/completed migration. Direct
+upload requests remained **403**; the WebUI deadline closed and Wi-Fi/KG BLE
+scan output resumed. No second firmware write was needed for these repeats.
+The archive migration completed on **8 November 2026** is earlier evidence; it
+is not used as a substitute for the fresh checks above.
 
-### Multiple physical Piglets — unsupported in this release
+**Limits:** Normal-mode external uploads were verified with offline mocks; no real
+CSV was sent to external services for this validation. A real full-SD/FAT failure,
+forced power loss, a fresh GPS fix, sustained throughput and several physical
+Piglets are not confirmed. App-only rollback is prepared from the verified backup,
+not physically performed during this successful update.
+NMEA reception was observed, but the no-collector captures do not confirm a fresh
+GPS fix or that every new scan result was committed as a geotagged CSV row.
 
-Validation used **one physical Piglet**. The current device-ID construction does
-not establish a collision-safe identity for several C5 Piglets. Do not use
-several physical Piglets with this receiver until that identifier is corrected
-and independently verified. No identifier migration is included in this image.
+A pre-existing framework warning about the **MSPI dummy-cacheline/PSRAM
+configuration** also appeared; it was already present in the 8 November capture.
+The application subsequently confirmed **8 MiB PSRAM** and active deduplication,
+then scanned successfully. The warning is retained as a limitation rather than
+treated as a newly established regression or proof of long-term memory stability.
 
-See the [Collection protocol](PIGLET_COLLECTION_PROTOCOL.md),
-[firmware package](../firmware/piglet-collection/README.md) and
-[full 0.9.20 release notes](UPDATE_PREVIEW.txt) for the public contracts and limits.
+The earlier single-Piglet archive migration does not validate several physical
+Piglets. A separate device-ID construction issue remains an explicit
+[multiple-device NO-GO](RELEASE_0.9.20.md)
+until corrected and independently verified.
+
+For wire/import behavior see [Task 02 implementation and validation](RELEASE_0.9.20.md)
+and [protocol 1](PIGLET_COLLECTION_PROTOCOL.md). For the unreleased feature list see
+[0.9.20 DEV preview](RELEASE_0.9.20.md).

@@ -26,6 +26,9 @@ from types import SimpleNamespace
 
 import pyxel
 
+# Preserve the builtin 4x6 face before the global Spleen text override.
+_PYXEL_BUILTIN_TEXT = pyxel.text
+
 from .serial_manager import SerialManager, detect_esp32_port
 from .gps_manager import GpsManager
 from .wardrive_solo import WardriveSoloController
@@ -35,6 +38,8 @@ from .app_state import AppState, Network
 from .network_manager import NetworkManager
 from .coastline import COASTLINES
 from .tile_manager import TileRenderer, download_tiles
+from .auto_map import AutoMap
+from .white_rabbit import WhiteRabbit
 from .dragon_drain import DragonDrainAttack
 from .mitm import MITMAttack
 from .bt_ducky import BlueDuckyAttack
@@ -222,7 +227,7 @@ MENU_CATS = [
     ("WARDRIVING", [
         ("1", "WiFi Wardrive", "_solo_wifi", "solo_wifi", None),
         ("2", "BLE Wardrive",  "_solo_ble",  "solo_ble",  None),
-        ("3", "Piglet Collection", "_piglet_collection", "piglet_collection", None),
+        ("3", "Wardriving Collection", "_piglet_collection", "piglet_collection", None),
     ]),
     ("ATTACK", [
         ("1", "Deauth",          "start_deauth",           "deauth",       "bssid_ch"),
@@ -259,6 +264,7 @@ MENU_CATS = [
         ("x", "STOP ALL",        "stop",                   "_stop_all",    None),
         ("r", "Reboot ESP32",    "_reboot_esp32",          "_reboot",      None),
         ("m", "Download Map",       "_download_map",       "_dl_map",      None),
+        ("t", "Auto Map + Turf",    "_auto_map_toggle",    "_auto_map_toggle", None),
         ("g", "GPS",             "_toggle_gps",            "_gps_toggle",  None),
         ("l", "LoRa",            "_toggle_lora",           "_lora_toggle", None),
         ("d", "SDR",             "_toggle_sdr",            "_sdr_toggle",  None),
@@ -266,7 +272,7 @@ MENU_CATS = [
         ("w", "Whitelist",       "_whitelist",             "_wl_screen",   None),
         ("u", "Upload WPA-SEC",  "_wpasec_upload",         "_wpasec_up",   None),
         ("p", "Download WPA-SEC","_wpasec_download",       "_wpasec_dl",   None),
-        ("f", "Flash ESP32",    "_flash_esp32",           "_flash_esp",   None),
+        ("f", "Firmware KG/SOLO", "_flash_esp32",         "_flash_esp",   None),
         ("i", "Update Game",    "_update_game",           "_gameupd",     None),
     ]),
     ("CRISIS", [
@@ -612,6 +618,12 @@ class WatchDogsGame:
         self.tile_renderer = TileRenderer(_maps_dir) if _maps_dir.exists() else None
         self._map_downloading = False
         self._map_download_cancel = False
+        # Separate, opt-in GPS-following downloads; manual Download Map stays.
+        self._auto_map = AutoMap(_maps_dir)
+        self._white_rabbit = WhiteRabbit(_maps_dir)
+        self._turf_portal = None
+        self._auto_map_draw_failed = False
+        self._white_rabbit_failed = False
 
         # AIO v2 hardware — read remaining GPIO states (USB already handled above)
         if self._aio_available:
@@ -653,9 +665,17 @@ class WatchDogsGame:
 
         # Firmware version tracking
         self._fw_version: str = ""          # detected from ESP32
-        self._fw_remote_version: str = ""   # latest on GitHub
+        self._fw_remote_version: str = ""   # legacy updater state; disabled in KG
         self._fw_update_available = False
         self._fw_generation = 0
+        self._kg_fw_package = None
+        self._kg_fw_checking = False
+        self._kg_fw_error = ""
+        self._kg_fw_check_lock = threading.Lock()
+        self._kg_fw_expected_version = ""
+        self._kg_fw_usb_identity = None
+        self._kg_fw_recovery_needed = False
+        self._kg_fw_recovery_version = ""
         # One flash job; short serial access sections never span downloads or
         # the esptool process. Poll/send/reconnect use nonblocking acquisition.
         self._flash_running = self._serial_busy = False
@@ -885,6 +905,7 @@ class WatchDogsGame:
         self.gps_sats = 0
         self.gps_sats_vis = 0
         self._manual_move = False
+        self._restore_map_view()
         self._breath = 0
         self._battery_pct = self._read_battery()  # -1 if unavailable
 
@@ -1080,6 +1101,9 @@ class WatchDogsGame:
         self._plugins = discover_plugins()
         for p in self._plugins:
             p.on_load(self)
+        self._turf_portal = next(
+            (p for p in self._plugins if hasattr(p, "fetch_member_territories")),
+            None)
         if self._plugins:
             plugin_items = []
             for p_idx, p in enumerate(self._plugins):
@@ -1585,7 +1609,15 @@ class WatchDogsGame:
                 return False
             if getattr(self, "_shutting_down", False):
                 return False
-            port = detect_esp32_port()
+            identity = getattr(self, "_kg_fw_usb_identity", None)
+            if identity is not None:
+                from .kg_firmware import find_bound_port
+                try:
+                    port = find_bound_port(identity)
+                except Exception:
+                    return False
+            else:
+                port = detect_esp32_port()
             if not port:
                 return False
             try:
@@ -1612,12 +1644,17 @@ class WatchDogsGame:
                 self.state.connected = True
                 self._boot_serial_port = port
                 self._term_add(f"[SYS] ESP32 found on {port}", raw=True)
-                # Probe firmware version
-                if not self._fw_version:
-                    try:
-                        self.serial.send_command("version")
-                    except Exception:
-                        pass
+                # A returning board needs a fresh version. Invalidate any
+                # result still in flight for the old USB connection, even
+                # when it previously reported the same numeric firmware.
+                self._fw_version = ""
+                self._fw_remote_version = ""
+                self._fw_update_available = False
+                self._fw_generation = getattr(self, "_fw_generation", 0) + 1
+                try:
+                    self.serial.send_command("version")
+                except Exception:
+                    pass
                 return True
             except Exception as e:
                 self._esp32 = False
@@ -1635,8 +1672,75 @@ class WatchDogsGame:
                 access_lock.release()
 
     def _check_fw_update(self) -> None:
-        """Background: check GitHub for newer firmware release."""
-        from .config import FIRMWARE_RELEASE_URL
+        """Automatically discover published firmware from the KG fork."""
+        from .config import FIRMWARE_RELEASE_URL, UPSTREAM_FIRMWARE_ENABLED
+        if not UPSTREAM_FIRMWARE_ENABLED:
+            if getattr(self, "_shutting_down", False):
+                return
+            check_lock = getattr(self, "_kg_fw_check_lock", None)
+            if check_lock is None:
+                check_lock = self._kg_fw_check_lock = threading.Lock()
+            if not check_lock.acquire(blocking=False):
+                return
+            self._kg_fw_checking = True
+            generation = getattr(self, "_fw_generation", 0)
+            detected_version = self._fw_version
+            retry_current_connection = False
+            try:
+                from .kg_firmware import fetch_latest_package, version_tuple
+                package = fetch_latest_package()
+                access_lock = getattr(self, "_esp_serial_lock", None)
+                if access_lock is not None:
+                    access_lock.acquire()
+                try:
+                    if getattr(self, "_shutting_down", False):
+                        return
+                    if (generation != getattr(self, "_fw_generation", 0)
+                            or detected_version != self._fw_version):
+                        retry_current_connection = True
+                        return
+                    self._kg_fw_package = package
+                    self._kg_fw_error = ""
+                    self._fw_remote_version = package.version
+                    self._fw_update_available = bool(detected_version and
+                        version_tuple(package.version) > version_tuple(detected_version))
+                    self._term_add(f"[FW] KG source: latest KG {package.version}", raw=True)
+                    if self._fw_update_available:
+                        self.msg(f"[FW] KG update: {detected_version} -> {package.version}", C_WARNING)
+                        self._term_add(f"[FW] New KG firmware {package.version} available (current: KG {detected_version})", raw=True)
+                finally:
+                    if access_lock is not None:
+                        access_lock.release()
+            except Exception as exc:
+                access_lock = getattr(self, "_esp_serial_lock", None)
+                if access_lock is not None:
+                    access_lock.acquire()
+                try:
+                    if not getattr(self, "_shutting_down", False):
+                        if (generation != getattr(self, "_fw_generation", 0)
+                                or detected_version != self._fw_version):
+                            retry_current_connection = True
+                        else:
+                            self._kg_fw_error = str(exc)[:160] or "Cannot check the KG firmware source; retry with R"
+                            self._fw_remote_version = ""
+                            self._fw_update_available = False
+                            self._term_add("[FW] KG source check failed; open Firmware KG/SOLO and press R to retry", raw=True)
+                finally:
+                    if access_lock is not None:
+                        access_lock.release()
+            finally:
+                self._kg_fw_checking = False
+                check_lock.release()
+                # A fresh reconnect/version may have arrived while the old
+                # network worker owned the lock. Recheck that connection only
+                # after releasing it; never publish the old board's result.
+                if retry_current_connection and not getattr(self, "_shutting_down", False):
+                    threading.Thread(target=self._check_fw_update, daemon=True).start()
+            return
+        if not FIRMWARE_RELEASE_URL:
+            self._fw_remote_version = ""
+            self._fw_update_available = False
+            return
         import json
         from urllib.request import Request, urlopen
         generation = getattr(self, "_fw_generation", 0)
@@ -1834,6 +1938,7 @@ class WatchDogsGame:
 
         self._poll_serial()
         self._poll_gps()
+        self._poll_auto_map()
         self._poll_solo()
         self._poll_piglet_collection()
         self._yield_piglet_threads()
@@ -2131,7 +2236,7 @@ class WatchDogsGame:
         # Keep menu open for toggle actions (GPS, LoRa, SDR, USB, Mute)
         if state_key not in ("_gps_toggle", "_lora_toggle",
                              "_sdr_toggle", "_usb_toggle", "_mute_toggle",
-                             "_prox_toggle", "solo_ble"):
+                             "_prox_toggle", "_auto_map_toggle", "solo_ble"):
             self.menu_open = False
         self._execute_item(cmd, state_key, name, [])
 
@@ -2246,11 +2351,22 @@ class WatchDogsGame:
             self.msg("[SYS] Reboot command sent", C_DIM)
             return
         if state_key == "_dl_map":
+            if getattr(self, "_auto_map", None) and self._auto_map.tile_busy:
+                self.msg("[MAP] Automatic tile download in progress", C_DIM)
+                return
             if self._map_downloading:
                 self._map_download_cancel = True
                 self.msg("[MAP] Cancelling download...", C_WARNING)
             else:
                 self._start_map_download()
+            return
+        if state_key == "_auto_map_toggle":
+            try:
+                enabled = self._auto_map.set_enabled(not self._auto_map.enabled)
+                self.msg("[MAP] Auto tiles + turf " + ("ON" if enabled else "OFF"),
+                         C_SUCCESS if enabled else C_DIM)
+            except OSError:
+                self.msg("[MAP] Could not save auto-map setting", C_ERROR)
             return
         if state_key == "_srv_wiki":
             from .config import SURVIVAL_WIKI_URL
@@ -2514,6 +2630,8 @@ class WatchDogsGame:
             self._begin_esp_scan(cmd, state, name)
 
     def _is_running(self, state_key: str) -> bool:
+        if state_key == "_auto_map_toggle":
+            return bool(getattr(self, "_auto_map", None) and self._auto_map.enabled)
         if state_key == "piglet_collection":
             return (getattr(self, "_piglet_status", None) or {}).get("state") == "active"
         if state_key in ("solo_wifi", "solo_ble"):
@@ -3177,6 +3295,53 @@ class WatchDogsGame:
     # Map tile download
     # ------------------------------------------------------------------
 
+    def _restore_map_view(self):
+        """Show the last downloaded area on restart without claiming a GPS fix."""
+        controller = getattr(self, "_auto_map", None)
+        if controller is not None and controller.enabled:
+            center = controller.cached_center
+            if center is not None:
+                self.player_lat, self.player_lon = center
+
+    def _auto_map_position(self):
+        """Fresh measured GPS only; visual map panning cannot request areas."""
+        gps = getattr(self, "gps", None)
+        if (not getattr(self, "_gps_enabled", False) or gps is None
+                or not hasattr(gps, "wardrive_sample")):
+            return None
+        sample = gps.wardrive_sample()
+        return (sample["lat"], sample["lon"]) if sample is not None else None
+
+    def _poll_auto_map(self):
+        """Poll map workers and request missing GPS areas without blocking Pyxel."""
+        rabbits = getattr(self, "_white_rabbit", None)
+        if rabbits is not None:
+            try:
+                rabbits.poll(portal=self._turf_portal)
+            except Exception as error:
+                if not self._white_rabbit_failed:
+                    logging.getLogger(__name__).warning(
+                        "White Rabbit update unavailable: %s", type(error).__name__)
+                    self._white_rabbit_failed = True
+        controller = getattr(self, "_auto_map", None)
+        if controller is None:
+            return
+        try:
+            position = self._auto_map_position()
+            lat, lon = position if position is not None else (0.0, 0.0)
+            changed = controller.poll(
+                lat, lon, position is not None,
+                portal=self._turf_portal, manual_tiles_busy=self._map_downloading)
+            if changed:
+                maps_dir = Path(self._app_dir) / "maps"
+                if self.tile_renderer is None:
+                    self.tile_renderer = TileRenderer(maps_dir)
+                else:
+                    self.tile_renderer.reload_manifest()
+        except Exception as error:
+            logging.getLogger(__name__).warning(
+                "Automatic map update could not finish: %s", type(error).__name__)
+
     def _start_map_download(self):
         """Download OSM tiles around current GPS position (or manual pos)."""
         # Preflight: Stadia returns HTTP 401 for every request without an
@@ -3493,26 +3658,44 @@ class WatchDogsGame:
             recorder.seal_startup()
         if not final:
             recorder.tick()
-        events = recorder.poll_events(limit=32)
-        for event in events:
-            kind = event.get("event")
-            if kind == "saved":
-                self._apply_solo_observation(event["observation"], event.get("position"),
-                                              award_xp=not event.get("replay", False))
-            elif kind == "backfill":
-                self._apply_solo_observation(event["observation"], event.get("position"), award_xp=False)
-            elif kind == "backfill_done":
-                self._solo_backfill_waiting = False
-                self._solo_backfill_needs_stop = False
-                resume, self._solo_backfill_resume = self._solo_backfill_resume, None
-                if (resume and any(resume[1:]) and not getattr(self, "_shutting_down", False)):
-                    self._solo_profile = resume[0]
-                    solo.request(wifi=resume[1], ble=resume[2], profile=resume[0])
-            elif kind == "error":
-                self._solo_backfill_resume = None
-                self._solo_notice(event.get("message", "Observation save failed; requesting STOP"))
-                solo.cancel()
-        return len(events)
+        # Presentation callbacks can also use the shared progress store. Do not
+        # take a saved event out of its queue while a writer owns that store:
+        # retry on the next frame instead of blocking serial/GPS/rendering.
+        db_lock = getattr(getattr(self, "loot", None), "_db_lock", None)
+        deadline = None if final else time.monotonic() + .004
+        processed = 0
+        for _ in range(32 if final else 4):
+            if not final and processed and time.monotonic() >= deadline:
+                break
+            if db_lock is not None and not db_lock.acquire(blocking=final):
+                break
+            try:
+                events = recorder.poll_events(limit=1)
+                if not events:
+                    break
+                event = events[0]
+                kind = event.get("event")
+                if kind == "saved":
+                    self._apply_solo_observation(event["observation"], event.get("position"),
+                                                  award_xp=not event.get("replay", False))
+                elif kind == "backfill":
+                    self._apply_solo_observation(event["observation"], event.get("position"), award_xp=False)
+                elif kind == "backfill_done":
+                    self._solo_backfill_waiting = False
+                    self._solo_backfill_needs_stop = False
+                    resume, self._solo_backfill_resume = self._solo_backfill_resume, None
+                    if (resume and any(resume[1:]) and not getattr(self, "_shutting_down", False)):
+                        self._solo_profile = resume[0]
+                        solo.request(wifi=resume[1], ble=resume[2], profile=resume[0])
+                elif kind == "error":
+                    self._solo_backfill_resume = None
+                    self._solo_notice(event.get("message", "Observation save failed; requesting STOP"))
+                    solo.cancel()
+                processed += 1
+            finally:
+                if db_lock is not None:
+                    db_lock.release()
+        return processed
 
     def _apply_solo_observation(self, observation, position, *, award_xp=True):
         """Reuse the session map, discovered identities and original XP rules."""
@@ -3630,47 +3813,68 @@ class WatchDogsGame:
         collection = getattr(self, "_piglet_collection", None)
         if collection is None or getattr(self, "_shutting_down", False):
             return
-        if getattr(collection, "cancel_requested", False):
-            self._piglet_status = collection.snapshot()
-            return
-        # Import work is bounded and paced independently of FPS; serial and GPS
-        # have already been serviced. The worker parses/hashes outside this loop.
-        now = time.monotonic()
-        if now < getattr(self, "_piglet_poll_at", 0):
-            return
-        self._piglet_poll_at = now + .1
+        # Collection methods acquire their store lock before the shared progress
+        # lock. Admit the whole UI poll in that order, without waiting for a
+        # native SOLO/XP writer, including receipt reads, ACKs and snapshots.
+        store = getattr(collection, "store", None)
+        locks = (getattr(store, "_lock", None),
+                 getattr(getattr(self, "loot", None), "_db_lock", None))
+        held = []
         try:
-            result = collection.store.process_pending(self.xp, self._known_wifi, self._known_ble, limit=128)
-            if result.get("committed"):
-                self.xp = result["xp_total"]
-                self._xp_dirty = False
-            events = collection.store.pending_events(limit=20)
-            if events:
-                acknowledged = self._apply_piglet_events(events)
-                if not collection.store.acknowledge_events(acknowledged):
-                    raise OSError("Presentation acknowledgement could not be saved")
-            self._piglet_status = collection.snapshot()
-            self._piglet_error = result.get("error", "")
-        except Exception:
-            # Avoid a frame-rate log storm during a disk/network failure.
-            self._piglet_poll_at = now + 2.0
-            if not getattr(self, "_piglet_error", ""):
-                logging.getLogger(__name__).exception("Piglet import paused; durable source retained")
-            self._piglet_error = "Import paused; data retained. Check storage and retry."
+            for lock in locks:
+                if lock is not None:
+                    if not lock.acquire(blocking=False):
+                        return
+                    held.append(lock)
+            if getattr(collection, "cancel_requested", False):
+                self._piglet_status = collection.snapshot()
+                return
+            # Import work is bounded and paced independently of FPS; serial and
+            # GPS have already been serviced. Worker parsing stays off this loop.
+            now = time.monotonic()
+            if now < getattr(self, "_piglet_poll_at", 0):
+                return
+            self._piglet_poll_at = now + .1
+            try:
+                result = collection.store.process_pending(self.xp, self._known_wifi, self._known_ble, limit=128)
+                if result.get("committed"):
+                    self.xp = result["xp_total"]
+                    self._xp_dirty = False
+                events = collection.store.pending_events(limit=20)
+                if events:
+                    acknowledged = self._apply_piglet_events(events)
+                    if not collection.store.acknowledge_events(acknowledged):
+                        raise OSError("Presentation acknowledgement could not be saved")
+                self._piglet_status = collection.snapshot()
+                self._piglet_error = result.get("error", "")
+            except Exception:
+                # Avoid a frame-rate log storm during a disk/network failure.
+                self._piglet_poll_at = now + 2.0
+                if not getattr(self, "_piglet_error", ""):
+                    logging.getLogger(__name__).exception("Piglet import paused; durable source retained")
+                self._piglet_error = "Import paused; data retained. Check storage and retry."
+        finally:
+            for lock in reversed(held):
+                lock.release()
 
     def _yield_piglet_threads(self):
-        """Give Collection workers a GIL window outside transport/storage locks.
+        """Give persistence workers a GIL window outside transport/storage locks.
 
         Pyxel 2.9.9 retains the interpreter during its native frame limiter.
-        A short cooperative wait lets Python receive/parse threads run without
-        changing the frame target or the inactive SOLO path.
+        A short cooperative wait lets Python receive/parse/persistence threads
+        run while Collection or SOLO has work, without delaying the idle path.
         """
         status = getattr(self, "_piglet_status", None) or {}
         progress = status.get("progress", {})
-        if getattr(self, "_piglet_collection", None) is not None and (
+        collection_busy = getattr(self, "_piglet_collection", None) is not None and (
                 status.get("state") in ("starting", "active", "stopping")
                 or progress.get("pending_files", 0)
-                or progress.get("import", {}).get("pending_events", 0)):
+                or progress.get("import", {}).get("pending_events", 0))
+        solo = getattr(self, "_solo", None)
+        recorder = getattr(self, "_solo_recorder", None)
+        solo_busy = recorder is not None and (
+            bool(solo and solo.busy) or getattr(recorder, "work_pending", False))
+        if collection_busy or solo_busy:
             time.sleep(0.001)
 
     def _piglet_has_unfinished_work(self):
@@ -3745,7 +3949,7 @@ class WatchDogsGame:
         dx, dy, dw, dh = 45, 28, 550, 300
         pyxel.rect(dx, dy, dw, dh, C_MENU_BG)
         pyxel.rectb(dx, dy, dw, dh, C_WARNING)
-        pyxel.text(dx + 10, dy + 10, "WARDRIVING - PIGLET COLLECTION", C_WARNING)
+        pyxel.text(dx + 10, dy + 10, "WARDRIVING - WARDRIVING COLLECTION", C_WARNING)
         pyxel.line(dx + 8, dy + 22, dx + dw - 9, dy + 22, C_COAST)
         collection = getattr(self, "_piglet_collection", None)
         status = getattr(self, "_piglet_status", None) or {}
@@ -3754,9 +3958,15 @@ class WatchDogsGame:
         pyxel.text(dx + 10, dy + 45, status.get("message", "ENTER starts the local receiver")[:128], C_TEXT)
         progress = status.get("progress", {})
         devices = progress.get("connected_devices", []) if state == "active" else []
-        peer = ("ACTIVE PIGLET KG - " + ", ".join(devices)[:78] if devices else
-                "WAITING FOR PIGLET KG" if state in ("starting", "active") else "NOT CONNECTED")
-        pyxel.text(dx + 10, dy + 64, "Piglet: " + peer, C_SUCCESS if devices else C_TEXT)
+        peer_types = {peer.get("device_type") for peer in progress.get("connected_peers", [])
+                      if isinstance(peer, dict) and peer.get("device_id") in devices}
+        typed_labels = [label for kind, label in (("dark3d-c5", "C5 WARDRIVER CONNECTED"),
+                                                  ("piglet-kg", "PIGLET KG CONNECTED"))
+                        if kind in peer_types]
+        peer = (" | ".join(typed_labels) if devices and typed_labels else
+                "ACTIVE WARDRIVER - " + ", ".join(devices)[:78] if devices else
+                "WAITING FOR WARDRIVER" if state in ("starting", "active") else "NOT CONNECTED")
+        pyxel.text(dx + 10, dy + 64, "Device: " + peer, C_SUCCESS if devices else C_TEXT)
         pyxel.text(dx + 10, dy + 77, f"Pending staged files: {progress.get('pending_files', 0)}   Total received: {progress.get('total_files', 0)}", C_TEXT)
         current = progress.get("current_file") or {}
         pyxel.text(dx + 10, dy + 94, "File: " + current.get("name", "-")[:110], C_TEXT)
@@ -3782,9 +3992,9 @@ class WatchDogsGame:
             if self._piglet_pairing_visible:
                 pyxel.text(dx + 10, dy + 185, "UConsole hotspot password: " + collection.settings["password"], C_WARNING)
                 pyxel.text(dx + 10, dy + 218, "Collection pairing token: " + collection.settings["token"], C_WARNING)
-                pyxel.text(dx + 10, dy + 231, "Piglet WebUI: save pairing. START here, then reboot Piglet.", C_DIM)
+                pyxel.text(dx + 10, dy + 231, "Piglet KG: save pairing in WebUI. START, then reboot Piglet.", C_DIM)
             else:
-                pyxel.text(dx + 10, dy + 218, "P shows pairing credentials for Piglet WebUI", C_DIM)
+                pyxel.text(dx + 10, dy + 218, "P shows pairing credentials for the device WebUI", C_DIM)
         error = getattr(self, "_piglet_error", "") or current.get("error", "")
         if error:
             pyxel.text(dx + 10, dy + 245, error[:128], C_ERROR)
@@ -3795,10 +4005,10 @@ class WatchDogsGame:
             bx, by, bw, bh = 105, 110, 430, 112
             pyxel.rect(bx, by, bw, bh, C_MENU_BG)
             pyxel.rectb(bx, by, bw, bh, C_WARNING)
-            pyxel.text(bx + 12, by + 12, "STOP PIGLET COLLECTION?", C_WARNING)
+            pyxel.text(bx + 12, by + 12, "STOP WARDRIVING COLLECTION?", C_WARNING)
             pyxel.text(bx + 12, by + 31, "Unfinished CSV calculations will be discarded.", C_TEXT)
             pyxel.text(bx + 12, by + 44, "Completed imports and already awarded XP stay saved.", C_TEXT)
-            pyxel.text(bx + 12, by + 57, "Unconfirmed source CSV stay on Piglet for another try.", C_TEXT)
+            pyxel.text(bx + 12, by + 57, "Unconfirmed source files stay on the device for retry.", C_TEXT)
             yes = getattr(self, "_piglet_cancel_yes", False)
             pyxel.rect(bx + 94, by + 76, 90, 16, C_WARNING if yes else C_HUD_BG)
             pyxel.rect(bx + 236, by + 76, 90, 16, C_WARNING if not yes else C_HUD_BG)
@@ -5477,8 +5687,19 @@ class WatchDogsGame:
     # ------------------------------------------------------------------
 
     def _start_flash_esp32(self):
-        """Open the wizard without replacing an existing operation."""
-        from .config import FLASH_BOARDS
+        """Open the KG firmware updater without replacing an active job."""
+        from .config import FLASH_BOARDS, FIRMWARE_RELEASE_URL, UPSTREAM_FIRMWARE_ENABLED
+        if not UPSTREAM_FIRMWARE_ENABLED:
+            self._flash_boards = ["xiao"]
+            self._flash_sel = 0
+            self._flash_screen = True
+            self.menu_open = False
+            if not hasattr(self, "_flash_running"):
+                self._flash_running = False
+            if (not self._flash_running and not getattr(self, "_kg_fw_checking", False)
+                    and getattr(self, "_kg_fw_package", None) is None):
+                threading.Thread(target=self._check_fw_update, daemon=True).start()
+            return
         self._flash_boards = list(FLASH_BOARDS)
         self._flash_sel = min(getattr(self, "_flash_sel", 0), len(self._flash_boards) - 1)
         self._flash_screen = True
@@ -5488,6 +5709,32 @@ class WatchDogsGame:
             self._flash_running = False
 
     def _update_flash_screen(self):
+        from .config import FIRMWARE_RELEASE_URL, UPSTREAM_FIRMWARE_ENABLED
+        if not UPSTREAM_FIRMWARE_ENABLED:
+            if pyxel.btnp(pyxel.KEY_ESCAPE):
+                self._flash_screen = False
+                self._esc_consumed_frame = pyxel.frame_count
+            elif not self._flash_running:
+                if pyxel.btnp(pyxel.KEY_R) and not getattr(self, "_kg_fw_checking", False):
+                    threading.Thread(target=self._check_fw_update, daemon=True).start()
+                elif pyxel.btnp(pyxel.KEY_RETURN):
+                    if (getattr(self, "_kg_fw_checking", False)
+                            or getattr(self, "_kg_fw_package", None) is None
+                            or getattr(self, "_kg_fw_error", "")):
+                        self.msg("[FW] Press R to check the KG firmware source first", C_WARNING)
+                        return
+                    job_lock = getattr(self, "_flash_job_lock", None)
+                    if job_lock is not None and job_lock.locked():
+                        return
+                    self._flash_running = True
+                    self._flash_status = "Preparing approved KG firmware..."
+                    try:
+                        threading.Thread(target=self._run_flash, args=("xiao",), daemon=True).start()
+                    except Exception as exc:
+                        self._flash_running = False
+                        self._term_add(f"[FW] Cannot start KG installer: {exc}", raw=True)
+                        self.msg("[FW] Cannot start KG installer", C_ERROR)
+            return
         if self._flash_running:
             if pyxel.btnp(pyxel.KEY_ESCAPE):
                 self._flash_screen = False
@@ -5530,30 +5777,51 @@ class WatchDogsGame:
         self._flash_process = self._flash_workspace = None
         self._flash_device_acquired = self._flash_write_complete = False
         self._flash_usb_off = False
+        self._kg_fw_expected_version = ""
+        self._kg_fw_recovery_needed = False
+        self._kg_fw_recovery_version = getattr(self, "_fw_version", "")
         try:
             if not getattr(self, "_shutting_down", False):
+                from .config import UPSTREAM_FIRMWARE_ENABLED
+                if not UPSTREAM_FIRMWARE_ENABLED:
+                    active_flags = ("wifi_scanning", "ble_scanning", "_wifi_scan_only",
+                                    "_ble_scan_only", "_bt_tracking", "_bt_airtag",
+                                    "sniffing", "capturing_hs", "_esp_stop_waiting",
+                                    "_esp_stop_required", "_wardrive_selected")
+                    state_flags = ("attack_running", "blackout_running", "sae_overflow_running",
+                                   "handshake_running", "portal_running", "evil_twin_running",
+                                   "sniffer_running", "bt_wardriving_running", "bt_scan_running",
+                                   "bt_tracking_running", "bt_airtag_running", "wardriving_running")
+                    solo = getattr(self, "_solo", None)
+                    if (any(getattr(self, flag, False) for flag in active_flags)
+                            or any(getattr(self.state, flag, False) for flag in state_flags)
+                            or (solo is not None and getattr(solo, "busy", False))):
+                        raise RuntimeError("Stop ESP32 operations before installing KG firmware")
                 self._flash_do(board)
         except Exception as exc:
             self._flash_status = "Flash failed - see OUTPUT"
             self._term_add(f"[FLASH] {exc}", raw=True)
             self.msg("[FLASH] Failed - see OUTPUT", C_ERROR)
         finally:
-            process = getattr(self, "_flash_process", None)
-            warned = False
-            # A failed terminate/kill is NOT proof of child exit. Retain the
-            # port, attempt files and USB protection until exit is observable.
-            while process is not None:
-                try:
-                    if process.poll() is not None:
-                        break
-                except Exception:
-                    pass
-                if not warned:
-                    self._flash_status = "Process not stopped; port reserved"
-                    self._term_add("[FLASH] Cannot confirm process exit; ESP32 port and USB remain reserved.", raw=True)
-                    self.msg("[FLASH] Process still active - see OUTPUT", C_ERROR)
-                    warned = True
-                time.sleep(0.25)
+            def wait_for_child_exit():
+                process = getattr(self, "_flash_process", None)
+                warned = False
+                # A failed terminate/kill is NOT proof of child exit. Retain
+                # the port, files and USB until exit is observable, including
+                # a bounded recovery read's retained child.
+                while process is not None:
+                    try:
+                        if process.poll() is not None:
+                            break
+                    except Exception:
+                        pass
+                    if not warned:
+                        self._flash_status = "Process not stopped; port reserved"
+                        self._term_add("[FLASH] Cannot confirm process exit; ESP32 port and USB remain reserved.", raw=True)
+                        self.msg("[FLASH] Process still active - see OUTPUT", C_ERROR)
+                        warned = True
+                    time.sleep(0.25)
+            wait_for_child_exit()
             # Restore USB only if this operation actually switched it off.
             if getattr(self, "_flash_usb_off", False):
                 try:
@@ -5563,6 +5831,30 @@ class WatchDogsGame:
                 except Exception as exc:
                     self._term_add(f"[FLASH] USB restoration failed: {exc}", raw=True)
                     self.msg("[FLASH] USB power not restored - see OUTPUT", C_ERROR)
+            if getattr(self, "_kg_fw_recovery_needed", False):
+                # Read-only preflight deliberately stays in ROM. A refused or
+                # cancelled non-writing attempt must explicitly request the
+                # unchanged app's boot before normal serial reconnect.
+                self._flash_status = "KG install stopped; firmware boot not confirmed"
+                try:
+                    from .kg_firmware import find_bound_port
+                    from .esp32_flash import FlashError, run_esptool
+                    port = find_bound_port(getattr(self, "_kg_fw_usb_identity", None))
+                    if not port:
+                        raise FlashError("Bound KG device missing; cannot request application boot")
+                    run_esptool([sys.executable, "-m", "esptool", "--chip", "esp32c5", "-p", port,
+                                 "--before", "no-reset", "--after", "hard-reset", "--no-stub",
+                                 "get-security-info"],
+                                lambda line: self._term_add("[FW] KG application restart check", raw=True),
+                                on_process=lambda process: setattr(self, "_flash_process", process),
+                                total_timeout=30, idle_timeout=10)
+                    self._term_add("[FW] KG install stopped; application restart requested, awaiting a fresh firmware version.", raw=True)
+                except Exception as exc:
+                    self._term_add(f"[FW] KG application restart not confirmed: {exc}", raw=True)
+                    self.msg("[FW] Firmware boot not confirmed - see OUTPUT", C_WARNING)
+                finally:
+                    wait_for_child_exit()
+                    self._flash_status = "KG install stopped; firmware boot not confirmed"
             workspace = getattr(self, "_flash_workspace", None)
             if workspace is not None:
                 try:
@@ -5598,12 +5890,17 @@ class WatchDogsGame:
             finally:
                 self._flash_reconnect_thread = None
                 self._flash_running = False
+                if not self._flash_write_complete:
+                    self._kg_fw_expected_version = ""
                 job_lock.release()
 
     def _flash_do(self, board: str):
         """Prepare one fresh board-specific bundle, then exclusively flash it."""
-        from .config import FLASH_BOARDS, FIRMWARE_RELEASE_URL
-        from .esp32_flash import (FlashError, check_esptool, select_firmware_asset,
+        from .config import FLASH_BOARDS, FIRMWARE_RELEASE_URL, UPSTREAM_FIRMWARE_ENABLED
+        from .esp32_flash import FlashError
+        if not UPSTREAM_FIRMWARE_ENABLED and board != "xiao":
+            raise FlashError("The approved KG package supports only XIAO ESP32-C5 revision 1.0")
+        from .esp32_flash import (check_esptool, select_firmware_asset,
                                   extract_firmware_archive, run_esptool)
         from pathlib import Path
         from tempfile import TemporaryDirectory
@@ -5624,22 +5921,36 @@ class WatchDogsGame:
         attempt = Path(self._flash_workspace.name)
         self._flash_status = "Downloading firmware..."
         self._term_add(f"[FLASH] Board: {profile['label']}", raw=True)
-        request = Request(FIRMWARE_RELEASE_URL, headers={"User-Agent": "ESP32-Watch-Dogs"})
-        with urlopen(request, timeout=15) as response:
-            release = json.loads(response.read())
-        url = select_firmware_asset(release, board)
-        self._term_add(f"[FLASH] Release: {release['tag_name']}", raw=True)
-        archive = attempt / "firmware.zip"
-        request = Request(url, headers={"User-Agent": "ESP32-Watch-Dogs"})
-        with urlopen(request, timeout=120) as response, archive.open("wb") as output:
-            while True:
-                if getattr(self, "_shutting_down", False):
-                    return
-                block = response.read(8192)
-                if not block:
-                    break
-                output.write(block)
-        extract_firmware_archive(archive, attempt, tuple(profile["offsets"]))
+        package = None
+        if UPSTREAM_FIRMWARE_ENABLED:
+            request = Request(FIRMWARE_RELEASE_URL, headers={"User-Agent": "ESP32-Watch-Dogs"})
+            with urlopen(request, timeout=15) as response:
+                release = json.loads(response.read())
+            url = select_firmware_asset(release, board)
+            self._term_add(f"[FLASH] Release: {release['tag_name']}", raw=True)
+            archive = attempt / "firmware.zip"
+            request = Request(url, headers={"User-Agent": "ESP32-Watch-Dogs"})
+            with urlopen(request, timeout=120) as response, archive.open("wb") as output:
+                while True:
+                    if getattr(self, "_shutting_down", False):
+                        return
+                    block = response.read(8192)
+                    if not block:
+                        break
+                    output.write(block)
+            extract_firmware_archive(archive, attempt, tuple(profile["offsets"]))
+        else:
+            from .kg_firmware import (fetch_latest_package, download_image, verify_image,
+                                     version_tuple, bind_usb_identity, find_bound_port,
+                                     preflight_device)
+            package = fetch_latest_package()
+            if self._fw_version and version_tuple(package.version) < version_tuple(self._fw_version):
+                raise FlashError("The published KG package is older than the device's reported version")
+            self._flash_status = f"Downloading approved KG {package.version}..."
+            image = download_image(package, attempt / package.image_name)
+            verify_image(package, image)
+            self._kg_fw_package = package
+            self._term_add(f"[FW] KG fork package {package.version}; application only", raw=True)
         if getattr(self, "_shutting_down", False):
             return
         port = self._boot_serial_port
@@ -5647,6 +5958,7 @@ class WatchDogsGame:
             port = detect_esp32_port()
         if not port or not Path(port).exists():
             raise FlashError("ESP32 USB port was not detected; connection and USB power were left unchanged")
+        identity = bind_usb_identity(port) if package is not None else None
         # Detach under the same guard used by all normal serial paths. Close
         # outside it; a slow native close cannot block the Pyxel loop's lock.
         access_lock = getattr(self, "_esp_serial_lock", None)
@@ -5657,6 +5969,8 @@ class WatchDogsGame:
                 return
             self._serial_busy = True
             self._flash_device_acquired = True
+            if package is not None:
+                self._kg_fw_usb_identity = identity
             previous_connection = (self._esp32, self.state.connected)
             old_serial, self.serial = self.serial, None
             self._esp32 = self.state.connected = False
@@ -5675,6 +5989,8 @@ class WatchDogsGame:
                 else:
                     self._esp32 = self.state.connected = False
                 self._flash_device_acquired = False
+                if package is not None:
+                    self._kg_fw_usb_identity = None
                 raise
         if getattr(self, "_shutting_down", False):
             return
@@ -5703,12 +6019,14 @@ class WatchDogsGame:
             # Detect rather than trust an old ttyACM number after re-enumeration.
             port = None
             for _ in range(80):
-                port = detect_esp32_port()
+                port = find_bound_port(identity) if package is not None else detect_esp32_port()
                 if port:
                     break
                 if getattr(self, "_shutting_down", False):
                     return
                 time.sleep(0.03)
+        elif package is not None:
+            port = find_bound_port(identity)
         elif not port or not Path(port).exists():
             port = detect_esp32_port()
         if not port:
@@ -5716,15 +6034,35 @@ class WatchDogsGame:
         if getattr(self, "_shutting_down", False):
             return
         self._boot_serial_port = port
+        if package is not None:
+            self._flash_status = "Verifying XIAO KG firmware compatibility..."
+            self._kg_fw_recovery_needed = True
+            preflight_device(package, image, sys.executable, port, attempt,
+                             run_tool=run_esptool,
+                             on_process=lambda process: setattr(self, "_flash_process", process),
+                             on_line=lambda line: self._term_add(f"[FW] {line}", raw=True),
+                             board=board)
+            if getattr(self, "_shutting_down", False):
+                return
+            if find_bound_port(identity) != port:
+                raise FlashError("KG target changed during read-only preflight; no write was started")
+            verify_image(package, image)
+            self._kg_fw_expected_version = package.version
         after = "no-reset" if power_cycle else "hard-reset"
         command = [sys.executable, "-m", "esptool", "-p", port,
-                   "-b", str(profile["baud"]), "--before", profile["before"],
+                   "-b", str(profile["baud"]), "--before", "no-reset" if package is not None else profile["before"],
                    "--after", after, "--chip", "esp32c5", "--no-stub",
-                   "write-flash", "--flash-mode", "dio", "--flash-freq", "80m",
-                   "--flash-size", "detect"]
-        for filename, offset in profile["offsets"].items():
-            command.extend((offset, str(attempt / filename)))
+                   "write-flash"]
+        if package is not None:
+            command.extend(("0x20000", str(image)))
+        else:
+            command.extend(("--flash-mode", "dio", "--flash-freq", "80m", "--flash-size", "detect"))
+            for filename, offset in profile["offsets"].items():
+                command.extend((offset, str(attempt / filename)))
+        if getattr(self, "_shutting_down", False):
+            return
         self._flash_status = "Flashing ESP32..."
+        self._kg_fw_recovery_needed = False
         run_esptool(command, lambda line: self._term_add(f"[FLASH] {line}", raw=True),
                     on_process=lambda process: setattr(self, "_flash_process", process))
         self._flash_write_complete = True
@@ -6222,17 +6560,31 @@ class WatchDogsGame:
             if not _vm:
                 _vm = re.search(r"pong\s+v?(\d+\.\d+\.\d+)", s)
             if _vm:
-                self._fw_version = _vm.group(1)
-                self._term_add(f"[FW] Firmware v{self._fw_version}", raw=True)
-                if getattr(self, "_flash_fw_pending", False):
-                    self._flash_fw_pending = False
-                    self._flash_fw_deadline = None
-                    self._flash_status = f"Firmware v{self._fw_version} confirmed"
-                    self._term_add(f"[FLASH] Fresh firmware response: v{self._fw_version}", raw=True)
-                    self.msg(f"[FLASH] Firmware v{self._fw_version} confirmed", C_SUCCESS)
-                # Trigger background GitHub check
-                threading.Thread(target=self._check_fw_update,
-                                 daemon=True).start()
+                reported_version = _vm.group(1)
+                recovering = getattr(self, "_kg_fw_recovery_needed", False)
+                expected_version = (getattr(self, "_kg_fw_recovery_version", "") if recovering else
+                                    getattr(self, "_kg_fw_expected_version", ""))
+                if ((getattr(self, "_flash_fw_pending", False) or recovering) and expected_version
+                        and reported_version != expected_version):
+                    self._term_add(f"[FW] Awaiting KG {expected_version}; received version {reported_version}", raw=True)
+                else:
+                    self._fw_version = reported_version
+                    self._kg_fw_usb_identity = None
+                    self._term_add(f"[FW] Firmware KG {self._fw_version}", raw=True)
+                    if recovering:
+                        self._kg_fw_recovery_needed = False
+                        self._kg_fw_recovery_version = ""
+                        self._flash_status = f"KG install stopped; previous firmware KG {self._fw_version} responsive"
+                        self._term_add(f"[FW] Fresh previous-firmware response: KG {self._fw_version}", raw=True)
+                    if getattr(self, "_flash_fw_pending", False):
+                        self._flash_fw_pending = False
+                        self._flash_fw_deadline = None
+                        self._kg_fw_expected_version = ""
+                        self._flash_status = f"Firmware KG {self._fw_version} confirmed"
+                        self._term_add(f"[FLASH] Fresh firmware response: KG {self._fw_version}", raw=True)
+                        self.msg(f"[FLASH] Firmware KG {self._fw_version} confirmed", C_SUCCESS)
+                    threading.Thread(target=self._check_fw_update,
+                                     daemon=True).start()
 
         # Log to loot (handles PCAP/HCCAPX detection internally)
         if self.loot:
@@ -6470,7 +6822,11 @@ class WatchDogsGame:
                 self._bt_scan_done_time = time.time()
 
         # Add to terminal panel (non-parsed lines)
-        self._term_add(s)
+        # Brand the displayed version only; parsers and the serial log above
+        # keep the exact numeric device reply for compatibility/diagnostics.
+        display_line = re.sub(r"^((?:JanOS|WatchDogsGo) version:)\s*v?(\d+\.\d+\.\d+)$",
+                              r"\1 KG \2", s)
+        self._term_add(display_line)
 
     def _handle_esp_operation_state(self, line):
         stopped = "all operations stopped" in line or "all stopped" in line
@@ -7452,6 +7808,10 @@ class WatchDogsGame:
             return manager is None or step(name, lambda: getattr(manager, method)())
 
         try:
+            step("automatic map workers", lambda: self._auto_map.close()
+                 if getattr(self, "_auto_map", None) else True)
+            step("White Rabbit worker", lambda: self._white_rabbit.close()
+                 if getattr(self, "_white_rabbit", None) else True)
             collection_closed = stop("_piglet_collection", "close")
             if not collection_closed:
                 blocked.add("usb")
@@ -7636,6 +7996,18 @@ class WatchDogsGame:
         if not tiles_drawn:
             self._draw_coastlines()
         self._draw_grid()
+        controller = getattr(self, "_auto_map", None)
+        if controller is not None:
+            try:
+                controller.draw(
+                    pyxel, self.proj, W, HUD_TOP, TERM_Y,
+                    gps=self._auto_map_position(),
+                    own_gang=getattr(self._turf_portal, "_user_gang", ""))
+            except Exception as error:
+                if not self._auto_map_draw_failed:
+                    logging.getLogger(__name__).warning(
+                        "Territory overlay unavailable: %s", type(error).__name__)
+                    self._auto_map_draw_failed = True
         self._draw_ambient_motes()
         track = getattr(self, "_solo_track", None)
         if track is not None:
@@ -7645,6 +8017,15 @@ class WatchDogsGame:
         self._draw_wifi()
         self._draw_ble()
         self._draw_scan_fx()
+        rabbits = getattr(self, "_white_rabbit", None)
+        if rabbits is not None:
+            try:
+                rabbits.draw(pyxel, self.proj, W, HUD_TOP, TERM_Y)
+            except Exception as error:
+                if not self._white_rabbit_failed:
+                    logging.getLogger(__name__).warning(
+                        "White Rabbit markers unavailable: %s", type(error).__name__)
+                    self._white_rabbit_failed = True
         self._draw_player()
         # Radar-style overlays go on top of the player skull so they're
         # visible even at low zoom, where every source within the dongle
@@ -7663,6 +8044,7 @@ class WatchDogsGame:
         self._draw_radar()
         self._draw_emergency_alert()
         self._draw_scanlines()
+        self._draw_map_attribution(tiles_drawn)
         if self._cluster_popup:
             self._draw_cluster_popup()
         # Cluster mode hint (above terminal, visible on map)
@@ -7696,6 +8078,15 @@ class WatchDogsGame:
             self._draw_gps_wait_dialog()
         if getattr(self, "_game_update_notice", None) is not None:
             self._draw_game_update_notice()
+
+    def _draw_map_attribution(self, tiles_drawn):
+        if not tiles_drawn:
+            return
+        credit = "(c) Stadia Maps | (c) OpenMapTiles | (c) OpenStreetMap"
+        x, y = 4, TERM_Y - 16
+        # Builtin text is 4x6; leave the TERM_Y - 8 cluster hint unobscured.
+        pyxel.rect(x - 2, y - 1, len(credit) * 4 + 4, 8, C_HUD_BG)
+        _PYXEL_BUILTIN_TEXT(x, y, credit, C_TEXT)
 
     def _draw_coastlines(self):
         vl = self.proj.center_lat - self.proj.lat_span
@@ -9135,7 +9526,7 @@ class WatchDogsGame:
             running = self._is_running(state_key)
             is_stop = (state_key == "_stop_all")
             is_na = cmd.startswith("_") and state_key not in (
-                "_stop_all", "_reboot", "_dl_map", "_gps_toggle",
+                "_stop_all", "_reboot", "_dl_map", "_auto_map_toggle", "_gps_toggle",
                 "_lora_toggle", "_sdr_toggle", "_usb_toggle",
                 "_wl_screen", "_wpasec_up", "_wpasec_dl", "_flash_esp", "_gameupd",
                 "_bt_hid_wip", "_bd_wip", "_race_wip",
@@ -9981,8 +10372,33 @@ class WatchDogsGame:
                 break
 
     def _draw_flash_screen(self):
-        """Draw board picker overlay for firmware flash."""
-        from .config import FLASH_BOARDS
+        """Show the own-fork KG firmware version and installer."""
+        from .config import FLASH_BOARDS, FIRMWARE_RELEASE_URL, UPSTREAM_FIRMWARE_ENABLED
+        if not UPSTREAM_FIRMWARE_ENABLED:
+            dw, dh = 420, 194
+            dx, dy = (W - dw) // 2, (H - dh) // 2
+            pyxel.rect(dx, dy, dw, dh, 0)
+            pyxel.rectb(dx, dy, dw, dh, C_WARNING)
+            pyxel.rectb(dx + 1, dy + 1, dw - 2, dh - 2, C_COAST)
+            pyxel.text(dx + 6, dy + 6, "KG/SOLO FIRMWARE UPDATE", C_WARNING)
+            detected = f"Detected: KG {self._fw_version} (JanOS)" if self._fw_version else "Detected: unknown"
+            pyxel.text(dx + 6, dy + 24, detected, C_TEXT)
+            package = getattr(self, "_kg_fw_package", None)
+            latest = ("Checking KG fork..." if getattr(self, "_kg_fw_checking", False) else
+                      f"Latest KG: {package.version}" if package is not None else "Latest KG: press R to check")
+            pyxel.text(dx + 6, dy + 40, latest, C_HACK_CYAN)
+            pyxel.text(dx + 6, dy + 56, "Source: KiloGramowy / WDG Wars Go KG fork", C_TEXT)
+            pyxel.text(dx + 6, dy + 72, "Target: XIAO ESP32-C5 rev 1.0 / 8 MiB / SOLO", C_TEXT)
+            pyxel.text(dx + 6, dy + 88, "KG application only; preserve other partitions.", C_DIM)
+            status = (getattr(self, "_flash_status", "") if self._flash_running else
+                      (getattr(self, "_kg_fw_error", "") or getattr(self, "_flash_status", "")))
+            if not status and package is not None:
+                status = "Package ready from the KG fork."
+            for row, start in enumerate(range(0, min(len(status), 156), 78)):
+                pyxel.text(dx + 6, dy + 108 + row * 12, status[start:start + 78], C_TEXT)
+            controls = "ESC to close (operation continues)" if self._flash_running else "R check KG  ENTER install KG  ESC close"
+            pyxel.text(dx + 6, dy + dh - 14, controls, C_DIM)
+            return
         ROW_H = 14
         boards = list(FLASH_BOARDS.items())
         dw = 340
@@ -10001,7 +10417,7 @@ class WatchDogsGame:
             pyxel.text(dx + 4, dy + 36, "Check terminal for status", C_DIM)
             pyxel.text(dx + 4, dy + dh - 14, "ESC to close", C_DIM)
         else:
-            fw_info = (f"Current: v{self._fw_version}"
+            fw_info = (f"Current: KG {self._fw_version}"
                        if self._fw_version else "Current: unknown")
             if self._fw_update_available:
                 fw_info += f" -> v{self._fw_remote_version}"

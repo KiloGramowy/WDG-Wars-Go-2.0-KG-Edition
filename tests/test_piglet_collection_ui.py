@@ -73,6 +73,58 @@ def game():
 
 
 class ImportPresentationTests(unittest.TestCase):
+    def test_wardriver_menu_label_keeps_legacy_route_and_key(self):
+        items = dict(ENV["MENU_CATS"])["WARDRIVING"]
+        self.assertIn(("3", "Wardriving Collection", "_piglet_collection", "piglet_collection", None), items)
+
+    def test_collection_screen_identifies_dark3d_without_changing_pairing_controls(self):
+        g = game()
+        g._piglet_pairing_visible = True
+        g._piglet_status = dict(state="active", progress=dict(connected_devices=["dark3d-123456789abc"],
+            connected_peers=[dict(device_id="dark3d-123456789abc", device_type="dark3d-c5")]))
+        PX.text.reset_mock()
+        g._draw_piglet_collection_screen()
+        labels = [call.args[2] for call in PX.text.call_args_list]
+        self.assertIn("WARDRIVING - WARDRIVING COLLECTION", labels)
+        self.assertIn("Device: C5 WARDRIVER CONNECTED", labels)
+        self.assertIn("ENTER STOP COLLECTION   S stop   P pairing   ESC back", labels)
+        self.assertFalse(any("WARDRIVER CONNECTION" in label for label in labels))
+        self.assertTrue(any("then reboot Piglet" in label for label in labels))
+        self.assertTrue(any("S stop   P pairing   ESC back" in label for label in labels))
+
+    def test_collection_start_stop_labels_retain_existing_actions_for_each_phase(self):
+        g = game()
+        for state in ("starting", "active", "stopping", "stopped", "complete", "error"):
+            with self.subTest(state=state):
+                g._piglet_status = dict(state=state)
+                PX.text.reset_mock()
+                g._draw_piglet_collection_screen()
+                labels = [call.args[2] for call in PX.text.call_args_list]
+                action = "STOP" if state in ("starting", "active", "stopping") else "START"
+                self.assertIn("ENTER " + action + " COLLECTION   S stop   P pairing   ESC back", labels)
+                g._piglet_collection.start.assert_not_called()
+                g._piglet_collection.cancel.assert_not_called()
+
+    def test_peer_types_require_recent_activity_and_do_not_guess_from_device_name(self):
+        g = game()
+        cases = (
+            (["dark3d-123456789abc"], [], "ACTIVE WARDRIVER - dark3d-123456789abc"),
+            (["piglet-123456789abc"], [dict(device_id="piglet-123456789abc", device_type="piglet-kg")],
+             "PIGLET KG CONNECTED"),
+            (["dark3d-123456789abc", "piglet-123456789abc"],
+             [dict(device_id="dark3d-123456789abc", device_type="dark3d-c5"),
+              dict(device_id="piglet-123456789abc", device_type="piglet-kg")],
+             "C5 WARDRIVER CONNECTED | PIGLET KG CONNECTED"),
+            ([], [dict(device_id="dark3d-123456789abc", device_type="dark3d-c5")], "WAITING FOR WARDRIVER"),
+        )
+        for devices, peers, expected in cases:
+            with self.subTest(expected=expected):
+                g._piglet_status = dict(state="active", progress=dict(connected_devices=devices, connected_peers=peers))
+                PX.text.reset_mock()
+                g._draw_piglet_collection_screen()
+                labels = [call.args[2] for call in PX.text.call_args_list]
+                self.assertIn("Device: " + expected, labels)
+
     def setUp(self):
         self.g = game()
         PX.btnp = lambda _key: False
@@ -270,9 +322,9 @@ class ImportPresentationTests(unittest.TestCase):
         PX.text.reset_mock()
         self.g._draw_piglet_collection_screen()
         labels = [call.args[2] for call in PX.text.call_args_list]
-        self.assertIn("STOP PIGLET COLLECTION?", labels)
+        self.assertIn("STOP WARDRIVING COLLECTION?", labels)
         self.assertIn("Completed imports and already awarded XP stay saved.", labels)
-        self.assertIn("Unconfirmed source CSV stay on Piglet for another try.", labels)
+        self.assertIn("Unconfirmed source files stay on the device for retry.", labels)
 
     def test_enter_stops_active_collection_and_starts_stopped_collection(self):
         g = self.g
@@ -287,7 +339,7 @@ class ImportPresentationTests(unittest.TestCase):
         g = self.g
         g._piglet_collection_screen = False
         g.menu_open = True
-        g._handle_python_attack("_piglet_collection", "piglet_collection", "Piglet Collection", [])
+        g._handle_python_attack("_piglet_collection", "piglet_collection", "Wardriving Collection", [])
         self.assertTrue(g._piglet_collection_screen)
         self.assertFalse(g.menu_open)
         g._piglet_collection.start.assert_not_called()
@@ -337,7 +389,7 @@ class ImportPresentationTests(unittest.TestCase):
     def test_pairing_is_shown_before_start_and_p_still_hides_it(self):
         g = self.g
         g._piglet_status = dict(state="stopped")
-        g._handle_python_attack("_piglet_collection", "piglet_collection", "Piglet Collection", [])
+        g._handle_python_attack("_piglet_collection", "piglet_collection", "Wardriving Collection", [])
         self.assertTrue(g._piglet_pairing_visible)
         PX.text.reset_mock()
         g._draw_piglet_collection_screen()
@@ -347,7 +399,7 @@ class ImportPresentationTests(unittest.TestCase):
         self.assertIn("Collector IPv4 address: 10.72.0.1", labels)
         self.assertIn("Collector port: 8765", labels)
         self.assertIn("Collection pairing token: " + "0" * 64, labels)
-        self.assertIn("Piglet WebUI: save pairing. START here, then reboot Piglet.", labels)
+        self.assertIn("Piglet KG: save pairing in WebUI. START, then reboot Piglet.", labels)
         PX.btnp = lambda key: key == PX.KEY_P
         g._update_piglet_collection_screen()
         self.assertFalse(g._piglet_pairing_visible)
@@ -357,7 +409,7 @@ class ImportPresentationTests(unittest.TestCase):
         g = self.g
         for phase in ("starting", "active", "stopping"):
             g._piglet_status = dict(state=phase)
-            g._handle_python_attack("_piglet_collection", "piglet_collection", "Piglet Collection", [])
+            g._handle_python_attack("_piglet_collection", "piglet_collection", "Wardriving Collection", [])
             self.assertFalse(g._piglet_pairing_visible)
         g._piglet_collection.snapshot.return_value = dict(state="stopped")
         g._piglet_pairing_visible = True
@@ -380,9 +432,9 @@ class ImportPresentationTests(unittest.TestCase):
     def test_peer_activity_is_distinct_from_hotspot_and_pending_import(self):
         g = self.g
         for state, connected, expected in (
-                ("active", [], "WAITING FOR PIGLET KG"),
-                ("starting", [], "WAITING FOR PIGLET KG"),
-                ("active", ["piglet-test"], "ACTIVE PIGLET KG - piglet-test"),
+                ("active", [], "WAITING FOR WARDRIVER"),
+                ("starting", [], "WAITING FOR WARDRIVER"),
+                ("active", ["piglet-test"], "ACTIVE WARDRIVER - piglet-test"),
                 ("stopped", ["piglet-test"], "NOT CONNECTED"),
                 ("complete", [], "NOT CONNECTED")):
             with self.subTest(state=state, connected=connected):
@@ -391,7 +443,7 @@ class ImportPresentationTests(unittest.TestCase):
                 PX.text.reset_mock()
                 g._draw_piglet_collection_screen()
                 labels = [call.args[2] for call in PX.text.call_args_list]
-                self.assertIn("Piglet: " + expected, labels)
+                self.assertIn("Device: " + expected, labels)
                 self.assertFalse(any("old-unfinished-session" in label for label in labels))
                 self.assertIn("Hotspot: " + state.upper(), labels)
 

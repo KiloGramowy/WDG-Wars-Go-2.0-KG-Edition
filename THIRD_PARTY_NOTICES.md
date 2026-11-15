@@ -6,6 +6,29 @@ This fork builds on [LOCOSP's Watch Dogs Go](https://github.com/LOCOSP). Retain 
 
 The software's MIT notice does not automatically relicense third-party fonts, music, artwork or dependencies.
 
+## Dark3D C5 and Piglet Collection compatibility
+
+Dark3D's existing firmware is maintained by
+[Dark3D](https://github.com/dark3d/ESP32DualBandWardriver), based on
+[ESP32DualBandWardriver by Just Call Me Koko](https://github.com/justcallmekoko/ESP32DualBandWardriver).
+KiloGramowy authors the new UConsole receiver integration. CSV interoperability
+and a shared Collection receiver do not transfer authorship of Dark3D's existing
+functions or transfer private source/build rights.
+
+The official **`v2.3.0+dark3d.13`** is the CSV compatibility baseline.
+Modified Dark3D Collection sender firmware awaits its own separately approved
+release. No Dark3D source, build environment, ELF/MAP or image is redistributed
+by this game candidate. The receiver is independently implemented format and
+protocol interoperability code; it does not grant firmware redistribution rights.
+
+## Included public KG/SOLO and Piglet firmware
+
+The previously published, unchanged KG/SOLO 1.7.0 and Piglet application images
+retain their source patches/sketches, exact manifests/build inputs and
+[firmware component notices](firmware/THIRD_PARTY_NOTICES.md). They are separate
+from the game's 0.9.21 version and from the private Dark3D project. Neither a
+game update nor unpacking these files flashes a device.
+
 ## Spleen 5x8 font — BSD 2-Clause
 
 `assets/spleen-5x8.bdf` contains the Spleen font by Frederic Cambus and its copyright/SPDX header. Preserve that header. The following full notice was checked against the [primary Spleen license source](https://github.com/fcambus/spleen/blob/5116f8eac7f65da2cfa169626ec43b5d041665fe/LICENSE) on 2026-11-01:
@@ -45,7 +68,7 @@ Upstream artwork attribution and any applicable third-party rights remain releva
 
 ## Update-window profile image
 
-`assets/kilogramowy-avatar-32.png` is a resized copy of [KiloGramowy's GitHub profile avatar](https://avatars.githubusercontent.com/u/315514197?v=4), bundled at the account owner's request for the private updater preview. It is separate from LOCOSP's original artwork; no third-party authorship or additional image license is invented here.
+`assets/kilogramowy-avatar-32.png` is a resized copy of [KiloGramowy's GitHub profile avatar](https://avatars.githubusercontent.com/u/315514197?v=4), bundled at the account owner's request for the update window. It is separate from LOCOSP's original artwork; no third-party authorship or additional image license is invented here.
 
 ## Offline geographic data
 
@@ -70,13 +93,12 @@ Keep the standalone audio, download archive and unused candidate tracks out of t
 
 ## Dependencies
 
-Installed third-party Python/system packages retain their own licenses and notices. Listing or installing a dependency does not place it under this project's MIT license. Keep applicable notices when building a bundled distribution rather than a source-only checkout.
+**The entire WDG game remains open source.** Installed third-party Python/system packages retain their own licenses and notices. Scapy is GPL-2.0-only; its separately installed source package and notices retain those terms. This source release neither embeds Scapy into a closed executable nor relicenses it as MIT. Listing or installing a dependency does not place it under this project's MIT license. Keep applicable notices when building a bundled distribution rather than a source-only checkout.
 
-## Firmware included with 0.9.20
+## Default downloaded street basemap
 
-The compatible JanOS SOLO and Piglet Collection applications preserve their
-upstream MIT licenses, source provenance and pinned build instructions. Their
-third-party SDK/runtime components retain separate licenses. See
-[`firmware/THIRD_PARTY_NOTICES.md`](firmware/THIRD_PARTY_NOTICES.md) and the copied
-original notices under `firmware/licenses/`; neither the firmware libraries nor
-the compiler runtime are relicensed by this repository's MIT notice.
+The existing tile downloader uses **Alidade Smooth Dark** from Stadia Maps.
+
+**Default street-basemap credits:** © [Stadia Maps](https://stadiamaps.com/attribution/) · © [OpenMapTiles](https://openmaptiles.org/) · © [OpenStreetMap contributors](https://www.openstreetmap.org/copyright).
+
+See [Stadia Maps attribution requirements](https://docs.stadiamaps.com/attribution/). These provider/data credits are separate from the game's MIT license. They describe the default tile service, not verified input provenance for every owner-supplied illustration.

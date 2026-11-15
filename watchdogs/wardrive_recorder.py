@@ -104,6 +104,21 @@ class WardriveRecorder:
         with self._condition:
             return max(0, self._pending_count - self._replayed)
 
+    @property
+    def work_pending(self):
+        """Whether the worker or its queued presentation still needs CPU time.
+
+        An empty input queue can still have an in-flight write. Startup pending
+        counts alone also omit ordinary positioned writes and saved UI events.
+        """
+        with self._condition:
+            if not self._stopped and (not self._initialised
+                    or self._stage == "replay" or self._closing):
+                return True
+            with self._jobs.mutex:
+                unfinished = self._jobs.unfinished_tasks > 0
+            return unfinished or not self._events.empty()
+
     def _input_error(self):
         with self._condition:
             self._submit_error = True

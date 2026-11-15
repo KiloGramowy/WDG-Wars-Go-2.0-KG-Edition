@@ -3,7 +3,7 @@
 **0.9.20 DEV / unreleased.** This builds the separate **XIAO ESP32-C5 Piglet**;
 it does not build or flash the embedded uConsole JanOS firmware.
 
-The complete sketch is in [`source/Piglet/`](source/Piglet/Piglet.ino). No local device
+The complete sketch is in [`source/Piglet/`](source/Piglet/). No local device
 configuration, SD files, credentials or flash dump is used to build the image.
 Source provenance, individual hashes and exact board options are recorded in
 [`manifest.json`](manifest.json). Preserve the included upstream license.
