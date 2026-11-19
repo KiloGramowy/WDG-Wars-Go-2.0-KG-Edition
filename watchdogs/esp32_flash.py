@@ -1,7 +1,8 @@
 """Small, device-independent helpers for the existing ESP32 flash wizard.
 
-These helpers do not open a serial port, switch GPIO or retry a firmware write.
-Dependency repair is a separate explicit action using the game interpreter.
+Dependency repair is separate from device operations. The explicit native USB
+reset helper opens only the already-bound local port to request an application
+reset; it never synchronizes ROM, sends device commands or flashes firmware.
 The caller owns the port and the lifetime of its attempt directory, including
 the exceptional case of an unkillable child process.
 """
@@ -269,6 +270,8 @@ def run_esptool(command, on_line, *, on_process=None, popen=None,
     monotonic = monotonic or time.monotonic
     process = None
     reader = None
+    emit = decoder = None
+    flushed = False
     stopped = threading.Event()
     reader_done = threading.Event()
     events = queue.Queue(maxsize=128)
@@ -364,6 +367,31 @@ def run_esptool(command, on_line, *, on_process=None, popen=None,
                 stopped.wait(poll_interval)
     except BaseException as exc:
         confirmed = process is None or _stop_child(process, stop_timeout)
+        # A failed connect often ends in an unterminated "Connecting...".
+        # Keep that tail and the child's final stdout/stderr after termination,
+        # without trusting EOF from an inherited or stuck pipe. A retained
+        # live child gets no extra waiting and still owns its serial port.
+        if emit is not None:
+            try:
+                deadline = time.monotonic() + (drain_timeout if confirmed else 0)
+                for _ in range(128):
+                    remaining = max(0, deadline - time.monotonic())
+                    try:
+                        kind, value = events.get(timeout=min(.01, remaining))
+                    except queue.Empty:
+                        if reader_done.is_set() or remaining <= 0:
+                            break
+                        continue
+                    if kind == "data":
+                        emit(decoder.decode(value) if isinstance(value, bytes) else value)
+                    elif kind == "error":
+                        on_line("Cannot read final esptool output: " + _text(value))
+                if not flushed:
+                    emit(decoder.decode(b"", final=True), final=True)
+            except BaseException:
+                # Diagnostic callbacks/draining must not replace the actual
+                # install failure or discard an unconfirmed process handle.
+                pass
         if isinstance(exc, FlashError):
             message = str(exc)
         elif isinstance(exc, PermissionError):
@@ -386,15 +414,64 @@ def run_esptool(command, on_line, *, on_process=None, popen=None,
                 pass
 
 
+def reset_c5_usb_to_app(port, *, serial_factory=None, hard_reset=None):
+    """Request the official native USB application reset without ROM sync.
+
+    The installer must bind the physical C5 identity and exclusively own its
+    port before invoking this helper in its supervised child process. A reset
+    request is not proof that the application booted or answered afterwards.
+    """
+    if (not isinstance(port, str) or not port.strip() or "://" in port
+            or any(ord(char) < 32 or ord(char) == 127 for char in port)):
+        raise FlashError("Native USB reset requires the bound local serial port")
+    connection = None
+    failure = None
+    try:
+        if serial_factory is None:
+            from serial import Serial
+            serial_factory = Serial
+        if hard_reset is None:
+            from esptool.reset import HardReset
+            hard_reset = HardReset
+        options = dict(port=None, baudrate=115200, timeout=1, write_timeout=2)
+        if os.name == "posix":
+            options["exclusive"] = True
+        connection = serial_factory(**options)
+        # Configure the modem-line state while closed: opening with both
+        # asserted can request a different USB Serial/JTAG reset transition.
+        connection.dtr = False
+        connection.rts = False
+        connection.port = port
+        connection.open()
+        hard_reset(connection, uses_usb=True)()
+    except Exception as exc:
+        failure = exc
+    finally:
+        if connection is not None:
+            try:
+                connection.close()
+            except Exception as exc:
+                if failure is None:
+                    failure = exc
+    if failure is not None:
+        raise FlashError("Native USB application reset request failed: " +
+                         _text(failure)) from failure
+
+
 def _dependency_main(argv=None):
-    """Existing setup/launcher entry point; this CLI cannot flash hardware."""
+    """Existing helper entry point; no branch can flash or repair then flash."""
     import argparse
-    parser = argparse.ArgumentParser(description="Check or repair esptool in this game Python")
+    parser = argparse.ArgumentParser(description="Game Python tools and supervised native USB reset")
     action = parser.add_mutually_exclusive_group(required=True)
     action.add_argument("--check-esptool", action="store_true")
     action.add_argument("--repair-esptool", action="store_true")
+    action.add_argument("--reset-c5-usb-to-app", metavar="PORT")
     args = parser.parse_args(argv)
     try:
+        if args.reset_c5_usb_to_app is not None:
+            reset_c5_usb_to_app(args.reset_c5_usb_to_app)
+            print("Native USB application reset requested; firmware boot is not confirmed")
+            return 0
         version = (repair_esptool(sys.executable, on_line=print) if args.repair_esptool
                    else check_esptool(sys.executable))
         print("esptool " + version + " ready in " + sys.executable)

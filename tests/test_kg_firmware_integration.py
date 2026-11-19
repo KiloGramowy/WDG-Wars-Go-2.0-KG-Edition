@@ -66,7 +66,7 @@ class KGFirmwareIntegrationTests(unittest.TestCase):
         self.assertTrue(any(event[0]=='preflight' for event in env.kg_calls))
         self.assertEqual(env.game._kg_fw_expected_version,'')
         self.assertEqual(len(env.recovery_commands),1)
-        self.assertEqual(env.recovery_commands[0][0][-1],'get-security-info')
+        self.assertIn('--reset-c5-usb-to-app',env.recovery_commands[0][0])
         self.assertFalse(any(event[0]=='serial-open' for event in env.events));self.assert_released(env)
 
     def test_changed_usb_target_after_preflight_never_falls_back_to_another_device(self):
@@ -169,7 +169,7 @@ class KGFirmwareIntegrationTests(unittest.TestCase):
         env.flash();game=env.game;game.loot=None
         self.assertTrue(game._kg_fw_recovery_needed)
         self.assertEqual(game._kg_fw_recovery_version,'1.6.5')
-        self.assertIn('boot not confirmed',game._flash_status)
+        self.assertIn('boot unconfirmed',game._flash_status)
         game._solo=SimpleNamespace(confirmed_wifi=False,confirmed_ble=False,handle_line=lambda line:True)
         game._handle_serial_line('JanOS version: 1.7.0')
         self.assertEqual(game._fw_version,'');self.assertTrue(game._kg_fw_recovery_needed)
@@ -210,10 +210,10 @@ class KGFirmwareIntegrationTests(unittest.TestCase):
         env.kg_preflight_error=KGFirmwareError('Synthetic layout refusal');env.flash()
         self.assertEqual(env.flash_commands,[]);self.assertEqual(len(env.recovery_commands),1)
         command,options=env.recovery_commands[0]
-        self.assertEqual(command[command.index('-p')+1],'/dev/ttyACM7')
-        self.assertEqual(command[command.index('--before')+1],'no-reset')
-        self.assertEqual(command[command.index('--after')+1],'hard-reset')
-        self.assertEqual(options['total_timeout'],30);self.assertEqual(options['idle_timeout'],10)
+        self.assertEqual(command[command.index('--reset-c5-usb-to-app')+1],'/dev/ttyACM7')
+        self.assertNotIn('get-security-info',command)
+        self.assertNotIn('--before',command)
+        self.assertEqual(options['total_timeout'],15);self.assertEqual(options['idle_timeout'],5)
         self.assertIn(('serial-open','/dev/ttyACM7'),env.events)
         self.assertFalse(any(event[0]=='detect-port' for event in env.events));self.assert_released(env)
 

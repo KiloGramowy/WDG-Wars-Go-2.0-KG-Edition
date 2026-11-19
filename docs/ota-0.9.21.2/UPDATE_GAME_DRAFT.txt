@@ -1,0 +1,127 @@
+RELEASE 0.9.21.2 - USB, PICK UP THE PHONE.
+
+A focused follow-up for a KG/SOLO installation that stops before writing, then
+struggles to get the previous JanOS talking again.
+
+Original game and JanOS by LOCOSP. KG Edition changes by KiloGramowy.
+
+1. RECOVERY - ASK FOR THE APP WITHOUT BORROWING A WORKING ROM
+
+ Before: after a failed first ROM connection, recovery still used a command that
+assumed the ROM was already answering. That could leave the previous application
+unconfirmed, followed by a failed reconnect handshake.
+
+ Now: recovery can request an application restart through the bound native USB
+device, using the official USB reset sequence in the game's own Python. This
+request does not need ROM synchronization first and does not read, erase or write
+flash. It is supervised and bounded; a process whose exit is unconfirmed keeps
+ownership of the port.
+
+A reset request is not proof of a boot. The same device must return a fresh,
+matching JanOS response before the previous application is reported responsive. A
+successful KG installation still needs a fresh SOLO capability response too. No
+automatic second flash follows an error.
+
+*USB can be dramatic. Recovery no longer asks the silent party to answer a question
+before picking up the phone.*
+
+2. RECONNECT - THE SAME BOARD, A QUIETER HELLO
+
+ Before: reconnect could open native USB with control lines already asserted, and
+an uncertain close could lose the reference to the old connection. Seeing a USB
+port was also too easy to mistake for progress toward a working application.
+
+ Now: the bound native USB connection sets its control lines idle before opening.
+The installer waits for stable enumeration of that same device, keeps the old
+connection when its close is not confirmed, and does not let reconnect compete with
+a live tool process. A port appearing is only a port appearing - firmware still has
+to answer.
+
+The supported profile's USB reset choice is explicit. This is not a claim that
+changing one reset flag cures every C5: esptool already supports automatic native
+USB reset selection.
+
+3. REAL DIAGNOSTICS - KEEP THE FIRST CLUE
+
+ Before: every recovery output line became the same "KG application restart check"
+message. A later recovery failure could cover the first installation failure, and
+OUTPUT existed only in memory. A supervisor failure could also lose a final output
+fragment.
+
+ Now: redacted [KG-FW] records preserve the operation stage, the first error, and
+the actual merged stdout/stderr from installation and recovery, including final
+output fragments. They use the game's existing last_run.log logging route so the
+useful evidence survives closing the game. Recovery errors remain separate from the
+original failure.
+
+The game distinguishes before write, during write, and waiting for startup
+confirmation. A watchdog message such as "esptool produced no output" describes the
+supervisor's observation; it does not diagnose a broken chip or identify the cause
+of a USB failure. Private USB identifiers and device paths are redacted. Flash/NVS
+recovery contents are never added to this diagnostic log.
+
+4. THE SAFETY CHECKS KEEP THEIR JOBS
+
+The existing XIAO ESP32-C5 revision 1.0 / 8 MiB / approved active ota_0 scope
+stays. Physical USB identity, image/header/SHA, ROM revision, flash size, security
+state, actual partition table, active slot, exclusive port ownership and the
+required matching recovery backups remain mandatory.
+
+Ordinary downgrade protection stays. R -> M -> Y remains a separate, conscious
+migration from firmware without SOLO to the approved older JanOS 1.7.0 + SOLO base;
+N / Esc cancels its confirmation. C can cancel before the write starts. An unknown
+or stale SOLO response never authorizes migration.
+
+The write remains application-only, with no full erase and no changes to
+bootloader, partition table, OTA selection, NVS, PHY or other partitions. Firmware
+images/manifests for KG/SOLO and Piglet keep their exact bytes. Stub selection and
+flash speed are unchanged. This update does not raise the esptool minimum, change
+requirements.txt, pin a replacement esptool, or extend timeouts as a substitute for
+a fix. esptool 5.0.0 remains supported; the screenshots do not establish esptool
+5.6.0 as the cause.
+
+The 0.9.21.1 repair in Firmware KG/SOLO -> P stays available in the actual game
+Python. Existing XP, levels, loot, history, logs, settings, keys and game/radio
+rules stay. No new JanOS build or Dark3D firmware is included.
+
+5. UPDATE THE GAME
+
+Open TAB -> SYSTEM -> Update Game -> R -> Enter -> Y. N / Esc cancels before
+installation. Updaters 0.9.19.1 onward restart after a successful game update;
+0.9.17 / 0.9.18 / 0.9.19 still need one manual relaunch on their first upgrade.
+
+Game OTA never flashes ESP32. Firmware installation remains a separate operation
+you select and confirm.
+
+6. RECEIPTS AND HONEST LIMITS
+
+Software regressions exercise failed first preflight, recovery without ROM
+synchronization, control-line ordering, retained connection/process ownership,
+original-error and output preservation, refused writes, and the existing
+migration/startup-confirmation path. Final executed results, explicit skips, source
+provenance and asset hashes are recorded separately in the release manifest and
+verification report. Overlapping runs and historical totals are not added together.
+
+The first physical ROM timeout remains unexplained by the available screenshots. No
+physical C5 migration, USB transition, recovery, or repair of PapaSucio's device is
+claimed. This release repairs confirmed code defects in recovery, hand-off and
+diagnostics; it is not a physically confirmed cure for that first timeout.
+Validation is local software testing, not evidence that every C5 works.
+
+7. PAPASUCIO - ONE USEFUL FOLLOW-UP
+
+After updating, stop ESP32 tools and make one existing Firmware KG/SOLO -> R -> M
+-> Y attempt only if the same supported device responds and offers that migration.
+Read the older-base warning. If it still stops, share only the redacted [KG-FW]
+block from ~/.watchdogs/last_run.log; if you relaunched the game, use
+previous_run.log. This one record separates the first failing phase and its real
+tool output from the later recovery result. Do not send flash/NVS backups or try a
+series of reflashes.
+
+ [Release 0.9.21.2](https://github.com/KiloGramowy/WDG-Wars-Go-2.0-KG-Edition/relea
+ses/tag/v0.9.21.2)   [All
+releases](https://github.com/KiloGramowy/WDG-Wars-Go-2.0-KG-Edition/releases)
+[USB recovery and diagnostic guide](https://github.com/KiloGramowy/WDG-Wars-Go-2.0-
+KG-Edition/blob/v0.9.21.2/docs/FIRMWARE_KG_SOLO_0.9.21.2.md)
+
+USB, PICK UP THE PHONE. KEEP THE FIRST CLUE. KEEP THE LOOT.

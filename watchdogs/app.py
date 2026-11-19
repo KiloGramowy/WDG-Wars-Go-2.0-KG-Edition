@@ -1601,6 +1601,13 @@ class WatchDogsGame:
         if (getattr(self, "_serial_busy", False)
                 or (getattr(self, "_flash_running", False) and not owned_reconnect)):
             return False
+        process = getattr(self, "_flash_process", None)
+        if process is not None:
+            try:
+                if process.poll() is None:
+                    return False
+            except Exception:
+                return False
         access_lock = getattr(self, "_esp_serial_lock", None)
         if access_lock is not None and not access_lock.acquire(blocking=False):
             return False
@@ -1622,8 +1629,14 @@ class WatchDogsGame:
             if not port:
                 return False
             try:
+                previous = getattr(self, "serial", None)
+                if previous is not None and (getattr(previous, "serial_conn", None) is not None or previous.is_open):
+                    return False  # A previous close has not released its handle.
                 self.serial = SerialManager(port)
-                self.serial.setup()
+                if identity is not None:
+                    self.serial.setup(native_usb=True)
+                else:
+                    self.serial.setup()
                 solo = getattr(self, "_solo", None)
                 if solo is not None:
                     solo.disconnected()
@@ -1665,8 +1678,12 @@ class WatchDogsGame:
                         self.serial.close()
                     except Exception:
                         pass
-                self.serial = None
-                self._term_add(f"[ERR] Reconnect failed: {e}", raw=True)
+                if self.serial is not None and getattr(self.serial, "serial_conn", None) is None:
+                    self.serial = None
+                if identity is not None:
+                    self._kg_flash_log(f"[ERR] Reconnect failed: {e}")
+                else:
+                    self._term_add(f"[ERR] Reconnect failed: {e}", raw=True)
                 return False
         finally:
             if access_lock is not None:
@@ -5996,6 +6013,35 @@ class WatchDogsGame:
             self._flash_write_started = True
             return True
 
+    def _kg_flash_log(self, line, raw=True):
+        """Persist only scoped, redacted firmware diagnostics via existing logs."""
+        text = str(line)
+        identity = getattr(self, "_kg_fw_usb_identity", None)
+        for name in ("serial_number", "location"):
+            value = getattr(identity, name, None)
+            if value:
+                text = text.replace(value, "[USB identity hidden]")
+        text = re.sub(r"\x1b\[[0-?]*[ -/]*[@-~]", "", text)
+        text = re.sub(r"(?i)(?:[0-9a-f]{2}[:-]){5}[0-9a-f]{2}", "[MAC hidden]", text)
+        text = re.sub(r"(?i)(\b(?:serial(?: number)?|unique(?: id)?|chip\s+(?:id|uid)|efuse|password|api[_ -]?key|token)\s*[:=]\s*)[^\r\n]+", r"\1[hidden]", text)
+        text = re.sub(r"/dev/[^\s,;]+", "[bound USB port]", text)
+        text = re.sub(r"/(?:home|Users)/[^/\s]+", "/[home]", text)
+        text = re.sub(r"(?i)[A-Z]:\\Users\\[^\\\s]+", "[home]", text)
+        text = re.sub(r"[\x00-\x1f\x7f]", " ", text)[:4096]
+        message = "[KG-FW] stage=" + getattr(self, "_kg_fw_stage", "prepare") + " " + text
+        logging.getLogger(__name__).info("%s", message)
+        self._term_add(message, raw=True)
+
+    def _kg_set_flash_stage(self, stage):
+        self._kg_fw_stage = stage
+        self._kg_flash_log("Operation stage: " + stage)
+
+    def _kg_flash_failure_status(self):
+        scope = ("Write complete; start unconfirmed" if getattr(self, "_flash_write_complete", False) else
+                 "Write interrupted" if getattr(self, "_flash_write_started", False) else "Stopped before write")
+        stage = getattr(self, "_kg_fw_failed_stage", "") or getattr(self, "_kg_fw_stage", "prepare")
+        return scope + " (" + stage + "); first error in OUTPUT / last_run.log"
+
     def _run_flash(self, board: str):
         # Real instances initialize both locks before any UI/worker can run.
         # Lazy creation also supports old isolated method harnesses.
@@ -6003,8 +6049,11 @@ class WatchDogsGame:
         if job_lock is None:
             job_lock = self._flash_job_lock = threading.Lock()
         if not job_lock.acquire(blocking=False):
-            self._term_add("[FLASH] An operation is already running", raw=True)
+            self._kg_flash_log("[FLASH] An operation is already running", raw=True)
             return
+        self._kg_fw_primary_error = self._kg_fw_failed_stage = ""
+        self._kg_fw_recovery_deadline = None
+        self._kg_fw_stage = "prepare"
         self._flash_running = True
         self._flash_process = self._flash_workspace = None
         self._flash_device_acquired = self._flash_write_complete = False
@@ -6015,6 +6064,7 @@ class WatchDogsGame:
         self._kg_fw_recovery_needed = False
         self._kg_fw_recovery_version = getattr(self, "_fw_version", "")
         try:
+            self._kg_set_flash_stage("prepare")
             if not getattr(self, "_shutting_down", False):
                 from .config import UPSTREAM_FIRMWARE_ENABLED
                 if not UPSTREAM_FIRMWARE_ENABLED:
@@ -6033,8 +6083,10 @@ class WatchDogsGame:
                         raise RuntimeError("Stop ESP32 operations before installing KG firmware")
                 self._flash_do(board)
         except Exception as exc:
-            self._flash_status = "Flash failed - see OUTPUT"
-            self._term_add(f"[FLASH] {exc}", raw=True)
+            self._kg_fw_primary_error = str(exc)
+            self._kg_fw_failed_stage = getattr(self, "_kg_fw_stage", "prepare")
+            self._flash_status = self._kg_flash_failure_status()
+            self._kg_flash_log(f"[FLASH] First failure: {exc}", raw=True)
             self.msg("[FLASH] Failed - see OUTPUT", C_ERROR)
         finally:
             def wait_for_child_exit():
@@ -6051,7 +6103,7 @@ class WatchDogsGame:
                         pass
                     if not warned:
                         self._flash_status = "Process not stopped; port reserved"
-                        self._term_add("[FLASH] Cannot confirm process exit; ESP32 port and USB remain reserved.", raw=True)
+                        self._kg_flash_log("[FLASH] Cannot confirm process exit; ESP32 port and USB remain reserved.", raw=True)
                         self.msg("[FLASH] Process still active - see OUTPUT", C_ERROR)
                         warned = True
                     time.sleep(0.25)
@@ -6063,44 +6115,45 @@ class WatchDogsGame:
                         raise OSError("USB power-on failed")
                     self._flash_usb_off = False
                 except Exception as exc:
-                    self._term_add(f"[FLASH] USB restoration failed: {exc}", raw=True)
+                    self._kg_flash_log(f"[FLASH] USB restoration failed: {exc}", raw=True)
                     self.msg("[FLASH] USB power not restored - see OUTPUT", C_ERROR)
             if getattr(self, "_kg_fw_recovery_needed", False):
-                # Read-only preflight deliberately stays in ROM. A refused or
-                # cancelled non-writing attempt must explicitly request the
-                # unchanged app's boot before normal serial reconnect.
-                self._flash_status = "KG install stopped; firmware boot not confirmed"
+                # Returning to the old app must not depend on a successful
+                # ROM sync: the first preflight may never have reached ROM.
+                self._kg_set_flash_stage("return-to-app")
                 try:
-                    from .kg_firmware import find_bound_port
-                    from .esp32_flash import FlashError, run_esptool
-                    port = find_bound_port(getattr(self, "_kg_fw_usb_identity", None))
-                    if not port:
-                        raise FlashError("Bound KG device missing; cannot request application boot")
-                    run_esptool([sys.executable, "-m", "esptool", "--chip", "esp32c5", "-p", port,
-                                 "--before", "no-reset", "--after", "hard-reset", "--no-stub",
-                                 "get-security-info"],
-                                lambda line: self._term_add("[FW] KG application restart check", raw=True),
+                    from .kg_firmware import wait_bound_port
+                    from .esp32_flash import run_esptool
+                    identity = getattr(self, "_kg_fw_usb_identity", None)
+                    port = wait_bound_port(identity, monotonic=time.monotonic, sleep=time.sleep)
+                    reset_helper = Path(self._app_dir) / "watchdogs" / "esp32_flash.py"
+                    run_esptool([sys.executable, "-u", str(reset_helper),
+                                 "--reset-c5-usb-to-app", port],
+                                lambda line: self._kg_flash_log(f"[FW] {line}"),
                                 on_process=lambda process: setattr(self, "_flash_process", process),
-                                total_timeout=30, idle_timeout=10)
-                    self._term_add("[FW] KG install stopped; application restart requested, awaiting a fresh firmware version.", raw=True)
+                                total_timeout=15, idle_timeout=5)
+                    wait_bound_port(identity, monotonic=time.monotonic, sleep=time.sleep)
+                    self._kg_flash_log("[FW] Application reset requested without ROM sync; awaiting fresh previous JanOS response.")
                 except Exception as exc:
-                    self._term_add(f"[FW] KG application restart not confirmed: {exc}", raw=True)
-                    self.msg("[FW] Firmware boot not confirmed - see OUTPUT", C_WARNING)
+                    self._kg_flash_log(f"[FW] Application recovery reset failed: {exc}")
+                    self.msg("[FW] Firmware boot not confirmed - see OUTPUT/log", C_WARNING)
                 finally:
                     wait_for_child_exit()
-                    self._flash_status = "KG install stopped; firmware boot not confirmed"
+                    self._kg_fw_recovery_deadline = time.monotonic() + 15.0
+                    self._flash_status = self._kg_flash_failure_status() + "; previous boot unconfirmed"
             workspace = getattr(self, "_flash_workspace", None)
             if workspace is not None:
                 try:
                     workspace.cleanup()
                 except OSError as exc:
-                    self._term_add(f"[FLASH] Temporary cache cleanup failed: {exc}", raw=True)
+                    self._kg_flash_log(f"[FLASH] Temporary cache cleanup failed: {exc}", raw=True)
             self._flash_workspace = self._flash_process = None
             acquired = getattr(self, "_flash_device_acquired", False)
             if acquired and self._flash_write_complete:
                 self._flash_fw_pending = True
                 self._flash_fw_deadline = time.monotonic() + 15.0
-                self._flash_status = "Write complete; waiting for USB"
+                self._flash_status = (self._kg_flash_failure_status() if self._kg_fw_primary_error else
+                                      "Write complete; waiting for USB")
             access_lock = getattr(self, "_esp_serial_lock", None)
             if access_lock is not None:
                 access_lock.acquire()
@@ -6115,12 +6168,13 @@ class WatchDogsGame:
                     connected = self._try_reconnect_esp32(_flash_owner=True)
                     if self._flash_write_complete and getattr(self, "_flash_fw_pending", False):
                         if connected:
-                            self._flash_status = "USB connected; waiting for firmware"
-                            self._term_add("[FLASH] USB connected; awaiting a fresh firmware response.", raw=True)
+                            if not self._kg_fw_primary_error:
+                                self._flash_status = "USB connected; waiting for firmware"
+                            self._kg_flash_log("[FLASH] USB connected; awaiting a fresh firmware response.", raw=True)
                         else:
-                            self._term_add("[FLASH] Write complete; USB not detected yet. Reconnect will retry.", raw=True)
+                            self._kg_flash_log("[FLASH] Write complete; USB not detected yet. Reconnect will retry.", raw=True)
             except Exception as exc:
-                self._term_add(f"[FLASH] Reconnect failed: {exc}", raw=True)
+                self._kg_flash_log(f"[FLASH] Reconnect failed: {exc}", raw=True)
             finally:
                 self._flash_reconnect_thread = None
                 self._flash_running = False
@@ -6147,7 +6201,7 @@ class WatchDogsGame:
         # Preserve dde2bd7: the game's interpreter and a 10-second version
         # probe must succeed before any cache/download/serial/USB operation.
         version = check_esptool(sys.executable)
-        self._term_add(f"[FLASH] esptool {version}; Python: {sys.executable}", raw=True)
+        self._kg_flash_log(f"[FLASH] esptool {version}; Python: {sys.executable}", raw=True)
         fw_dir = Path(self._app_dir) / "firmware_cache"
         try:
             fw_dir.mkdir(exist_ok=True)
@@ -6156,7 +6210,7 @@ class WatchDogsGame:
             raise FlashError(f"Cannot write firmware cache {fw_dir}: {exc}. Check this directory's permissions.") from exc
         attempt = Path(self._flash_workspace.name)
         self._flash_status = "Downloading firmware..."
-        self._term_add(f"[FLASH] Board: {profile['label']}", raw=True)
+        self._kg_flash_log(f"[FLASH] Board: {profile['label']}", raw=True)
         package = None
         authorization = getattr(self, "_kg_fw_migration_authorization", None)
         if UPSTREAM_FIRMWARE_ENABLED:
@@ -6164,7 +6218,7 @@ class WatchDogsGame:
             with urlopen(request, timeout=15) as response:
                 release = json.loads(response.read())
             url = select_firmware_asset(release, board)
-            self._term_add(f"[FLASH] Release: {release['tag_name']}", raw=True)
+            self._kg_flash_log(f"[FLASH] Release: {release['tag_name']}", raw=True)
             archive = attempt / "firmware.zip"
             request = Request(url, headers={"User-Agent": "ESP32-Watch-Dogs"})
             with urlopen(request, timeout=120) as response, archive.open("wb") as output:
@@ -6180,7 +6234,7 @@ class WatchDogsGame:
             from .kg_firmware import (fetch_latest_package, download_image, verify_image,
                                      version_tuple, bind_usb_identity, find_bound_port,
                                      preflight_device, authorize_install, validate_authorization,
-                                     backup_migration_device)
+                                     backup_migration_device, wait_bound_port)
             package = fetch_latest_package()
             if authorization is None:
                 authorize_install(package, self._fw_version)
@@ -6193,9 +6247,10 @@ class WatchDogsGame:
             image = download_image(package, attempt / package.image_name)
             verify_image(package, image)
             self._kg_fw_package = package
-            self._term_add(f"[FW] KG fork package {package.version}; application only", raw=True)
+            self._kg_flash_log(f"[FW] KG fork package {package.version}; application only", raw=True)
         if getattr(self, "_shutting_down", False) or getattr(self, "_kg_cancel_requested", False):
             return
+        self._kg_set_flash_stage("release-port")
         port = self._boot_serial_port
         if not port or not Path(port).exists():
             port = detect_esp32_port()
@@ -6255,6 +6310,9 @@ class WatchDogsGame:
         finally:
             if access_lock is not None:
                 access_lock.release()
+        if package is not None:
+            self._kg_fw_recovery_needed = True
+        self._kg_set_flash_stage("usb-enumeration")
         power_cycle = self._aio_available and board == "xiao"
         if power_cycle:
             self._flash_status = "Resetting USB for ROM loader..."
@@ -6265,17 +6323,21 @@ class WatchDogsGame:
             if not self._aio_power.toggle("usb", True):
                 raise FlashError("Cannot switch USB power on; flash was not started")
             self._flash_usb_off = False
-            # Detect rather than trust an old ttyACM number after re-enumeration.
+            # The same physical USB identity must settle after enumeration;
+            # a tty appearing once is not proof that either ROM or JanOS works.
             port = None
-            for _ in range(80):
-                port = find_bound_port(identity) if package is not None else detect_esp32_port()
-                if port:
-                    break
-                if getattr(self, "_shutting_down", False):
-                    return
-                time.sleep(0.03)
-        elif package is not None:
-            port = find_bound_port(identity)
+            if package is None:
+                for _ in range(80):
+                    port = detect_esp32_port()
+                    if port:
+                        break
+                    if getattr(self, "_shutting_down", False):
+                        return
+                    time.sleep(0.03)
+        if package is not None:
+            port = wait_bound_port(identity, monotonic=time.monotonic, sleep=time.sleep,
+                cancelled=lambda: bool(getattr(self, "_shutting_down", False)
+                                       or getattr(self, "_kg_cancel_requested", False)))
         elif not port or not Path(port).exists():
             port = detect_esp32_port()
         if not port:
@@ -6289,13 +6351,14 @@ class WatchDogsGame:
             preflight_device(package, image, sys.executable, port, attempt,
                              run_tool=run_esptool,
                              on_process=lambda process: setattr(self, "_flash_process", process),
-                             on_line=lambda line: self._term_add(f"[FW] {line}", raw=True),
-                             board=board)
+                             on_line=lambda line: self._kg_flash_log(f"[FW] {line}", raw=True),
+                             board=board, on_stage=self._kg_set_flash_stage)
             if getattr(self, "_shutting_down", False):
                 return
             if find_bound_port(identity) != port:
                 raise FlashError("KG target changed during read-only preflight; no write was started")
             if authorization is not None:
+                self._kg_set_flash_stage("recovery-backups")
                 self._flash_status = "Reading two private 8 MiB recovery backups; C cancels before write"
                 def current_migration_device():
                     return bool(not getattr(self, "_shutting_down", False)
@@ -6306,9 +6369,9 @@ class WatchDogsGame:
                     fw_dir / "kg-recovery", identity, authorization, run_tool=run_esptool,
                     check_current_device=current_migration_device,
                     on_process=lambda process: setattr(self, "_flash_process", process),
-                    on_line=lambda line: self._term_add(f"[RECOVERY] {line}", raw=True))
+                    on_line=lambda line: self._kg_flash_log(f"[RECOVERY] {line}", raw=True))
                 self._kg_fw_backup_directory = str(backup.directory)
-                self._term_add(f"[RECOVERY] Verified private recovery copies: {backup.directory}. Never upload device backups.", raw=True)
+                self._kg_flash_log(f"[RECOVERY] Verified private recovery copies: {backup.directory}. Never upload device backups.", raw=True)
                 if not current_migration_device():
                     raise FlashError("Migration cancelled or USB device changed; no firmware write")
             verify_image(package, image)
@@ -6324,14 +6387,16 @@ class WatchDogsGame:
             command.extend(("--flash-mode", "dio", "--flash-freq", "80m", "--flash-size", "detect"))
             for filename, offset in profile["offsets"].items():
                 command.extend((offset, str(attempt / filename)))
+        self._kg_set_flash_stage("write-flash")
         if not self._kg_claim_firmware_write():
             return
         self._flash_status = "Flashing ESP32..."
         self._kg_fw_recovery_needed = False
-        run_esptool(command, lambda line: self._term_add(f"[FLASH] {line}", raw=True),
+        run_esptool(command, lambda line: self._kg_flash_log(f"[FLASH] {line}", raw=True),
                     on_process=lambda process: setattr(self, "_flash_process", process))
         self._flash_write_complete = True
-        self._term_add("[FLASH] esptool write completed; firmware start is not yet confirmed.", raw=True)
+        self._kg_set_flash_stage("confirm-application")
+        self._kg_flash_log("[FLASH] esptool write completed; firmware start is not yet confirmed.", raw=True)
         if getattr(self, "_shutting_down", False):
             return
         if power_cycle:
@@ -6768,6 +6833,12 @@ class WatchDogsGame:
                 return
             if getattr(self, "_kg_probe", None) is not None or getattr(self, "_kg_probe_requested", False):
                 self._kg_probe_tick()
+            recovery_deadline = getattr(self, "_kg_fw_recovery_deadline", None)
+            if (getattr(self, "_kg_fw_recovery_needed", False) and recovery_deadline is not None
+                    and time.monotonic() >= recovery_deadline):
+                self._kg_fw_recovery_deadline = None
+                self._flash_status = self._kg_flash_failure_status() + "; previous boot unconfirmed"
+                self._kg_flash_log("Previous JanOS did not confirm boot. Do not retry flash blindly; retain the [KG-FW] block from ~/.watchdogs/last_run.log for diagnosis.")
             deadline = getattr(self, "_flash_fw_deadline", None)
             if (getattr(self, "_flash_fw_pending", False) and deadline is not None
                     and time.monotonic() >= deadline):
@@ -6777,6 +6848,10 @@ class WatchDogsGame:
                 self.msg("[FLASH] Firmware start not confirmed - see OUTPUT", C_WARNING)
             if getattr(self, '_serial_busy', False):
                 return
+            if (getattr(self, "_kg_fw_usb_identity", None) is not None
+                    and not self._esp32 and self.serial is not None
+                    and getattr(self.serial, "serial_conn", None) is not None):
+                return  # A failed native close still reserves this handle.
             if not self.serial or not self.serial.is_open:
                 if getattr(self, "_shutting_down", False):
                     return
@@ -6791,11 +6866,16 @@ class WatchDogsGame:
                 # USB cable yanked or serial error — mark ESP32 offline
                 self._esp32 = False
                 self.state.connected = False
+                retained_close = False
                 try:
                     self.serial.close()
-                except Exception:
-                    pass
-                self.serial = None
+                except Exception as exc:
+                    retained_close = (getattr(self, "_kg_fw_usb_identity", None) is not None
+                                      and getattr(self.serial, "serial_conn", None) is not None)
+                    if retained_close:
+                        self._kg_flash_log(f"[ERR] Serial close unconfirmed; port reserved: {exc}")
+                if not retained_close:
+                    self.serial = None
                 if getattr(self, "_wardrive_selected", None):
                     self._wardrive_pause("ESP32 disconnected", request_stop=False)
                 solo = getattr(self, "_solo", None)
@@ -6865,8 +6945,9 @@ class WatchDogsGame:
                     if recovering:
                         self._kg_fw_recovery_needed = False
                         self._kg_fw_recovery_version = ""
-                        self._flash_status = f"KG install stopped; previous JanOS {self._fw_version} responsive"
-                        self._term_add(f"[FW] Fresh previous-firmware response: JanOS {self._fw_version}", raw=True)
+                        self._kg_fw_recovery_deadline = None
+                        self._flash_status = self._kg_flash_failure_status() + f"; previous JanOS {self._fw_version} responsive"
+                        self._kg_flash_log(f"[FW] Fresh previous-firmware response: JanOS {self._fw_version}")
                     if getattr(self, "_flash_fw_pending", False):
                         if getattr(self, "_kg_fw_expected_version", ""):
                             self._flash_status = f"JanOS {self._fw_version} responsive; checking SOLO interface"

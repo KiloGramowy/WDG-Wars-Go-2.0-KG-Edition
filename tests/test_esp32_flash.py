@@ -1,9 +1,11 @@
-"""Flash helpers exercised with fake processes and temporary archives only."""
+"""Flash helpers with fake I/O and isolated Python children; no device/RF I/O."""
 import io
+import contextlib
 import os
 from pathlib import Path
 import stat
 import subprocess
+import sys
 import tempfile
 import threading
 import time
@@ -15,8 +17,9 @@ import zipfile
 
 from watchdogs.esp32_flash import (
     FlashError, check_esptool, extract_firmware_archive,
-    run_esptool, select_firmware_asset,
+    run_esptool, select_firmware_asset, reset_c5_usb_to_app,
 )
+from watchdogs import esp32_flash as flash
 
 
 IMAGES = ("bootloader.bin", "partition-table.bin", "projectZerobyLOCOSP-xiao.bin")
@@ -195,6 +198,105 @@ class FirmwareArchiveTests(unittest.TestCase):
                     extract_firmware_archive(archive, root / "attempt", IMAGES)
 
 
+class NativeUSBResetTests(unittest.TestCase):
+    def connection(self, events, *, open_error=None, close_error=None):
+        class Connection:
+            def __setattr__(self, name, value):
+                events.append(("set", name, value))
+                object.__setattr__(self, name, value)
+            def open(self):
+                events.append(("open", self.port, self.dtr, self.rts))
+                if open_error:
+                    raise open_error
+            def close(self):
+                events.append(("close",))
+                if close_error:
+                    raise close_error
+            def write(self, *args):
+                raise AssertionError("Reset helper must not send serial/ROM commands")
+            def read(self, *args):
+                raise AssertionError("Reset helper must not synchronize or read ROM")
+        return Connection()
+
+    def test_native_reset_sets_closed_lines_before_open_and_uses_official_usb_reset(self):
+        for platform in ("posix", "nt"):
+            with self.subTest(platform=platform):
+                events = []
+                connection = self.connection(events)
+                def factory(**options):
+                    events.append(("factory", options))
+                    return connection
+                def reset(port, *, uses_usb):
+                    self.assertIs(port, connection)
+                    self.assertTrue(uses_usb)
+                    events.append(("reset-created",))
+                    return lambda: events.append(("reset-called",))
+                with patch.object(flash.os, "name", platform):
+                    reset_c5_usb_to_app("/dev/ttyACM-synthetic", serial_factory=factory,
+                                        hard_reset=reset)
+                self.assertEqual(events, [
+                    ("factory", dict(port=None, baudrate=115200, timeout=1, write_timeout=2,
+                                     **({"exclusive": True} if platform == "posix" else {}))),
+                    ("set", "dtr", False), ("set", "rts", False),
+                    ("set", "port", "/dev/ttyACM-synthetic"),
+                    ("open", "/dev/ttyACM-synthetic", False, False),
+                    ("reset-created",), ("reset-called",), ("close",)])
+
+    def test_failed_open_closes_owned_connection_without_reset(self):
+        events = []
+        connection = self.connection(events, open_error=OSError("endpoint not ready"))
+        with self.assertRaisesRegex(FlashError, "endpoint not ready"):
+            reset_c5_usb_to_app("/dev/ttyACM-synthetic",
+                serial_factory=lambda **kwargs: connection,
+                hard_reset=lambda *args, **kwargs: self.fail("Failed open cannot reset"))
+        self.assertEqual(events[-1], ("close",))
+
+    def test_failed_reset_keeps_primary_error_even_if_close_also_fails(self):
+        events = []
+        connection = self.connection(events, close_error=OSError("secondary close error"))
+        def reset(*args, **kwargs):
+            raise OSError("primary control line error")
+        with self.assertRaisesRegex(FlashError, "primary control line error") as caught:
+            reset_c5_usb_to_app("/dev/ttyACM-synthetic",
+                serial_factory=lambda **kwargs: connection, hard_reset=reset)
+        self.assertNotIn("secondary", str(caught.exception))
+        self.assertEqual(events[-1], ("close",))
+
+    def test_unconfirmed_close_is_not_a_successful_reset_request(self):
+        events = []
+        connection = self.connection(events, close_error=OSError("close not confirmed"))
+        with self.assertRaisesRegex(FlashError, "close not confirmed"):
+            reset_c5_usb_to_app("/dev/ttyACM-synthetic",
+                serial_factory=lambda **kwargs: connection,
+                hard_reset=lambda *args, **kwargs: lambda: None)
+
+    def test_url_empty_and_control_character_ports_are_refused_before_factory(self):
+        for port in (None, "", " ", "socket://example.invalid:23", "rfc2217://example.invalid", "COM1\n"):
+            with self.subTest(port=port), self.assertRaises(FlashError):
+                reset_c5_usb_to_app(port,
+                    serial_factory=lambda **kwargs: self.fail("Do not open invalid ports"))
+
+    def test_reset_cli_never_repairs_checks_or_flashes_and_does_not_claim_boot(self):
+        with patch.object(flash, "reset_c5_usb_to_app") as reset, patch.object(
+                flash, "repair_esptool", side_effect=AssertionError("No repair")), patch.object(
+                flash, "check_esptool", side_effect=AssertionError("No tool check")), patch.object(
+                flash, "run_esptool", side_effect=AssertionError("No recursive process/flash")), \
+                contextlib.redirect_stdout(io.StringIO()) as output:
+            self.assertEqual(flash._dependency_main(["--reset-c5-usb-to-app", "/dev/ttyACM-synthetic"]), 0)
+        reset.assert_called_once_with("/dev/ttyACM-synthetic")
+        self.assertIn("requested", output.getvalue())
+        self.assertIn("not confirmed", output.getvalue())
+
+    def test_reset_cli_failure_is_nonzero_and_mutually_exclusive_with_repair(self):
+        with patch.object(flash, "reset_c5_usb_to_app", side_effect=FlashError("reset failed")), \
+                contextlib.redirect_stderr(io.StringIO()) as error:
+            self.assertEqual(flash._dependency_main(["--reset-c5-usb-to-app", "/dev/ttyACM-synthetic"]), 1)
+        self.assertIn("reset failed", error.getvalue())
+        with contextlib.redirect_stderr(io.StringIO()), self.assertRaises(SystemExit) as caught:
+            flash._dependency_main(["--reset-c5-usb-to-app", "COM1", "--repair-esptool"])
+        self.assertEqual(caught.exception.code, 2)
+
+
 class FakeProcess:
     def __init__(self, data=b"Writing 10%\rWriting 100%\nVerified\n", code=0,
                  terminate_works=True, kill_works=True, stream=None):
@@ -252,6 +354,101 @@ class ProcessSupervisionTests(unittest.TestCase):
         self.assertIsNone(caught.exception.process)
         self.assertIn("terminate", process.actions)
         self.assertEqual(process.code, -15)
+
+    def test_idle_failure_preserves_partial_connect_and_late_stderr(self):
+        release = threading.Event()
+        self.addCleanup(release.set)
+        class FinalOutputPipe:
+            index = 0
+            def read(self, count):
+                self.index += 1
+                if self.index == 1:
+                    return b"Connecting..."
+                if self.index == 2:
+                    release.wait(2)
+                    return b"\nUSB endpoint unavailable\n"
+                return b""
+            def close(self): pass
+        process = FakeProcess(code=None, stream=FinalOutputPipe())
+        original_terminate = process.terminate
+        def terminate():
+            original_terminate()
+            release.set()
+        process.terminate = terminate
+        output = []
+        with self.assertRaisesRegex(FlashError, "produced no output") as caught:
+            run_esptool(["fake"], output.append, popen=lambda *a, **k: process,
+                        total_timeout=1, idle_timeout=.03, stop_timeout=.01,
+                        drain_timeout=.1, poll_interval=.001)
+        self.assertEqual(output, ["Connecting...", "USB endpoint unavailable"])
+        self.assertIsNone(caught.exception.process)
+        self.assertEqual(process.code, -15)
+
+    def test_failure_tail_callback_cannot_mask_original_timeout(self):
+        release = threading.Event()
+        self.addCleanup(release.set)
+        class PartialPipe:
+            first = True
+            def read(self, count):
+                if self.first:
+                    self.first = False
+                    return b"Connecting..."
+                release.wait(2)
+                return b""
+            def close(self): pass
+        process = FakeProcess(code=None, stream=PartialPipe())
+        original_terminate = process.terminate
+        def terminate():
+            original_terminate()
+            release.set()
+        process.terminate = terminate
+        def broken(line):
+            raise RuntimeError("late diagnostic callback failed")
+        with self.assertRaisesRegex(FlashError, "produced no output") as caught:
+            run_esptool(["fake"], broken, popen=lambda *a, **k: process,
+                        total_timeout=1, idle_timeout=.03, stop_timeout=.01,
+                        drain_timeout=.1, poll_interval=.001)
+        self.assertNotIn("callback", str(caught.exception))
+        self.assertIsNone(caught.exception.process)
+
+    def test_unconfirmed_child_keeps_tail_handle_and_bounded_drain(self):
+        release = threading.Event()
+        self.addCleanup(release.set)
+        class PartialPipe:
+            first = True
+            def read(self, count):
+                if self.first:
+                    self.first = False
+                    return b"Connecting..."
+                release.wait(2)
+                return b""
+            def close(self): pass
+        process = FakeProcess(code=None, stream=PartialPipe(),
+                              terminate_works=False, kill_works=False)
+        output = []
+        started = time.monotonic()
+        with self.assertRaisesRegex(FlashError, "keep the serial port reserved") as caught:
+            run_esptool(["fake"], output.append, popen=lambda *a, **k: process,
+                        total_timeout=1, idle_timeout=.03, stop_timeout=.01,
+                        drain_timeout=10, poll_interval=.001)
+        self.assertLess(time.monotonic() - started, .6)
+        self.assertEqual(output, ["Connecting..."])
+        self.assertIs(caught.exception.process, process)
+        self.assertIsNone(process.poll())
+
+    def test_real_child_partial_output_survives_timeout_without_newline(self):
+        # This is a Python pipe/process test, never an esptool/device call.
+        output, children = [], []
+        with self.assertRaisesRegex(FlashError, "produced no output") as caught:
+            run_esptool([sys.executable, "-c",
+                         "import os,time; os.write(1,b'Connecting...'); time.sleep(10)"],
+                        output.append, on_process=children.append,
+                        total_timeout=3, idle_timeout=.2, stop_timeout=1,
+                        drain_timeout=.2, poll_interval=.005)
+        self.assertEqual(output, ["Connecting..."])
+        self.assertEqual(len(children), 1)
+        self.assertIsNotNone(children[0].poll())
+        self.assertIsNone(caught.exception.process)
 
     def test_terminate_timeout_escalates_to_kill_and_wait(self):
         process = FakeProcess(data=b"", code=None, terminate_works=False)

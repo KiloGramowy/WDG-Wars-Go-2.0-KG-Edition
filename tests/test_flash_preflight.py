@@ -46,7 +46,8 @@ class FakeProcess:
 
 class FakeSerial:
     def __init__(self,owner,port,opened=False):self.owner,self.device,self.is_open=owner,port,opened
-    def setup(self):self.owner.events.append(('serial-open',self.device));self.is_open=True
+    def setup(self, *, native_usb=False):
+        self.native_usb=native_usb;self.owner.events.append(('serial-open',self.device));self.is_open=True
     def close(self):
         self.owner.events.append(('serial-close',))
         if self.owner.close_error:raise self.owner.close_error
@@ -103,6 +104,7 @@ class FlashEnvironment:
             return None if self.kg_bound_missing else self.kg_bound_port or self.detect_port
         def kg_preflight(package,image,python,port,attempt,**kwargs):
             self.kg_calls.append(('preflight',port,kwargs.get('board')))
+            if kwargs.get('on_stage'):kwargs['on_stage']('rom-chip-id')
             if self.during_kg_preflight:self.during_kg_preflight(self.game)
             if self.kg_preflight_error:
                 child=getattr(self.kg_preflight_error,'process',None)
@@ -112,7 +114,8 @@ class FlashEnvironment:
             ('SoloMigrationEvidence','MigrationAuthorization','authorize_install','validate_authorization','backup_migration_device')},
             fetch_latest_package=kg_fetch,download_image=kg_download,
             verify_image=kg_verify,version_tuple=kg.version_tuple,bind_usb_identity=kg_bind,
-            find_bound_port=kg_bound,preflight_device=kg_preflight,KGFirmwareError=kg.KGFirmwareError)
+            find_bound_port=kg_bound,preflight_device=kg_preflight,KGFirmwareError=kg.KGFirmwareError,
+            wait_bound_port=lambda identity,**kwargs:kg.wait_bound_port(identity,find_port=kg_bound,**kwargs))
         # Old flash safety mechanisms remain covered with an explicitly
         # synthetic enabled channel. Production defaults never enable this.
         settings=dict(TABLES)
@@ -155,7 +158,7 @@ class FlashEnvironment:
             return modules[name]
         env=dict(__name__='flash_harness',__package__='flash_harness',
                  __builtins__=dict(vars(builtins),__import__=fake_import),sys=SimpleNamespace(executable=GAME_PYTHON),
-                 time=self.fake_time,threading=fake_threading,pyxel=self.px,re=re,logging=logging,queue=queue,
+                 time=self.fake_time,threading=fake_threading,pyxel=self.px,re=re,logging=logging,queue=queue,Path=path,
                  detect_esp32_port=self.detect,SerialManager=lambda port:FakeSerial(self,port),
                  C_ERROR=1,C_DIM=2,C_WARNING=3,C_SUCCESS=4,C_TEXT=5,C_COAST=6,C_HACK_CYAN=7,W=640,H=360)
         node=ast.ClassDef(name='GameHarness',bases=[],keywords=[],decorator_list=[],
@@ -184,7 +187,7 @@ class FlashEnvironment:
     def forbidden_popen(self,*args,**kwargs):raise AssertionError('An actual flash subprocess is forbidden in app tests')
     def fake_flash_process(self,command,on_line,*,on_process=None,**kwargs):
         if 'write-flash' not in command:
-            if command[-1]!='get-security-info':raise AssertionError('Unexpected non-writing recovery command')
+            if '--reset-c5-usb-to-app' not in command:raise AssertionError('Unexpected non-writing recovery command')
             self.events.append(('recovery',tuple(command)));self.recovery_commands.append((command,kwargs))
             self.process=FakeProcess(self)
             if on_process:on_process(self.process)

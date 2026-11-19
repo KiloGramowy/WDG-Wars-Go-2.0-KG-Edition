@@ -96,6 +96,68 @@ class SerialDetectionTests(unittest.TestCase):
         connection.reset_input_buffer.assert_called_once_with()
         connection.reset_output_buffer.assert_called_once_with()
 
+    def test_native_usb_setup_sets_idle_lines_before_open(self):
+        events = []
+        class Connection:
+            def __setattr__(self, name, value):
+                events.append(("set", name, value))
+                object.__setattr__(self, name, value)
+            def open(self):
+                events.append(("open", self.port, self.dtr, self.rts))
+            def reset_input_buffer(self): events.append(("reset-input",))
+            def reset_output_buffer(self): events.append(("reset-output",))
+        connection = Connection()
+        def constructor(**options):
+            events.append(("constructor", options))
+            return connection
+        manager = SerialManager("/dev/ttyACM-synthetic")
+        with patch.object(serial_manager.os.path, "exists", return_value=True), \
+                patch.object(serial_manager.os, "access", return_value=True), \
+                patch.object(serial_manager.serial, "Serial", side_effect=constructor):
+            manager.setup(native_usb=True)
+        self.assertEqual(events, [
+            ("constructor", dict(port=None, baudrate=manager.baud_rate,
+                                 bytesize=serial_manager.serial.EIGHTBITS,
+                                 parity=serial_manager.serial.PARITY_NONE,
+                                 stopbits=serial_manager.serial.STOPBITS_ONE,
+                                 timeout=serial_manager.READ_TIMEOUT, write_timeout=2)),
+            ("set", "dtr", False), ("set", "rts", False),
+            ("set", "port", "/dev/ttyACM-synthetic"),
+            ("open", "/dev/ttyACM-synthetic", False, False),
+            ("reset-input",), ("reset-output",)])
+        self.assertIs(manager.serial_conn, connection)
+
+    def test_default_setup_keeps_legacy_open_without_line_overrides(self):
+        manager = SerialManager("/dev/pts/synthetic")
+        connection = Mock(is_open=True)
+        with patch.object(serial_manager.os.path, "exists", return_value=True), \
+                patch.object(serial_manager.os, "access", return_value=True), \
+                patch.object(serial_manager.serial, "Serial", return_value=connection) as constructor:
+            manager.setup()
+        self.assertEqual(constructor.call_args.kwargs["port"], manager.device)
+        connection.open.assert_not_called()
+        self.assertNotIn("dtr", connection.__dict__)
+        self.assertNotIn("rts", connection.__dict__)
+        self.assertEqual([call[0] for call in connection.mock_calls],
+                         ["reset_input_buffer", "reset_output_buffer"])
+
+    def test_failed_native_open_retains_handle_for_caller_cleanup(self):
+        manager = SerialManager("/dev/ttyACM-synthetic")
+        connection = Mock(is_open=False)
+        connection.open.side_effect = OSError("endpoint not ready")
+        with patch.object(serial_manager.os.path, "exists", return_value=True), \
+                patch.object(serial_manager.os, "access", return_value=True), \
+                patch.object(serial_manager.serial, "Serial", return_value=connection):
+            with self.assertRaisesRegex(OSError, "endpoint not ready"):
+                manager.setup(native_usb=True)
+        self.assertIs(manager.serial_conn, connection)
+        self.assertFalse(manager.is_open)
+        connection.reset_input_buffer.assert_not_called()
+        connection.reset_output_buffer.assert_not_called()
+        manager.close()
+        connection.close.assert_called_once_with()
+        self.assertIsNone(manager.serial_conn)
+
 
 class SerialSendResultTests(unittest.TestCase):
     def setUp(self):
@@ -281,12 +343,23 @@ class SerialCloseTests(unittest.TestCase):
         self.connection.close.assert_called_once_with()
         self.assertIsNone(self.manager.serial_conn)
 
-    def test_close_failure_still_clears_reference(self):
+    def test_close_failure_retains_the_owned_connection(self):
         self.connection.close.side_effect = OSError("close failed")
         with self.assertRaisesRegex(OSError, "close failed"):
             self.manager.close()
         self.connection.reset_output_buffer.assert_called_once_with()
+        self.assertIs(self.manager.serial_conn, self.connection)
+        self.assertTrue(self.manager.is_open)
+
+    def test_second_close_can_release_handle_after_initial_failure(self):
+        self.connection.close.side_effect = [OSError("close not confirmed"), None]
+        with self.assertRaisesRegex(OSError, "close not confirmed"):
+            self.manager.close()
+        self.assertIs(self.manager.serial_conn, self.connection)
+        self.manager.close()
         self.assertIsNone(self.manager.serial_conn)
+        self.assertEqual(self.connection.close.call_count, 2)
+        self.assertEqual(self.connection.reset_output_buffer.call_count, 2)
 
     def test_no_connection_is_a_noop(self):
         self.manager.serial_conn = None

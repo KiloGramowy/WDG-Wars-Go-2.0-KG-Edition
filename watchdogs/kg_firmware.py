@@ -469,6 +469,46 @@ def find_bound_port(identity, *, ports=None):
     return found[0] if len(found) == 1 and isinstance(found[0], str) else None
 
 
+def wait_bound_port(identity, *, timeout=5.0, stable_for=.25, poll_interval=.05,
+                    monotonic=None, sleep=None, find_port=None, cancelled=None):
+    """Wait for stable enumeration of this USB identity, not firmware proof.
+
+    A disappearing or renumbered tty starts a new stability window. Discovery
+    never opens the port, talks to ROM, or falls back to another native device.
+    """
+    if not isinstance(identity, USBIdentity):
+        raise KGFirmwareError("No bound KG USB identity")
+    if (any(type(value) not in (int, float) or not math.isfinite(value) or value <= 0
+            for value in (timeout, stable_for, poll_interval)) or stable_for > timeout):
+        raise KGFirmwareError("Invalid KG USB readiness timing")
+    monotonic, sleep = monotonic or time.monotonic, sleep or time.sleep
+    find_port = find_port or find_bound_port
+    started = monotonic()
+    deadline = started + timeout
+    if not math.isfinite(started) or not math.isfinite(deadline):
+        raise KGFirmwareError("Invalid KG USB readiness clock")
+    previous, since = None, None
+    while True:
+        if cancelled is not None and cancelled():
+            raise KGFirmwareError("KG USB readiness wait cancelled")
+        now = monotonic()
+        if not math.isfinite(now) or now < started or now >= deadline:
+            raise KGFirmwareError("Bound KG USB device did not stabilize before the readiness deadline")
+        port = find_port(identity)  # Ambiguous identities must fail immediately.
+        now = monotonic()
+        if cancelled is not None and cancelled():
+            raise KGFirmwareError("KG USB readiness wait cancelled")
+        if not math.isfinite(now) or now < started or now >= deadline:
+            raise KGFirmwareError("Bound KG USB device did not stabilize before the readiness deadline")
+        if port is not None and (not isinstance(port, str) or not port.strip()):
+            raise KGFirmwareError("Invalid bound KG USB port")
+        if port is None or port != previous:
+            previous, since = port, now if port is not None else None
+        if port is not None and now - since >= stable_for:
+            return port
+        sleep(min(poll_interval, deadline - now))
+
+
 _PARTITIONS = {
     'nvs': (1, 2, 0x9000, 0x6000, 0),
     'otadata': (1, 0, 0xF000, 0x2000, 0),
@@ -531,7 +571,7 @@ def validate_active_ota(raw):
 
 
 def preflight_device(package, image, python, port, attempt, *, run_tool,
-                     on_process=None, on_line=None, board='xiao'):
+                     on_process=None, on_line=None, on_stage=None, board='xiao'):
     """Read ROM identity/table/OTA only, under the installer's existing mutex."""
     if board != 'xiao':
         raise KGFirmwareError("This KG package supports only the selected XIAO C5 revision1.0 profile")
@@ -549,36 +589,38 @@ def preflight_device(package, image, python, port, attempt, *, run_tool,
         if on_line is not None:
             private = re.search(r'(?i)\b(?:MAC|serial|unique|efuse|chip\s+(?:id|uid))\s*[:=]', text)
             on_line('KG ROM identity read (private identifier hidden)' if private else text)
-    def command(args, *, first=False):
+    def command(args, stage, *, first=False):
         output.clear()
+        if on_stage is not None:
+            on_stage(stage)
         run_tool([python, '-m', 'esptool', '--chip', 'esp32c5', '-p', port,
-                  '--before', 'default-reset' if first else 'no-reset',
+                  '--before', 'usb-reset' if first else 'no-reset',
                   '--after', 'no-reset', '--no-stub', *args], capture,
                  on_process=on_process, total_timeout=30, idle_timeout=10)
         return '\n'.join(output)
-    chip = command(['chip-id'], first=True)
+    chip = command(['chip-id'], 'rom-chip-id', first=True)
     match = re.search(r'(?i)ESP32-C5[^\n]*revision\s+v?(\d+)\.(\d+)', chip)
     if not match:
         raise KGFirmwareError("ROM did not confirm an ESP32-C5 revision")
     revision = int(match.group(1)) * 100 + int(match.group(2))
     if revision != 100 or not info.min_revision <= revision <= info.max_revision:
         raise KGFirmwareError("ROM chip revision is incompatible with this KG image")
-    flash = command(['flash-id'])
+    flash = command(['flash-id'], 'rom-flash-id')
     if not re.search(r'(?i)(?:detected\s+)?flash\s+size:\s*8\s*MB\b', flash):
         raise KGFirmwareError("ROM did not confirm the required 8MiB flash")
-    security = command(['get-security-info'])
+    security = command(['get-security-info'], 'rom-security')
     for label in ('Secure Boot', 'Flash Encryption'):
         values = re.findall(r'(?im)^\s*' + label + r'\s*:\s*(\S+)\s*$', security)
         if len(values) != 1 or values[0].casefold() != 'disabled':
             raise KGFirmwareError("Unsigned KG application requires Secure Boot and Flash Encryption explicitly disabled")
-    command(['read-flash', '0x8000', '0x1000', str(table)])
+    command(['read-flash', '0x8000', '0x1000', str(table)], 'partition-table')
     try:
         if not stat.S_ISREG(table.lstat().st_mode) or table.stat().st_size != 4096:
             raise KGFirmwareError("KG partition readback type or size is invalid")
         validate_partition_table(table.read_bytes())
     except OSError as exc:
         raise KGFirmwareError("Cannot read the device partition-table result") from exc
-    command(['read-flash', '0xf000', '0x2000', str(ota)])
+    command(['read-flash', '0xf000', '0x2000', str(ota)], 'active-slot')
     try:
         if not stat.S_ISREG(ota.lstat().st_mode) or ota.stat().st_size != 8192:
             raise KGFirmwareError("KG OTA readback type or size is invalid")

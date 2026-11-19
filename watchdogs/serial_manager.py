@@ -167,7 +167,7 @@ class SerialManager:
     # Connection
     # ------------------------------------------------------------------
 
-    def setup(self) -> None:
+    def setup(self, *, native_usb=False) -> None:
         """Open the serial port. Raises on failure."""
         if not os.path.exists(self.device):
             raise FileNotFoundError(f"Device {self.device} does not exist")
@@ -179,7 +179,7 @@ class SerialManager:
             )
 
         self.serial_conn = serial.Serial(
-            port=self.device,
+            port=None if native_usb else self.device,
             baudrate=self.baud_rate,
             bytesize=serial.EIGHTBITS,
             parity=serial.PARITY_NONE,
@@ -187,6 +187,13 @@ class SerialManager:
             timeout=READ_TIMEOUT,
             write_timeout=2,
         )
+        if native_usb:
+            # A reconnect is not a request to reset or select download mode.
+            # Configure native USB control lines before open, not afterwards.
+            self.serial_conn.dtr = False
+            self.serial_conn.rts = False
+            self.serial_conn.port = self.device
+            self.serial_conn.open()
         self.serial_conn.reset_input_buffer()
         self.serial_conn.reset_output_buffer()
         log.info("Serial port %s opened at %d baud", self.device, self.baud_rate)
@@ -221,19 +228,17 @@ class SerialManager:
         connection = self.serial_conn
         if connection is None:
             return
+        # A nonresponsive ACM device can leave output queued, making the
+        # kernel wait for it indefinitely during close. Cancel unsent TX first.
         try:
-            # A nonresponsive ACM device can leave output queued, making the
-            # kernel wait for it indefinitely during close. Cancel unsent TX
-            # first. Firmware acknowledgements, not a TX drain, confirm
-            # whether normal commands were actually performed.
-            try:
-                connection.reset_output_buffer()
-            except Exception as exc:
-                log.warning("Could not discard serial output on %s: %s",
-                            self.device, exc)
-            connection.close()
-        finally:
-            self.serial_conn = None
+            connection.reset_output_buffer()
+        except Exception as exc:
+            log.warning("Could not discard serial output on %s: %s",
+                        self.device, exc)
+        connection.close()
+        # If close raises, retain the handle: a failed close is not proof that
+        # its native file descriptor can be borrowed by a reconnect/flasher.
+        self.serial_conn = None
 
     @property
     def is_open(self) -> bool:

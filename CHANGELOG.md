@@ -1,3 +1,11 @@
+# 0.9.21.2 — native USB hand-off, ROM-independent recovery and durable diagnostics
+
+- Request a bounded native USB application reset through the same game Python without requiring ROM synchronization after a failed preflight. A fresh matching JanOS response is still required; a port or reset exit is not boot confirmation.
+- Configure the bound native USB reconnect's DTR/RTS before opening. Retain a serial handle after an uncertain close, preserve tool process ownership, and wait for stable enumeration of the same USB identity before preflight/recovery.
+- Preserve first failure, operation stage and real redacted tool output through the existing last_run.log route. Retain final partial/queued stdout/stderr on supervisor failure; keep recovery errors separate.
+- Preserve explicit M/Y older-base migration, all hardware/image/partition/security/slot guards, matching private recovery backups, application-only writes and fresh firmware/SOLO confirmation. No firmware bytes, esptool minimum, requirements, stub or flash speed changes.
+- The first physical timeout on PapaSucio's C5 remains unexplained by the available screenshots. Software regression evidence does not claim physical USB recovery or repair of that device.
+
 # 0.9.21 — GPS-following map and WDGWars portal integration
 
 - Release 0.9.21 builds on the public 0.9.20 baseline; numeric runtime 0.9.21 is compatible with the existing updater parser. Public OTA and firmware stay unchanged.

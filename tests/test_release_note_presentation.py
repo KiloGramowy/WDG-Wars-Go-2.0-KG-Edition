@@ -97,15 +97,16 @@ class ReleaseNotePresentationTests(unittest.TestCase):
     def test_four_component_microfix_keeps_its_actual_controls_and_warning(self):
         notes = self.candidate()
         text = " ".join(" ".join(game_note_lines(notes)).split())
-        for fact in ("0.9.21.1", "esptool 5.0.0", "1.7.5", "1.7.0", "P",
-                     "M", "N / Esc", "older JanOS", "two independent", "8 MiB",
-                     "No physical C5 migration", "Update Game -> R -> Enter -> Y"):
+        for fact in ("0.9.21.2", "esptool 5.0.0", "1.7.0", "P", "M", "N / Esc",
+                     "older JanOS", "8 MiB", "No physical C5 migration",
+                     "first physical ROM timeout remains unexplained",
+                     "Update Game -> R -> Enter -> Y"):
             with self.subTest(fact=fact):
                 self.assertIn(fact, text)
         self.assertTrue(all(len(line) <= 83 and line.isascii() for line in game_note_lines(notes)))
-        old = "RELEASE 0.9.21 - PREVIOUS GAME\nAlready installed.\n"
-        selected = filter_release_notes(notes + "\n" + old, "0.9.21", "0.9.21.1")
-        self.assertIn("RELEASE 0.9.21.1", selected)
+        old = "RELEASE 0.9.21.1 - PREVIOUS GAME\nAlready installed.\n"
+        selected = filter_release_notes(notes + "\n" + old, "0.9.21.1", __version__)
+        self.assertIn("RELEASE " + __version__, selected)
         self.assertNotIn("Already installed.", selected)
 
     def test_typographic_punctuation_keeps_english_meaning_and_long_lines_wrap(self):
