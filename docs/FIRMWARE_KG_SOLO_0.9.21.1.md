@@ -75,7 +75,8 @@ checks. It does **not** install new firmware based on JanOS 1.7.5.
    details: reported JanOS, SOLO status, target package/release/source and the
    clear warning that **1.7.5 → 1.7.0 + SOLO lowers the JanOS base**.
 5. Press **Y** only if that is the operation you intend. **N / Esc** cancels
-   this confirmation without authorizing a flash. Unknown or stale evidence
+   this confirmation without authorizing a flash. **C** can cancel the confirmed
+   migration before its firmware write starts. Unknown or stale evidence
    cannot unlock the migration; request a fresh response instead.
 
 This is a specific supported-device migration, not a general “ignore version

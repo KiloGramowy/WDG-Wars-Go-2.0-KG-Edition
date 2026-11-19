@@ -93,7 +93,7 @@ not permission to force the write.
 5. RECEIPTS AND LIMITS
 
 Focused software runs passed: 43 dependency/flash-helper checks, 48 KG
-package/migration/backup checks, 58 SOLO/controller checks and 18 migration-panel
+package/migration/backup checks, 58 SOLO/controller checks and 22 migration-panel
 integration checks, each with 0 FAIL / 0 ERROR / 0 SKIP. These runs overlap and
 must not be added together. The final regression and publication checks are
 recorded separately; no historical 0.9.21 total is being presented as a new

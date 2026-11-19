@@ -460,6 +460,7 @@ class WatchDogsGame:
         self._plugin_overlay = None
         self._esp_serial_lock = threading.RLock()
         self._flash_job_lock = threading.Lock()
+        self._kg_cancel_lock = threading.Lock()
         self._cleanup_done = False
         self._cleanup_running = False
         self._cleanup_errors = []
@@ -5818,6 +5819,8 @@ class WatchDogsGame:
             return
         self._kg_dependency_running = True
         try:
+            if getattr(self, "_shutting_down", False):
+                return
             action = repair_esptool if repair else check_esptool
             kwargs = {"on_line": lambda line: self._term_add(f"[PYTHON] {line}", raw=True)} if repair else {}
             self._kg_esptool_version = action(sys.executable, **kwargs)
@@ -5834,7 +5837,9 @@ class WatchDogsGame:
                 lock.release()
 
     def _kg_start_python_check(self, *, repair=False):
-        if getattr(self, "_kg_dependency_running", False) or getattr(self, "_flash_running", False):
+        if (getattr(self, "_shutting_down", False)
+                or getattr(self, "_kg_dependency_running", False)
+                or getattr(self, "_flash_running", False)):
             return
         self._kg_dependency_running = True
         try:
@@ -5896,9 +5901,7 @@ class WatchDogsGame:
                 self._flash_screen = False
                 self._esc_consumed_frame = pyxel.frame_count
             elif self._flash_running:
-                if (pyxel.btnp(pyxel.KEY_C) and getattr(self, "_kg_fw_migration_authorization", None) is not None
-                        and not getattr(self, "_flash_write_started", False)):
-                    self._kg_cancel_requested = True
+                if pyxel.btnp(pyxel.KEY_C) and self._kg_cancel_migration():
                     self._flash_status = "Cancellation requested; no firmware write will start"
             elif not self._flash_running:
                 if getattr(self, "_kg_dependency_running", False):
@@ -5965,13 +5968,33 @@ class WatchDogsGame:
             return
         self._flash_running = True
         self._flash_status = "Preparing approved KG firmware..."
-        self._kg_cancel_requested = False
+        with self._kg_cancel_lock:
+            self._kg_cancel_requested = False
+            self._flash_write_started = False
         try:
             threading.Thread(target=self._run_flash, args=("xiao",), daemon=True).start()
         except Exception as exc:
             self._flash_running = False
             self._kg_fw_migration_authorization = None
             self._term_add(f"[FW] Cannot start KG installer: {exc}", raw=True)
+
+    def _kg_cancel_migration(self):
+        # The last write decision and accepted cancellation share one boundary.
+        with self._kg_cancel_lock:
+            if (not getattr(self, "_flash_running", False)
+                    or getattr(self, "_kg_fw_migration_authorization", None) is None
+                    or getattr(self, "_flash_write_started", False)):
+                return False
+            self._kg_cancel_requested = True
+            return True
+
+    def _kg_claim_firmware_write(self):
+        with self._kg_cancel_lock:
+            if (getattr(self, "_shutting_down", False)
+                    or getattr(self, "_kg_cancel_requested", False)):
+                return False
+            self._flash_write_started = True
+            return True
 
     def _run_flash(self, board: str):
         # Real instances initialize both locks before any UI/worker can run.
@@ -5985,7 +6008,8 @@ class WatchDogsGame:
         self._flash_running = True
         self._flash_process = self._flash_workspace = None
         self._flash_device_acquired = self._flash_write_complete = False
-        self._flash_write_started = False
+        with self._kg_cancel_lock:
+            self._flash_write_started = False
         self._flash_usb_off = False
         self._kg_fw_expected_version = ""
         self._kg_fw_recovery_needed = False
@@ -6300,11 +6324,10 @@ class WatchDogsGame:
             command.extend(("--flash-mode", "dio", "--flash-freq", "80m", "--flash-size", "detect"))
             for filename, offset in profile["offsets"].items():
                 command.extend((offset, str(attempt / filename)))
-        if getattr(self, "_shutting_down", False) or getattr(self, "_kg_cancel_requested", False):
+        if not self._kg_claim_firmware_write():
             return
         self._flash_status = "Flashing ESP32..."
         self._kg_fw_recovery_needed = False
-        self._flash_write_started = True
         run_esptool(command, lambda line: self._term_add(f"[FLASH] {line}", raw=True),
                     on_process=lambda process: setattr(self, "_flash_process", process))
         self._flash_write_complete = True
@@ -11041,6 +11064,12 @@ class WatchDogsGame:
             return
         if self._gameupd_confirm:
             if pyxel.btnp(pyxel.KEY_Y):
+                job_lock = getattr(self, "_flash_job_lock", None)
+                if (getattr(self, "_kg_dependency_running", False)
+                        or getattr(self, "_flash_running", False)
+                        or (job_lock is not None and job_lock.locked())):
+                    self._gameupd_log_add("[UPD] Wait for the firmware/Python operation to finish, then press Y again.")
+                    return
                 self._gameupd_confirm = False
                 self._gameupd_closed_for_install = True
                 self._gameupd_running = True

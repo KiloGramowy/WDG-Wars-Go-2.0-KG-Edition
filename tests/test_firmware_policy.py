@@ -79,17 +79,36 @@ class FirmwarePolicyTests(unittest.TestCase):
         self.assertTrue(env.threads[0].daemon);self.assertEqual(env.kg_calls,[])
         self.assert_board_untouched(env,threads=1,version='1.7.0')
 
-    def test_open_and_refresh_only_schedule_metadata_enter_waits_for_it(self):
+    def test_open_and_refresh_schedule_read_only_checks_enter_waits_for_them(self):
         env=self.environment();g=env.game;g._start_flash_esp32()
         self.assertTrue(g._flash_screen);self.assertFalse(g.menu_open);self.assertEqual(g._flash_boards,['xiao'])
+        self.assertTrue(g._kg_probe_requested)
+        self.assertTrue(g._kg_dependency_running)
+        self.assertEqual([t.target.__name__ for t in env.threads],['_kg_check_python','_check_fw_update'])
+        self.assertEqual(env.threads[0].kwargs,{'repair':False})
+        self.assertTrue(all(t.daemon for t in env.threads))
         for key in (env.px.KEY_DOWN,env.px.KEY_UP,env.px.KEY_RETURN):
             env.buttons={key};g._update_flash_screen()
         self.assertFalse(g._flash_running);self.assertEqual(g._flash_sel,0)
-        g._kg_fw_checking=True;env.buttons={env.px.KEY_R};g._update_flash_screen()
-        self.assertEqual(len(env.threads),1)
-        g._kg_fw_checking=False;g._update_flash_screen()
-        self.assertTrue(all(t.target.__name__=='_check_fw_update' for t in env.threads))
+        # A scheduled check is not permission to install, repair or touch USB.
         self.assert_board_untouched(env,threads=2)
+        g._kg_dependency_running=False;g._kg_fw_checking=True
+        env.buttons={env.px.KEY_R};g._update_flash_screen()
+        self.assertEqual(len(env.threads),2)
+        g._kg_fw_checking=False;g._update_flash_screen()
+        self.assertEqual([t.target.__name__ for t in env.threads],
+                         ['_kg_check_python','_check_fw_update','_check_fw_update','_kg_check_python'])
+        self.assertEqual(env.threads[-1].kwargs,{'repair':False})
+        self.assert_board_untouched(env,threads=4)
+
+    def test_explicit_p_schedules_only_dependency_repair_without_installing_firmware(self):
+        env=self.environment();g=env.game
+        env.buttons={env.px.KEY_P};g._update_flash_screen()
+        self.assertEqual(len(env.threads),1)
+        self.assertEqual(env.threads[0].target.__name__,'_kg_check_python')
+        self.assertEqual(env.threads[0].kwargs,{'repair':True})
+        self.assertTrue(env.threads[0].daemon)
+        self.assert_board_untouched(env,threads=1)
 
     def test_busy_worker_cannot_release_existing_operation_guard(self):
         env=self.environment();g=env.game;g._flash_running=True;g._flash_job_lock.acquire()
@@ -106,10 +125,13 @@ class FirmwarePolicyTests(unittest.TestCase):
     def test_renderer_shows_current_latest_source_target_and_manual_controls(self):
         env=self.environment();env.game._kg_fw_package=env.kg_package;env.game._draw_flash_screen()
         words=' '.join(args[2] for name,args in env.draw_calls if name=='text')
-        for text in ('KG/SOLO FIRMWARE UPDATE','KG 1.6.5 (JanOS)','Latest KG: 1.7.0','Source: KiloGramowy',
-                     'XIAO ESP32-C5 rev 1.0','8 MiB','application only','R check KG','ENTER install KG','ESC close'):
+        for text in ('KG/SOLO FIRMWARE UPDATE','Reported JanOS: 1.6.5',
+                     'SOLO: unknown / checking; a version number is not proof',
+                     'Approved KG package: JanOS 1.7.0 + SOLO','Source: KiloGramowy',
+                     'XIAO ESP32-C5 rev 1.0','8 MiB','Application only','P repair Python',
+                     'R check','M migrate','ENTER install','ESC close'):
             self.assertIn(text,words)
-        for text in ('disabled','No automatic firmware channel','Select Board','1.7.3','hash verified'):
+        for text in ('disabled','No automatic firmware channel','Select Board','1.7.3','hash verified','KG 1.6.5'):
             self.assertNotIn(text,words)
         for name,args in env.draw_calls:
             if name=='text':
@@ -121,7 +143,9 @@ class FirmwarePolicyTests(unittest.TestCase):
         env=self.environment();g=env.game;g._kg_fw_package=env.kg_package;g._start_flash_esp32()
         env.buttons={env.px.KEY_ESCAPE};g._update_flash_screen()
         self.assertFalse(g._flash_screen);self.assertEqual(g._esc_consumed_frame,env.px.frame_count)
-        self.assert_board_untouched(env)
+        self.assertEqual([t.target.__name__ for t in env.threads],['_kg_check_python'])
+        self.assertEqual(env.threads[0].kwargs,{'repair':False})
+        self.assert_board_untouched(env,threads=1)
 
     def test_game_updater_and_separate_piglet_keep_existing_identity(self):
         self.assertEqual(game_updates.REPOSITORY_ID,1442123109);self.assertEqual(game_updates.CHANNEL,'stable')

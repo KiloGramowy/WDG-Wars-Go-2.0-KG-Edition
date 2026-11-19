@@ -547,7 +547,9 @@ class GameUpdateUiTests(unittest.TestCase):
         self.assertEqual(len(portraits), 1)
         self.assertEqual(portraits[0][-2:], (32, 32))
         self.assertIn("Current: v" + INSTALLED_VERSION, [args[2] for args in self.texts()])
-        self.assertFalse(any("KG Edition" in args[2] for args in self.texts()))
+        # Release notes may name the edition; version labels remain plain.
+        self.assertFalse(any("KG Edition" in args[2] for args in self.texts()
+                             if args[2].startswith(("Current:", "Latest:"))))
 
     def test_menu_keeps_original_label_position_and_dim_white_state(self):
         g = game()

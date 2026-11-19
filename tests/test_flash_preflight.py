@@ -166,7 +166,7 @@ class FlashEnvironment:
         g._aio_power=SimpleNamespace(toggle=self.toggle);g._esp32=True;g.state=SimpleNamespace(connected=True)
         g.serial=FakeSerial(self,g._boot_serial_port,True)
         g._term_add=lambda text,**kw:self.output.append(text);g.msg=lambda text,color:self.messages.append((text,color))
-        g._flash_running=True;g._serial_busy=False;g._esp_serial_lock=threading.RLock();g._flash_job_lock=threading.Lock()
+        g._flash_running=True;g._serial_busy=False;g._esp_serial_lock=threading.RLock();g._flash_job_lock=threading.Lock();g._kg_cancel_lock=threading.Lock()
         g._flash_process=None;g._flash_workspace=None;g._flash_device_acquired=False;g._flash_write_complete=False
         g._flash_fw_pending=False;g._flash_fw_deadline=0.;g._fw_version='1.6.5';g._fw_update_available=True;g._fw_remote_version='1.7.0'
         g._shutting_down=False;g._pending_cmd_frame=0;g._esp_stop_waiting=g._esp_stop_ack=False;g._usb_enabled=True

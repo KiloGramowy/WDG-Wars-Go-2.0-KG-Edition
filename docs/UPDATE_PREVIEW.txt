@@ -47,7 +47,7 @@ Open **TAB → SYSTEM → Update Game → R → Enter → Y**. **N / Esc** cance
 
 ## 🧪 Receipts and limits
 
-Focused software runs passed: **43 dependency/flash-helper checks**, **48 KG package/migration/backup checks**, **58 SOLO/controller checks** and **18 migration-panel integration checks**, each with **0 FAIL / 0 ERROR / 0 SKIP**. These runs overlap and must not be added together. The final regression and publication checks are recorded separately; no historical 0.9.21 total is being presented as a new microfix run. Execution: **local Windows**, explicitly authorized after Cloud startup could not be confirmed.
+Focused software runs passed: **43 dependency/flash-helper checks**, **48 KG package/migration/backup checks**, **58 SOLO/controller checks** and **22 migration-panel integration checks**, each with **0 FAIL / 0 ERROR / 0 SKIP**. These runs overlap and must not be added together. The final regression and publication checks are recorded separately; no historical 0.9.21 total is being presented as a new microfix run. Execution: **local Windows**, explicitly authorized after Cloud startup could not be confirmed.
 
 The dependency repair was also exercised with a real isolated existing `.venv`: missing module → installation by that exact interpreter → **esptool 5.0.0**, followed by a second check that did not reinstall it. Firmware migration tests use synthetic USB/ROM/process responses and verify refused writes, backups and fresh post-write interface confirmation.
 

@@ -7,6 +7,7 @@ import copy
 from dataclasses import replace
 import json
 import re
+import threading
 from types import SimpleNamespace
 import unittest
 from unittest.mock import patch
@@ -52,7 +53,8 @@ class KGMicrofixFlowTests(unittest.TestCase):
         # Load the unchanged production STOP dispatch/TX methods; only their
         # external arbiter callback is fake, like the shared hardware harness.
         for name in ('_begin_esp_scan', '_dispatch_pending_esp_command',
-                     '_clear_esp_scan_state', '_handle_esp_operation_state'):
+                     '_clear_esp_scan_state', '_handle_esp_operation_state',
+                     '_update_gameupd_screen'):
             node = copy.deepcopy(next(n for n in GAME.body
                 if isinstance(n, ast.FunctionDef) and n.name == name))
             exec(compile(ast.fix_missing_locations(ast.Module(body=[node], type_ignores=[])),
@@ -156,6 +158,127 @@ class KGMicrofixFlowTests(unittest.TestCase):
         self.key(env, env.px.KEY_RETURN)
         self.assertEqual(env.threads, [])
         self.assertEqual(env.kg_calls, [])
+        self.assert_no_write(env)
+
+    def test_delayed_python_repair_worker_refuses_after_shutdown(self):
+        env = self.environment()
+        repair_calls = []
+        env.helpers.repair_esptool = lambda *args, **kwargs: repair_calls.append(args)
+        env.game._kg_start_python_check(repair=True)
+        self.assertEqual(len(env.threads), 1)
+        worker = env.threads[0]
+        self.assertTrue(env.game._kg_dependency_running)
+        env.game._shutting_down = True
+        worker.target(*worker.args, **worker.kwargs)
+        self.assertEqual(repair_calls, [])
+        self.assertEqual(env.probe_calls, [])
+        self.assertFalse(env.game._kg_dependency_running)
+        self.assertFalse(env.game._flash_job_lock.locked())
+        self.assert_no_write(env)
+
+    def test_shutdown_prevents_scheduling_new_python_repair(self):
+        env = self.environment()
+        env.game._shutting_down = True
+        env.game._kg_start_python_check(repair=True)
+        self.assertEqual(env.threads, [])
+        self.assertEqual(env.probe_calls, [])
+        self.assertFalse(getattr(env.game, '_kg_dependency_running', False))
+        self.assert_no_write(env)
+
+    def test_python_repair_blocks_game_update_cleanup_until_worker_releases_job(self):
+        env = self.environment()
+        g = env.game
+        entered, repair_resume = threading.Event(), threading.Event()
+        finalizing, unlock_resume = threading.Event(), threading.Event()
+        actions, errors = [], []
+
+        class FinalizationLock:
+            def __init__(self):
+                self.inner = threading.Lock()
+
+            def acquire(self, blocking=True):
+                return self.inner.acquire(blocking=blocking)
+
+            def locked(self):
+                return self.inner.locked()
+
+            def release(self):
+                # The worker clears dependency_running before releasing its
+                # operation lock. Exercise this real finalization ordering too.
+                finalizing.set()
+                if not unlock_resume.wait(5):
+                    self.inner.release()
+                    raise RuntimeError('Test did not release the Python job lock')
+                self.inner.release()
+
+        g._flash_job_lock = FinalizationLock()
+
+        def repair(executable, **kwargs):
+            self.assertEqual(executable, GAME_PYTHON)
+            entered.set()
+            if not repair_resume.wait(5):
+                raise RuntimeError('Test did not release the fake dependency repair')
+            return '5.4.0'
+
+        def run_worker():
+            try:
+                g._kg_check_python(repair=True)
+            except BaseException as exc:
+                errors.append(exc)
+
+        env.helpers.repair_esptool = repair
+        plan = object()
+        g._gameupd_plan = plan
+        g._gameupd_open_frame = env.px.frame_count - 1
+        g._gameupd_install_frame = -1
+        g._gameupd_running = g._gameupd_done = g._gameupd_closed_for_install = False
+        g._gameupd_restart_at = None
+        g._gameupd_confirm = True
+        g._cleanup_errors = []
+        g._gameupd_log_add = lambda line: env.output.append(line)
+        g._cleanup = lambda: actions.append('cleanup')
+        g._gameupd_do = lambda: actions.append('install')
+        g._gameupd_restart_process = lambda: actions.append('restart')
+        g._gameupd_discard_plan = lambda: actions.append('discard')
+
+        def press_y():
+            env.buttons = {env.px.KEY_Y}
+            g._update_gameupd_screen()
+            env.buttons.clear()
+
+        worker = threading.Thread(target=run_worker, name='kg-test-python-repair')
+        worker.start()
+        try:
+            self.assertTrue(entered.wait(5))
+            self.assertTrue(g._kg_dependency_running)
+            self.assertFalse(g._flash_running)
+            press_y()
+            self.assertEqual(actions, [])
+            self.assertTrue(g._gameupd_confirm)
+            self.assertIs(g._gameupd_plan, plan)
+            self.assertFalse(g._gameupd_closed_for_install)
+            repair_resume.set()
+            self.assertTrue(finalizing.wait(5))
+            self.assertFalse(g._kg_dependency_running)
+            self.assertTrue(g._flash_job_lock.locked())
+            press_y()
+            self.assertEqual(actions, [])
+            self.assertTrue(g._gameupd_confirm)
+            self.assertIs(g._gameupd_plan, plan)
+        finally:
+            repair_resume.set()
+            unlock_resume.set()
+            worker.join(5)
+        self.assertFalse(worker.is_alive())
+        self.assertEqual(errors, [])
+        self.assertFalse(g._flash_job_lock.locked())
+        press_y()
+        self.assertEqual(actions, ['cleanup'])
+        self.assertFalse(g._gameupd_confirm)
+        self.assertTrue(g._gameupd_closed_for_install)
+        env.px.frame_count += 1
+        g._update_gameupd_screen()
+        self.assertEqual(actions, ['cleanup', 'install'])
         self.assert_no_write(env)
 
     def test_m_dialog_n_and_escape_create_no_job(self):
@@ -336,6 +459,80 @@ class KGMicrofixFlowTests(unittest.TestCase):
         env.game._run_flash('xiao')
         self.assertFalse(any(e[0] in ('serial-close', 'power') for e in env.events))
         self.assert_no_write(env)
+
+    def test_cancel_and_write_claim_are_atomic_in_both_thread_orderings(self):
+        for first in ('cancel', 'claim'):
+            with self.subTest(first=first):
+                env = self.environment()
+                self.authorize_from_ui(env)
+                g = env.game
+                g._flash_write_started = False
+                owned, contender, resume = threading.Event(), threading.Event(), threading.Event()
+                results, errors = {}, []
+                first_name = 'kg-test-' + first
+
+                class PausingLock:
+                    """Pause the first operation *inside* the real shared lock."""
+                    def __init__(self):
+                        self.inner = threading.Lock()
+
+                    def acquire(self, blocking=True, timeout=-1):
+                        name = threading.current_thread().name
+                        if name != first_name:
+                            contender.set()
+                        acquired = self.inner.acquire(blocking, timeout)
+                        if acquired and name == first_name:
+                            owned.set()
+                            if not resume.wait(5):
+                                self.inner.release()
+                                raise RuntimeError('Test did not release the controlled lock')
+                        return acquired
+
+                    def release(self):
+                        self.inner.release()
+
+                    def locked(self):
+                        return self.inner.locked()
+
+                    def __enter__(self):
+                        self.acquire()
+                        return self
+
+                    def __exit__(self, *args):
+                        self.release()
+
+                g._kg_cancel_lock = PausingLock()
+
+                def perform(operation):
+                    try:
+                        action = (g._kg_cancel_migration if operation == 'cancel'
+                                  else g._kg_claim_firmware_write)
+                        results[operation] = action()
+                    except BaseException as exc:
+                        errors.append(exc)
+
+                second = 'claim' if first == 'cancel' else 'cancel'
+                winner = threading.Thread(target=perform, args=(first,), name=first_name)
+                loser = threading.Thread(target=perform, args=(second,), name='kg-test-' + second)
+                winner.start()
+                try:
+                    self.assertTrue(owned.wait(5), 'First operation did not acquire shared lock')
+                    loser.start()
+                    self.assertTrue(contender.wait(5), 'Second operation did not attempt shared lock')
+                    self.assertNotIn(second, results, 'Contender bypassed the shared lock')
+                finally:
+                    resume.set()
+                    winner.join(5)
+                    if loser.ident is not None:
+                        loser.join(5)
+                self.assertFalse(winner.is_alive())
+                self.assertFalse(loser.is_alive())
+                self.assertEqual(errors, [])
+                self.assertEqual(results, {first: True, second: False})
+                self.assertEqual(g._kg_cancel_requested, first == 'cancel')
+                self.assertEqual(g._flash_write_started, first == 'claim')
+                self.assertFalse(g._kg_cancel_lock.locked())
+                self.assertEqual(env.flash_commands, [])
 
     def test_usb_session_changed_after_y_refuses_before_backup_and_rom(self):
         env = self.environment()
