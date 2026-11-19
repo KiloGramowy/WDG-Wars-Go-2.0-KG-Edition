@@ -110,8 +110,10 @@ class KGFirmwareIntegrationTests(unittest.TestCase):
         self.assertEqual(game._kg_fw_expected_version,'1.7.0')
         self.assertIs(game._kg_fw_usb_identity,env.kg_identity)
         game._handle_serial_line('JanOS version: 1.7.0')
-        self.assertEqual(game._fw_version,'1.7.0');self.assertFalse(game._flash_fw_pending)
-        self.assertEqual(game._kg_fw_expected_version,'');self.assertIsNone(game._kg_fw_usb_identity)
+        self.assertEqual(game._fw_version,'1.7.0');self.assertTrue(game._flash_fw_pending)
+        self.assertEqual(game._kg_fw_expected_version,'1.7.0')
+        self.assertIs(game._kg_fw_usb_identity,env.kg_identity)
+        self.assertTrue(game._kg_probe_requested)
 
     def test_checker_generation_and_shutdown_prevent_late_notice_or_cache_commit(self):
         for change in ('generation','shutdown','already_shutting_down'):
@@ -151,10 +153,13 @@ class KGFirmwareIntegrationTests(unittest.TestCase):
     def test_enter_is_explicit_manual_worker_and_escape_does_not_start_another(self):
         env=self.environment();game=env.game
         game._flash_running=False;game._kg_fw_package=env.kg_package;game._kg_fw_error=''
-        game._start_flash_esp32();self.assertEqual(env.threads,[])
+        game._start_flash_esp32()
+        self.assertFalse(any(t.target.__name__=='_run_flash' for t in env.threads))
+        for thread in tuple(env.threads):
+            if thread.target.__name__=='_kg_check_python':thread.target(**thread.kwargs)
         env.buttons={env.px.KEY_RETURN};game._update_flash_screen()
-        self.assertEqual(len(env.threads),1);self.assertEqual(env.threads[0].target.__name__,'_run_flash')
-        self.assertEqual(env.threads[0].args,('xiao',));self.assertTrue(game._flash_running)
+        jobs=[t for t in env.threads if t.target.__name__=='_run_flash']
+        self.assertEqual(len(jobs),1);self.assertEqual(jobs[0].args,('xiao',));self.assertTrue(game._flash_running)
         env.buttons={env.px.KEY_ESCAPE};game._update_flash_screen()
         self.assertFalse(game._flash_screen);self.assertTrue(game._flash_running)
         self.assertEqual(env.kg_calls,[]);self.assertEqual(env.flash_commands,[])
@@ -171,7 +176,7 @@ class KGFirmwareIntegrationTests(unittest.TestCase):
         game._handle_serial_line('JanOS version: 1.6.5')
         self.assertEqual(game._fw_version,'1.6.5');self.assertFalse(game._kg_fw_recovery_needed)
         self.assertEqual(game._kg_fw_recovery_version,'');self.assertIsNone(game._kg_fw_usb_identity)
-        self.assertIn('previous firmware KG 1.6.5 responsive',game._flash_status)
+        self.assertIn('previous JanOS 1.6.5 responsive',game._flash_status)
         self.assertFalse(game._flash_write_complete);self.assertEqual(env.flash_commands,[])
 
     def test_ambiguous_recovery_target_cannot_reset_or_borrow_another_device(self):

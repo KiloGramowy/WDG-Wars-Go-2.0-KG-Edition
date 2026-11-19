@@ -19,12 +19,19 @@ fi
 
 # Verify venv still works after setup
 if [ ! -x "$VENV_PYTHON" ]; then
-    echo -e "${RED}[run] $VENV_PYTHON missing after setup — try: rm -rf .venv && bash setup.sh${NC}" >&2
+    echo -e "${RED}[run] $VENV_PYTHON unavailable after setup — check its path/execute permissions, then re-run: bash setup.sh${NC}" >&2
     exit 1
 fi
 
 # Never create .pyc files — prevents root-owned cache blocking updates
 export PYTHONDONTWRITEBYTECODE=1
+
+# Existing venvs can predate declared dependencies. Check and repair with the
+# SAME interpreter used below, before any serial/GPIO work. An unavailable
+# network/pip leaves the game usable; firmware preflight still refuses to flash.
+if ! "$VENV_PYTHON" -m watchdogs.esp32_flash --repair-esptool; then
+    echo -e "${YELLOW}[run] esptool repair failed. The game will run; firmware installation remains unavailable until repaired.${NC}" >&2
+fi
 
 # Suppress PulseAudio warnings when running as root
 RUN_UID="${SUDO_UID:-$(id -u)}"

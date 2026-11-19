@@ -25,6 +25,7 @@ GAME=next(n for n in TREE.body if isinstance(n,ast.ClassDef) and n.name=='WatchD
 METHODS={'_run_flash','_start_flash_esp32','_update_flash_screen','_draw_flash_screen','_poll_serial',
          '_try_reconnect_esp32','_send','_handle_serial_line','_toggle_usb','_check_fw_update'}
 METHODS.update(n.name for n in GAME.body if isinstance(n,ast.FunctionDef) and n.name.startswith('_flash'))
+METHODS.update(n.name for n in GAME.body if isinstance(n,ast.FunctionDef) and n.name.startswith('_kg_'))
 TABLES={}
 for node in ast.parse((ROOT/'watchdogs/config.py').read_text(encoding='utf8')).body:
     if isinstance(node,ast.Assign):
@@ -73,8 +74,9 @@ class FlashEnvironment:
         self.kg_calls=[];self.kg_fetch_error=self.kg_bind_error=self.kg_preflight_error=None
         self.kg_verify_error=None;self.kg_verify_calls=0;self.kg_verify_error_after=1
         self.during_kg_fetch=self.during_kg_preflight=None
-        self.kg_package=SimpleNamespace(version='1.7.0',image_name='janos-1.7.0-solo-xiao-c5-app.bin')
-        self.kg_identity=object();self.kg_bound_missing=False
+        self.kg_package=kg.KGPackage('1.7.0','v0.9.21','janos-1.7.0-solo-xiao-c5-app.bin',2250896,
+            kg.LEGACY_IMAGE_SHA256,'https://github.com/KiloGramowy/WDG-Wars-Go-2.0-KG-Edition/releases/download/v0.9.21/janos-1.7.0-solo-xiao-c5-app.bin',kg.LEGACY_MANIFEST_SHA256)
+        self.kg_identity=kg.USBIdentity(0x303A,0x1001,'SYNTHETIC-UNIT-DEVICE','SYNTHETIC-USB-PORT');self.kg_bound_missing=False
         self.kg_bound_error=None;self.kg_bound_port=None
         self.recovery_commands=[];self.recovery_error=None;self.recovery_code=0;self.during_recovery=None
         def kg_fetch():
@@ -106,7 +108,9 @@ class FlashEnvironment:
                 child=getattr(self.kg_preflight_error,'process',None)
                 if child is not None and kwargs.get('on_process'):kwargs['on_process'](child)
                 raise self.kg_preflight_error
-        self.kg_helpers=SimpleNamespace(fetch_latest_package=kg_fetch,download_image=kg_download,
+        self.kg_helpers=SimpleNamespace(**{key:getattr(kg,key) for key in
+            ('SoloMigrationEvidence','MigrationAuthorization','authorize_install','validate_authorization','backup_migration_device')},
+            fetch_latest_package=kg_fetch,download_image=kg_download,
             verify_image=kg_verify,version_tuple=kg.version_tuple,bind_usb_identity=kg_bind,
             find_bound_port=kg_bound,preflight_device=kg_preflight,KGFirmwareError=kg.KGFirmwareError)
         # Old flash safety mechanisms remain covered with an explicitly
@@ -123,7 +127,8 @@ class FlashEnvironment:
                 self.target,self.args,self.kwargs,self.daemon=target,args,kwargs or {},daemon;owner.threads.append(self)
             def start(self):owner.events.append(('thread-start',))
         self.fake_time=SimpleNamespace(time=lambda:self.now,monotonic=lambda:self.now,sleep=self.sleep)
-        self.px=SimpleNamespace(frame_count=90,KEY_UP=1,KEY_DOWN=2,KEY_RETURN=3,KEY_ESCAPE=4,KEY_R=5)
+        self.px=SimpleNamespace(frame_count=90,KEY_UP=1,KEY_DOWN=2,KEY_RETURN=3,KEY_ESCAPE=4,KEY_R=5,
+                               KEY_P=6,KEY_M=7,KEY_Y=8,KEY_N=9,KEY_C=10)
         self.px.btnp=lambda key:key in self.buttons
         for name in ('rect','rectb','line','text'):
             setattr(self.px,name,lambda *args,_name=name:self.draw_calls.append((_name,args)))

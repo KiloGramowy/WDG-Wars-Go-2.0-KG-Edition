@@ -1704,10 +1704,10 @@ class WatchDogsGame:
                     self._fw_remote_version = package.version
                     self._fw_update_available = bool(detected_version and
                         version_tuple(package.version) > version_tuple(detected_version))
-                    self._term_add(f"[FW] KG source: latest KG {package.version}", raw=True)
+                    self._term_add(f"[FW] Approved KG/SOLO package: JanOS {package.version}", raw=True)
                     if self._fw_update_available:
                         self.msg(f"[FW] KG update: {detected_version} -> {package.version}", C_WARNING)
-                        self._term_add(f"[FW] New KG firmware {package.version} available (current: KG {detected_version})", raw=True)
+                        self._term_add(f"[FW] KG/SOLO package {package.version} available (reported JanOS: {detected_version})", raw=True)
                 finally:
                     if access_lock is not None:
                         access_lock.release()
@@ -1827,6 +1827,9 @@ class WatchDogsGame:
                 return False
             solo = getattr(self, "_solo", None)
             verb = cmd.strip().partition(" ")[0]
+            if verb not in ("stop", "version", "wardrive_solo_caps"):
+                self._kg_probe = None
+                self._kg_probe_requested = False
             if (solo is not None and solo.busy
                     and verb not in ("stop", "version", "ping", "wardrive_solo_caps", "wardrive_solo")):
                 # Direct Python-side tools share the same STOP barrier as menu scans.
@@ -2578,6 +2581,18 @@ class WatchDogsGame:
         # the start of transmission, before the device can already reply.
         # A failed write must still leave command_sent unacknowledged.
         solo_tx = (time.monotonic(), time.time()) if state_key == "solo_control" else None
+        controller = getattr(self, "_solo", None)
+        if state_key == "solo_control" and final_cmd == "wardrive_solo_caps" and hasattr(controller, "bind_capability_context"):
+            token = self._kg_serial_token()
+            manager = getattr(self, "serial", None)
+            connection = getattr(manager, "serial_conn", manager)
+            buffered = getattr(getattr(manager, "line_buffer", None), "_buf", None)
+            try:
+                drained = buffered in (b"", b"> ") and connection.in_waiting == 0
+            except (AttributeError, OSError):
+                drained = False
+            controller.bind_capability_context(token, negative_safe=(
+                token is not None and getattr(self, "_kg_probe_barrier_token", None) == token and drained))
         if not self._send(final_cmd, wardrive=scheduled):
             self.msg(f"[ERR] Could not start {name}", C_ERROR)
             return False
@@ -2620,6 +2635,9 @@ class WatchDogsGame:
                 and getattr(self, "_pending_cmd_state", "") == "solo_control"):
             return  # Do not restart SOLO before first-fix replay completes.
         cmd, state, name = self._pending_cmd, self._pending_cmd_state, self._pending_cmd_name
+        if (cmd == "wardrive_solo_caps" and state == "solo_control"
+                and getattr(self, "_kg_probe", None) is not None):
+            self._kg_probe_barrier_token = self._kg_serial_token()
         self._pending_cmd = None
         self._pending_cmd_state = self._pending_cmd_name = ""
         self._esp_stop_waiting = False
@@ -5686,6 +5704,145 @@ class WatchDogsGame:
     # Flash ESP32
     # ------------------------------------------------------------------
 
+    def _kg_serial_token(self):
+        manager = getattr(self, "serial", None)
+        if manager is None or not manager.is_open:
+            return None
+        connection = getattr(manager, "serial_conn", manager)
+        if connection is None:
+            return None
+        return (id(manager), id(connection), getattr(self, "_fw_generation", 0),
+                getattr(manager, "device", getattr(self, "_boot_serial_port", "")))
+
+    def _kg_device_idle(self):
+        flags = ("wifi_scanning", "ble_scanning", "_wifi_scan_only", "_ble_scan_only",
+                 "_bt_tracking", "_bt_airtag", "sniffing", "capturing_hs", "_pending_cmd",
+                 "_esp_stop_waiting", "_esp_stop_required", "_wardrive_selected")
+        state_flags = ("attack_running", "blackout_running", "sae_overflow_running",
+                       "handshake_running", "portal_running", "evil_twin_running",
+                       "sniffer_running", "bt_wardriving_running", "bt_scan_running",
+                       "bt_tracking_running", "bt_airtag_running", "wardriving_running")
+        solo = getattr(self, "_solo", None)
+        return not (any(getattr(self, name, False) for name in flags)
+                    or any(getattr(self.state, name, False) for name in state_flags)
+                    or bool(solo is not None and solo.busy))
+
+    def _kg_request_probe(self):
+        # Only request here. _poll_serial dispatches after the complete RX batch,
+        # so a queued old reply cannot acknowledge a newly transmitted query.
+        self._kg_probe_requested = True
+
+    def _kg_probe_tick(self, *, dispatch=False):
+        now, token = time.monotonic(), self._kg_serial_token()
+        probe = getattr(self, "_kg_probe", None)
+        solo = getattr(self, "_solo", None)
+        if probe is not None and (token != probe["token"] or now >= probe["deadline"]):
+            self._kg_probe = probe = None
+        if probe is not None and solo is not None:
+            if (getattr(solo, "capability_context", None) == token
+                    and getattr(solo, "capability_status", "unknown") == "supported"):
+                probe["phase"] = "supported"
+                if (getattr(self, "_flash_fw_pending", False)
+                        and self._fw_version == getattr(self, "_kg_fw_expected_version", "")
+                        and probe.get("identity") == getattr(self, "_kg_fw_usb_identity", None)
+                        and probe.get("identity") is not None):
+                    self._flash_fw_pending = False
+                    self._flash_fw_deadline = None
+                    self._kg_fw_expected_version = ""
+                    self._kg_fw_usb_identity = None
+                    self._flash_status = f"JanOS {self._fw_version}; SOLO interface confirmed"
+                    self._term_add("[FLASH] Fresh JanOS and SOLO interface replies confirmed; capabilities do not attest image identity.", raw=True)
+                    self.msg("[FLASH] Firmware responsive; SOLO interface confirmed", C_SUCCESS)
+            elif (probe["phase"] == "caps" and getattr(solo, "capability_context", None) == token
+                  and getattr(solo, "capability_status", "unknown") == "unsupported"):
+                probe["phase"] = "version_queued"
+                probe["negative_at"] = solo.capability_received_at
+            if dispatch and probe["phase"] == "version_queued" and self._kg_device_idle():
+                probe["version_sent"] = now
+                probe["deadline"] = now + 5.0
+                if self._send("version"):
+                    probe["phase"] = "version"
+                else:
+                    self._kg_probe = None
+        if (not dispatch or not getattr(self, "_kg_probe_requested", False)
+                or token is None or solo is None or not self._kg_device_idle()
+                or getattr(self, "_flash_running", False)
+                or probe is not None and probe["phase"] not in ("ready", "supported")):
+            return
+        from .kg_firmware import bind_usb_identity
+        identity = None
+        try:
+            identity = bind_usb_identity(token[3])
+        except Exception:
+            pass  # Interface reads are useful on bridges; migration still refuses them.
+        self._kg_probe_requested = False
+        self._kg_probe_barrier_token = None
+        self._kg_probe = dict(token=token, identity=identity, phase="caps", deadline=now + 12.0,
+                              manager=self.serial, connection=getattr(self.serial, "serial_conn", self.serial))
+        if not solo.probe_capabilities():
+            self._kg_probe = None
+
+    def _kg_migration_evidence(self):
+        from .kg_firmware import SoloMigrationEvidence, KGFirmwareError, bind_usb_identity
+        probe = getattr(self, "_kg_probe", None)
+        token = self._kg_serial_token()
+        solo = getattr(self, "_solo", None)
+        if (probe is None or probe["token"] != token or probe["phase"] != "ready"
+                or probe.get("identity") is None or not self._kg_device_idle()
+                or getattr(solo, "capability_status", "unknown") != "unsupported"
+                or getattr(solo, "capability_context", None) != token
+                or probe.get("reported_version") != self._fw_version
+                or time.monotonic() - probe.get("negative_at", float("-inf")) > 30.0):
+            raise KGFirmwareError("Migration needs a fresh, explicit no-SOLO reply; stop ESP32 tools and press R")
+        if bind_usb_identity(token[3]) != probe["identity"]:
+            raise KGFirmwareError("USB device changed since the SOLO check; no migration")
+        return SoloMigrationEvidence(probe["identity"], probe["reported_version"], token[2],
+                                     probe["negative_at"], response="unrecognized")
+
+    def _kg_solo_label(self):
+        solo, token = getattr(self, "_solo", None), self._kg_serial_token()
+        if token is not None and getattr(solo, "capability_context", None) == token:
+            status = getattr(solo, "capability_status", "unknown")
+            if status == "supported":
+                return "SOLO: interface confirmed (not image attestation)"
+            if status == "unsupported":
+                return "SOLO: command not recognized (R to recheck)"
+        return "SOLO: unknown / checking; a version number is not proof"
+
+    def _kg_check_python(self, *, repair=False):
+        from .esp32_flash import check_esptool, repair_esptool
+        lock = getattr(self, "_flash_job_lock", None)
+        owned = lock is not None and lock.acquire(blocking=False)
+        if lock is not None and not owned:
+            self._kg_dependency_running = False
+            return
+        self._kg_dependency_running = True
+        try:
+            action = repair_esptool if repair else check_esptool
+            kwargs = {"on_line": lambda line: self._term_add(f"[PYTHON] {line}", raw=True)} if repair else {}
+            self._kg_esptool_version = action(sys.executable, **kwargs)
+            self._kg_esptool_error = ""
+            if repair:
+                self._term_add("[FW] esptool repaired in the game Python. Select firmware installation separately; nothing was flashed.", raw=True)
+        except Exception as exc:
+            self._kg_esptool_version = ""
+            self._kg_esptool_error = str(exc)
+            self._term_add(f"[PYTHON] {exc}", raw=True)
+        finally:
+            self._kg_dependency_running = False
+            if owned:
+                lock.release()
+
+    def _kg_start_python_check(self, *, repair=False):
+        if getattr(self, "_kg_dependency_running", False) or getattr(self, "_flash_running", False):
+            return
+        self._kg_dependency_running = True
+        try:
+            threading.Thread(target=self._kg_check_python, kwargs={"repair": repair}, daemon=True).start()
+        except Exception as exc:
+            self._kg_dependency_running = False
+            self._kg_esptool_error = str(exc)
+
     def _start_flash_esp32(self):
         """Open the KG firmware updater without replacing an active job."""
         from .config import FLASH_BOARDS, FIRMWARE_RELEASE_URL, UPSTREAM_FIRMWARE_ENABLED
@@ -5696,6 +5853,9 @@ class WatchDogsGame:
             self.menu_open = False
             if not hasattr(self, "_flash_running"):
                 self._flash_running = False
+            if not self._flash_running:
+                self._kg_request_probe()
+                self._kg_start_python_check()
             if (not self._flash_running and not getattr(self, "_kg_fw_checking", False)
                     and getattr(self, "_kg_fw_package", None) is None):
                 threading.Thread(target=self._check_fw_update, daemon=True).start()
@@ -5711,29 +5871,64 @@ class WatchDogsGame:
     def _update_flash_screen(self):
         from .config import FIRMWARE_RELEASE_URL, UPSTREAM_FIRMWARE_ENABLED
         if not UPSTREAM_FIRMWARE_ENABLED:
+            if getattr(self, "_kg_migration_confirm", False):
+                if pyxel.btnp(pyxel.KEY_ESCAPE) or pyxel.btnp(pyxel.KEY_N):
+                    self._kg_migration_confirm = False
+                elif pyxel.btnp(pyxel.KEY_Y):
+                    try:
+                        from .kg_firmware import authorize_install
+                        evidence = self._kg_migration_evidence()
+                        authorization = authorize_install(self._kg_fw_package, self._fw_version,
+                            migration=evidence, identity=evidence.identity,
+                            connection_generation=evidence.connection_generation, confirmed=True)
+                        if authorization is None:
+                            raise RuntimeError("Use ENTER for an ordinary install; migration was not needed")
+                        self._kg_fw_migration_authorization = authorization
+                        self._kg_fw_migration_serial_token = self._kg_serial_token()
+                        self._kg_migration_confirm = False
+                        self._kg_start_flash_job()
+                    except Exception as exc:
+                        self._kg_migration_confirm = False
+                        self._flash_status = str(exc)
+                        self._term_add(f"[FW] {exc}", raw=True)
+                return
             if pyxel.btnp(pyxel.KEY_ESCAPE):
                 self._flash_screen = False
                 self._esc_consumed_frame = pyxel.frame_count
+            elif self._flash_running:
+                if (pyxel.btnp(pyxel.KEY_C) and getattr(self, "_kg_fw_migration_authorization", None) is not None
+                        and not getattr(self, "_flash_write_started", False)):
+                    self._kg_cancel_requested = True
+                    self._flash_status = "Cancellation requested; no firmware write will start"
             elif not self._flash_running:
+                if getattr(self, "_kg_dependency_running", False):
+                    return
                 if pyxel.btnp(pyxel.KEY_R) and not getattr(self, "_kg_fw_checking", False):
                     threading.Thread(target=self._check_fw_update, daemon=True).start()
+                    self._kg_request_probe()
+                    self._kg_start_python_check()
+                elif pyxel.btnp(pyxel.KEY_P):
+                    self._kg_start_python_check(repair=True)
+                elif pyxel.btnp(pyxel.KEY_M):
+                    try:
+                        if getattr(self, "_kg_fw_package", None) is None:
+                            raise RuntimeError("Press R to check the approved KG package first")
+                        self._kg_migration_evidence()
+                        self._kg_migration_confirm = True
+                    except Exception as exc:
+                        self._flash_status = str(exc)
+                        self._term_add(f"[FW] {exc}", raw=True)
                 elif pyxel.btnp(pyxel.KEY_RETURN):
                     if (getattr(self, "_kg_fw_checking", False)
                             or getattr(self, "_kg_fw_package", None) is None
                             or getattr(self, "_kg_fw_error", "")):
                         self.msg("[FW] Press R to check the KG firmware source first", C_WARNING)
                         return
-                    job_lock = getattr(self, "_flash_job_lock", None)
-                    if job_lock is not None and job_lock.locked():
+                    if getattr(self, "_kg_esptool_error", ""):
+                        self.msg("[FW] Press P to repair esptool in the game Python first", C_WARNING)
                         return
-                    self._flash_running = True
-                    self._flash_status = "Preparing approved KG firmware..."
-                    try:
-                        threading.Thread(target=self._run_flash, args=("xiao",), daemon=True).start()
-                    except Exception as exc:
-                        self._flash_running = False
-                        self._term_add(f"[FW] Cannot start KG installer: {exc}", raw=True)
-                        self.msg("[FW] Cannot start KG installer", C_ERROR)
+                    self._kg_fw_migration_authorization = None
+                    self._kg_start_flash_job()
             return
         if self._flash_running:
             if pyxel.btnp(pyxel.KEY_ESCAPE):
@@ -5764,6 +5959,20 @@ class WatchDogsGame:
             self._flash_screen = False
             self._esc_consumed_frame = pyxel.frame_count
 
+    def _kg_start_flash_job(self):
+        job_lock = getattr(self, "_flash_job_lock", None)
+        if job_lock is not None and job_lock.locked():
+            return
+        self._flash_running = True
+        self._flash_status = "Preparing approved KG firmware..."
+        self._kg_cancel_requested = False
+        try:
+            threading.Thread(target=self._run_flash, args=("xiao",), daemon=True).start()
+        except Exception as exc:
+            self._flash_running = False
+            self._kg_fw_migration_authorization = None
+            self._term_add(f"[FW] Cannot start KG installer: {exc}", raw=True)
+
     def _run_flash(self, board: str):
         # Real instances initialize both locks before any UI/worker can run.
         # Lazy creation also supports old isolated method harnesses.
@@ -5776,6 +5985,7 @@ class WatchDogsGame:
         self._flash_running = True
         self._flash_process = self._flash_workspace = None
         self._flash_device_acquired = self._flash_write_complete = False
+        self._flash_write_started = False
         self._flash_usb_off = False
         self._kg_fw_expected_version = ""
         self._kg_fw_recovery_needed = False
@@ -5892,6 +6102,8 @@ class WatchDogsGame:
                 self._flash_running = False
                 if not self._flash_write_complete:
                     self._kg_fw_expected_version = ""
+                self._kg_fw_migration_authorization = None
+                self._kg_fw_migration_serial_token = None
                 job_lock.release()
 
     def _flash_do(self, board: str):
@@ -5922,6 +6134,7 @@ class WatchDogsGame:
         self._flash_status = "Downloading firmware..."
         self._term_add(f"[FLASH] Board: {profile['label']}", raw=True)
         package = None
+        authorization = getattr(self, "_kg_fw_migration_authorization", None)
         if UPSTREAM_FIRMWARE_ENABLED:
             request = Request(FIRMWARE_RELEASE_URL, headers={"User-Agent": "ESP32-Watch-Dogs"})
             with urlopen(request, timeout=15) as response:
@@ -5942,16 +6155,22 @@ class WatchDogsGame:
         else:
             from .kg_firmware import (fetch_latest_package, download_image, verify_image,
                                      version_tuple, bind_usb_identity, find_bound_port,
-                                     preflight_device)
+                                     preflight_device, authorize_install, validate_authorization,
+                                     backup_migration_device)
             package = fetch_latest_package()
-            if self._fw_version and version_tuple(package.version) < version_tuple(self._fw_version):
-                raise FlashError("The published KG package is older than the device's reported version")
+            if authorization is None:
+                authorize_install(package, self._fw_version)
+            else:
+                if self._kg_serial_token() != getattr(self, "_kg_fw_migration_serial_token", None):
+                    raise FlashError("The confirmed migration connection changed; no write")
+                validate_authorization(authorization, package, authorization.identity,
+                                       getattr(self, "_fw_generation", 0))
             self._flash_status = f"Downloading approved KG {package.version}..."
             image = download_image(package, attempt / package.image_name)
             verify_image(package, image)
             self._kg_fw_package = package
             self._term_add(f"[FW] KG fork package {package.version}; application only", raw=True)
-        if getattr(self, "_shutting_down", False):
+        if getattr(self, "_shutting_down", False) or getattr(self, "_kg_cancel_requested", False):
             return
         port = self._boot_serial_port
         if not port or not Path(port).exists():
@@ -5959,6 +6178,10 @@ class WatchDogsGame:
         if not port or not Path(port).exists():
             raise FlashError("ESP32 USB port was not detected; connection and USB power were left unchanged")
         identity = bind_usb_identity(port) if package is not None else None
+        if authorization is not None:
+            validate_authorization(authorization, package, identity, getattr(self, "_fw_generation", 0))
+            if self._kg_serial_token() != getattr(self, "_kg_fw_migration_serial_token", None):
+                raise FlashError("The confirmed migration connection changed; no write")
         # Detach under the same guard used by all normal serial paths. Close
         # outside it; a slow native close cannot block the Pyxel loop's lock.
         access_lock = getattr(self, "_esp_serial_lock", None)
@@ -6001,6 +6224,8 @@ class WatchDogsGame:
             self._fw_remote_version = ""
             self._fw_update_available = False
             self._fw_generation = getattr(self, "_fw_generation", 0) + 1
+            self._kg_probe = None
+            self._kg_probe_requested = False
             self._flash_fw_pending = False
             self._flash_fw_deadline = None
         finally:
@@ -6046,6 +6271,22 @@ class WatchDogsGame:
                 return
             if find_bound_port(identity) != port:
                 raise FlashError("KG target changed during read-only preflight; no write was started")
+            if authorization is not None:
+                self._flash_status = "Reading two private 8 MiB recovery backups; C cancels before write"
+                def current_migration_device():
+                    return bool(not getattr(self, "_shutting_down", False)
+                                and not getattr(self, "_kg_cancel_requested", False)
+                                and getattr(self, "_kg_fw_migration_authorization", None) is authorization
+                                and find_bound_port(identity) == port)
+                backup = backup_migration_device(package, image, sys.executable, port, attempt,
+                    fw_dir / "kg-recovery", identity, authorization, run_tool=run_esptool,
+                    check_current_device=current_migration_device,
+                    on_process=lambda process: setattr(self, "_flash_process", process),
+                    on_line=lambda line: self._term_add(f"[RECOVERY] {line}", raw=True))
+                self._kg_fw_backup_directory = str(backup.directory)
+                self._term_add(f"[RECOVERY] Verified private recovery copies: {backup.directory}. Never upload device backups.", raw=True)
+                if not current_migration_device():
+                    raise FlashError("Migration cancelled or USB device changed; no firmware write")
             verify_image(package, image)
             self._kg_fw_expected_version = package.version
         after = "no-reset" if power_cycle else "hard-reset"
@@ -6059,10 +6300,11 @@ class WatchDogsGame:
             command.extend(("--flash-mode", "dio", "--flash-freq", "80m", "--flash-size", "detect"))
             for filename, offset in profile["offsets"].items():
                 command.extend((offset, str(attempt / filename)))
-        if getattr(self, "_shutting_down", False):
+        if getattr(self, "_shutting_down", False) or getattr(self, "_kg_cancel_requested", False):
             return
         self._flash_status = "Flashing ESP32..."
         self._kg_fw_recovery_needed = False
+        self._flash_write_started = True
         run_esptool(command, lambda line: self._term_add(f"[FLASH] {line}", raw=True),
                     on_process=lambda process: setattr(self, "_flash_process", process))
         self._flash_write_complete = True
@@ -6501,12 +6743,14 @@ class WatchDogsGame:
         try:
             if getattr(self, "_serial_busy", False) or getattr(self, "_flash_running", False):
                 return
+            if getattr(self, "_kg_probe", None) is not None or getattr(self, "_kg_probe_requested", False):
+                self._kg_probe_tick()
             deadline = getattr(self, "_flash_fw_deadline", None)
             if (getattr(self, "_flash_fw_pending", False) and deadline is not None
                     and time.monotonic() >= deadline):
                 self._flash_fw_deadline = None
-                self._flash_status = "Write complete; firmware not confirmed"
-                self._term_add("[FLASH] Write completed, but no fresh firmware response. Check USB/device boot.", raw=True)
+                self._flash_status = "Write complete; firmware/SOLO not confirmed"
+                self._term_add("[FLASH] Write completed, but fresh firmware and SOLO replies are not confirmed. Check USB/device boot; do not blindly flash again.", raw=True)
                 self.msg("[FLASH] Firmware start not confirmed - see OUTPUT", C_WARNING)
             if getattr(self, '_serial_busy', False):
                 return
@@ -6541,6 +6785,8 @@ class WatchDogsGame:
                 return
             for line in lines:
                 self._handle_serial_line(line)
+            if getattr(self, "_kg_probe", None) is not None or getattr(self, "_kg_probe_requested", False):
+                self._kg_probe_tick(dispatch=True)
         finally:
             if access_lock is not None:
                 access_lock.release()
@@ -6549,6 +6795,27 @@ class WatchDogsGame:
         s = line.strip()
         if not s:
             return
+
+        probe = getattr(self, "_kg_probe", None)
+        if probe is not None and probe["phase"] == "ready":
+            reply = s[2:] if s.startswith("> ") else s
+            changed = re.fullmatch(r"(?:JanOS|WatchDogsGo) version:\s*v?(\d+\.\d+\.\d+)", reply)
+            if (reply.startswith(("APP_MAIN START", "@SOLO "))
+                    or changed and changed.group(1) != probe.get("reported_version")):
+                self._kg_probe = probe = None
+                self._fw_version = ""
+                controller = getattr(self, "_solo", None)
+                if controller is not None:
+                    controller.capability_status = "unknown"
+                    controller.capability_context = controller.capability_received_at = None
+        if (probe is not None and probe["phase"] == "version"
+                and probe["token"] == self._kg_serial_token()
+                and probe["version_sent"] <= time.monotonic() < probe["deadline"]):
+            reply = s[2:] if s.startswith("> ") else s
+            measured = re.fullmatch(r"(?:JanOS|WatchDogsGo) version:\s*v?(\d+\.\d+\.\d+)", reply)
+            if measured:
+                probe["reported_version"] = self._fw_version = measured.group(1)
+                probe["phase"], probe["deadline"] = "ready", time.monotonic() + 30.0
 
         # Firmware version detection (from boot banner, version cmd, ping)
         # Match both legacy "JanOS version" and newer "WatchDogsGo version" — the
@@ -6566,23 +6833,29 @@ class WatchDogsGame:
                                     getattr(self, "_kg_fw_expected_version", ""))
                 if ((getattr(self, "_flash_fw_pending", False) or recovering) and expected_version
                         and reported_version != expected_version):
-                    self._term_add(f"[FW] Awaiting KG {expected_version}; received version {reported_version}", raw=True)
+                    self._term_add(f"[FW] Awaiting JanOS {expected_version}; received version {reported_version}", raw=True)
                 else:
                     self._fw_version = reported_version
-                    self._kg_fw_usb_identity = None
-                    self._term_add(f"[FW] Firmware KG {self._fw_version}", raw=True)
+                    self._term_add(f"[FW] JanOS {self._fw_version}; the version number does not establish SOLO support", raw=True)
+                    if not getattr(self, "_flash_fw_pending", False):
+                        self._kg_fw_usb_identity = None
                     if recovering:
                         self._kg_fw_recovery_needed = False
                         self._kg_fw_recovery_version = ""
-                        self._flash_status = f"KG install stopped; previous firmware KG {self._fw_version} responsive"
-                        self._term_add(f"[FW] Fresh previous-firmware response: KG {self._fw_version}", raw=True)
+                        self._flash_status = f"KG install stopped; previous JanOS {self._fw_version} responsive"
+                        self._term_add(f"[FW] Fresh previous-firmware response: JanOS {self._fw_version}", raw=True)
                     if getattr(self, "_flash_fw_pending", False):
-                        self._flash_fw_pending = False
-                        self._flash_fw_deadline = None
-                        self._kg_fw_expected_version = ""
-                        self._flash_status = f"Firmware KG {self._fw_version} confirmed"
-                        self._term_add(f"[FLASH] Fresh firmware response: KG {self._fw_version}", raw=True)
-                        self.msg(f"[FLASH] Firmware KG {self._fw_version} confirmed", C_SUCCESS)
+                        if getattr(self, "_kg_fw_expected_version", ""):
+                            self._flash_status = f"JanOS {self._fw_version} responsive; checking SOLO interface"
+                            self._kg_request_probe()
+                        else:
+                            # Retain the separate, disabled legacy stock wizard's
+                            # existing version confirmation; it is not a SOLO install.
+                            self._flash_fw_pending = False
+                            self._flash_fw_deadline = None
+                            self._flash_status = f"Firmware v{self._fw_version} confirmed"
+                            self._term_add(f"[FLASH] Fresh firmware response: v{self._fw_version}", raw=True)
+                            self.msg(f"[FLASH] Firmware v{self._fw_version} confirmed", C_SUCCESS)
                     threading.Thread(target=self._check_fw_update,
                                      daemon=True).start()
 
@@ -6822,11 +7095,8 @@ class WatchDogsGame:
                 self._bt_scan_done_time = time.time()
 
         # Add to terminal panel (non-parsed lines)
-        # Brand the displayed version only; parsers and the serial log above
-        # keep the exact numeric device reply for compatibility/diagnostics.
-        display_line = re.sub(r"^((?:JanOS|WatchDogsGo) version:)\s*v?(\d+\.\d+\.\d+)$",
-                              r"\1 KG \2", s)
-        self._term_add(display_line)
+        # Preserve the reported JanOS number. A number is not a KG/SOLO identity.
+        self._term_add(s)
 
     def _handle_esp_operation_state(self, line):
         stopped = "all operations stopped" in line or "all stopped" in line
@@ -10375,28 +10645,52 @@ class WatchDogsGame:
         """Show the own-fork KG firmware version and installer."""
         from .config import FLASH_BOARDS, FIRMWARE_RELEASE_URL, UPSTREAM_FIRMWARE_ENABLED
         if not UPSTREAM_FIRMWARE_ENABLED:
-            dw, dh = 420, 194
+            dw, dh = 420, 240
             dx, dy = (W - dw) // 2, (H - dh) // 2
             pyxel.rect(dx, dy, dw, dh, 0)
             pyxel.rectb(dx, dy, dw, dh, C_WARNING)
             pyxel.rectb(dx + 1, dy + 1, dw - 2, dh - 2, C_COAST)
+            if getattr(self, "_kg_migration_confirm", False):
+                package = self._kg_fw_package
+                rows = ["CONFIRM MANUAL MIGRATION TO KG/SOLO",
+                        f"Reported JanOS: {self._fw_version}", self._kg_solo_label(),
+                        f"Target package: JanOS {package.version} + SOLO",
+                        f"Source: KiloGramowy/WDG-Wars-Go-2.0-KG-Edition {package.release_tag}",
+                        f"OLDER BASE: JanOS {self._fw_version} -> {package.version}",
+                        "Two verified 8 MiB backups are required BEFORE write.",
+                        "Only XIAO C5 rev 1.0 / 8 MiB / approved ota_0.",
+                        "Bootloader, partitions, NVS and PHY are not flashed.",
+                        "Y MIGRATE   N / ESC CANCEL"]
+                for row, text in enumerate(rows):
+                    pyxel.text(dx + 6, dy + 8 + row * 20, text[:80], C_WARNING if row in (0, 5, 9) else C_TEXT)
+                return
             pyxel.text(dx + 6, dy + 6, "KG/SOLO FIRMWARE UPDATE", C_WARNING)
-            detected = f"Detected: KG {self._fw_version} (JanOS)" if self._fw_version else "Detected: unknown"
+            detected = f"Reported JanOS: {self._fw_version}" if self._fw_version else "Reported JanOS: unknown"
             pyxel.text(dx + 6, dy + 24, detected, C_TEXT)
+            pyxel.text(dx + 6, dy + 40, self._kg_solo_label(), C_TEXT)
             package = getattr(self, "_kg_fw_package", None)
             latest = ("Checking KG fork..." if getattr(self, "_kg_fw_checking", False) else
-                      f"Latest KG: {package.version}" if package is not None else "Latest KG: press R to check")
-            pyxel.text(dx + 6, dy + 40, latest, C_HACK_CYAN)
-            pyxel.text(dx + 6, dy + 56, "Source: KiloGramowy / WDG Wars Go KG fork", C_TEXT)
-            pyxel.text(dx + 6, dy + 72, "Target: XIAO ESP32-C5 rev 1.0 / 8 MiB / SOLO", C_TEXT)
-            pyxel.text(dx + 6, dy + 88, "KG application only; preserve other partitions.", C_DIM)
+                      f"Approved KG package: JanOS {package.version} + SOLO" if package is not None else "KG package: press R to check")
+            pyxel.text(dx + 6, dy + 56, latest, C_HACK_CYAN)
+            pyxel.text(dx + 6, dy + 72, "Source: KiloGramowy / WDG Wars Go KG fork", C_TEXT)
+            pyxel.text(dx + 6, dy + 88, "Target: XIAO ESP32-C5 rev 1.0 / 8 MiB / ota_0", C_TEXT)
+            tool = ("Python: checking/repairing esptool..." if getattr(self, "_kg_dependency_running", False)
+                    else f"Game Python: esptool {self._kg_esptool_version}" if getattr(self, "_kg_esptool_version", "")
+                    else "Game Python: esptool unavailable / unchecked; P repairs")
+            pyxel.text(dx + 6, dy + 104, tool, C_TEXT)
+            pyxel.text(dx + 6, dy + 120, "Application only; a game update never flashes ESP32.", C_DIM)
             status = (getattr(self, "_flash_status", "") if self._flash_running else
-                      (getattr(self, "_kg_fw_error", "") or getattr(self, "_flash_status", "")))
+                      (getattr(self, "_kg_esptool_error", "") or getattr(self, "_kg_fw_error", "")
+                       or getattr(self, "_flash_status", "")))
             if not status and package is not None:
                 status = "Package ready from the KG fork."
             for row, start in enumerate(range(0, min(len(status), 156), 78)):
-                pyxel.text(dx + 6, dy + 108 + row * 12, status[start:start + 78], C_TEXT)
-            controls = "ESC to close (operation continues)" if self._flash_running else "R check KG  ENTER install KG  ESC close"
+                pyxel.text(dx + 6, dy + 144 + row * 12, status[start:start + 78], C_TEXT)
+            controls = ("C cancel before write; ESC close (continues)" if self._flash_running and
+                        getattr(self, "_kg_fw_migration_authorization", None) is not None and
+                        not getattr(self, "_flash_write_started", False) else
+                        "ESC close (operation continues)" if self._flash_running else
+                        "P repair Python  R check  M migrate  ENTER install  ESC close")
             pyxel.text(dx + 6, dy + dh - 14, controls, C_DIM)
             return
         ROW_H = 14
@@ -10417,7 +10711,7 @@ class WatchDogsGame:
             pyxel.text(dx + 4, dy + 36, "Check terminal for status", C_DIM)
             pyxel.text(dx + 4, dy + dh - 14, "ESC to close", C_DIM)
         else:
-            fw_info = (f"Current: KG {self._fw_version}"
+            fw_info = (f"Reported JanOS: {self._fw_version}"
                        if self._fw_version else "Current: unknown")
             if self._fw_update_available:
                 fw_info += f" -> v{self._fw_remote_version}"

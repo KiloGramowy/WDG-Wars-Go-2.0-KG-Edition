@@ -6,6 +6,7 @@ import unittest
 
 from watchdogs.game_updates import filter_release_notes
 from watchdogs.release_notes import game_note_lines
+from watchdogs import __version__
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -16,7 +17,9 @@ class ReleaseNotePresentationTests(unittest.TestCase):
         return (ROOT / "docs" / "UPDATE_PREVIEW.txt").read_text(encoding="utf-8")
 
     def test_real_candidate_is_readable_in_the_original_font_and_width(self):
-        notes = self.candidate()
+        # Keep the detailed historical 0.9.21 feature/bitmap regression too.
+        historical = ROOT / "docs/ota-0.9.21/RELEASE_AND_DISCORD_EN.md"
+        notes = historical.read_text(encoding="utf-8")
         lines = game_note_lines(notes)
         text = "\n".join(lines)
         glyphs = {int(value) for value in re.findall(
@@ -28,7 +31,7 @@ class ReleaseNotePresentationTests(unittest.TestCase):
         self.assertTrue(all(len(line) <= 83 for line in lines))
         self.assertTrue(all(ord(char) in glyphs for line in lines for char in line))
         self.assertTrue(all(char.isascii() for char in text))
-        self.assertEqual(self.candidate(), notes)
+        self.assertEqual(historical.read_text(encoding="utf-8"), notes)
         # The display must retain the actual candidate's facts and instructions.
         words = " ".join(text.split())
         for fact in ("Before:", "Now:", "0.9.21", "0.9.20",
@@ -75,7 +78,7 @@ class ReleaseNotePresentationTests(unittest.TestCase):
         for installed, kept in (("0.9.19", 3), ("0.9.19.1", 2), ("0.9.19.2", 1),
                                 ("0.9.20", 0), ("0.9.21", 0)):
             with self.subTest(installed=installed):
-                selected = filter_release_notes(notes, installed, "0.9.21")
+                selected = filter_release_notes(notes, installed, __version__)
                 self.assertEqual(selected, candidate + "".join(older[:kept]))
                 text = "\n".join(game_note_lines(selected))
                 self.assertIn(candidate.splitlines()[0], text)
@@ -90,6 +93,20 @@ class ReleaseNotePresentationTests(unittest.TestCase):
                  "Before: old state.\nNow: saved state.\n\n---\n")
         self.assertEqual(game_note_lines(notes), notes.splitlines())
         self.assertEqual(game_note_lines(""), ["No release notes provided."])
+
+    def test_four_component_microfix_keeps_its_actual_controls_and_warning(self):
+        notes = self.candidate()
+        text = " ".join(" ".join(game_note_lines(notes)).split())
+        for fact in ("0.9.21.1", "esptool 5.0.0", "1.7.5", "1.7.0", "P",
+                     "M", "N / Esc", "older JanOS", "two independent", "8 MiB",
+                     "No physical C5 migration", "Update Game -> R -> Enter -> Y"):
+            with self.subTest(fact=fact):
+                self.assertIn(fact, text)
+        self.assertTrue(all(len(line) <= 83 and line.isascii() for line in game_note_lines(notes)))
+        old = "RELEASE 0.9.21 - PREVIOUS GAME\nAlready installed.\n"
+        selected = filter_release_notes(notes + "\n" + old, "0.9.21", "0.9.21.1")
+        self.assertIn("RELEASE 0.9.21.1", selected)
+        self.assertNotIn("Already installed.", selected)
 
     def test_typographic_punctuation_keeps_english_meaning_and_long_lines_wrap(self):
         notes = "## \U0001f4e1 MC / MT: this session\u2019s nodes\n**Before / Now:** \u201cR\u201d \u2014 5\u201310 minutes; 0.9.19.1 \u2192 0.9.19.2\u2026\n" + "x" * 200

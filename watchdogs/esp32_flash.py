@@ -1,16 +1,20 @@
 """Small, device-independent helpers for the existing ESP32 flash wizard.
 
-These helpers do not open a serial port, switch GPIO, install packages or retry
-a firmware write. The caller owns the port and the lifetime of its attempt
-directory, including the exceptional case of an unkillable child process.
+These helpers do not open a serial port, switch GPIO or retry a firmware write.
+Dependency repair is a separate explicit action using the game interpreter.
+The caller owns the port and the lifetime of its attempt directory, including
+the exceptional case of an unkillable child process.
 """
 import codecs
 import math
+import os
 from pathlib import Path, PurePosixPath
 import queue
 import re
+import shlex
 import stat
 import subprocess
+import sys
 import threading
 import time
 from urllib.parse import urlsplit
@@ -35,6 +39,26 @@ def _text(value, limit=600):
     return " ".join(value.replace("\x00", "").split())[:limit]
 
 
+def _esptool_install_args(python):
+    return [str(python), "-m", "pip", "install", "--disable-pip-version-check",
+            "--no-input", "esptool>=5.0.0"]
+
+
+def esptool_repair_command(python):
+    """A safely quoted command for the exact game Python (no system pip)."""
+    args = _esptool_install_args(python)
+    if os.name == "nt":
+        # The desktop terminal is PowerShell; cmd-style quoting leaves >= as
+        # redirection. Quote every argument and use PowerShell's call operator.
+        return "& " + " ".join("'" + arg.replace("'", "''") + "'" for arg in args)
+    return shlex.join(args)
+
+
+def _esptool_failure(message, python):
+    return FlashError(message + ". Repair with the game Python: " +
+                      esptool_repair_command(python))
+
+
 def check_esptool(python, *, run=None):
     """Probe the exact game interpreter before any download/device operation."""
     run = run or subprocess.run
@@ -43,16 +67,16 @@ def check_esptool(python, *, run=None):
                      stdout=subprocess.PIPE, stderr=subprocess.PIPE,
                      text=True, timeout=10, check=False)
     except subprocess.TimeoutExpired as exc:
-        raise FlashError(f"esptool check timed out (10 s). Python: {python}") from exc
+        raise _esptool_failure(f"esptool check timed out (10 s). Python: {python}", python) from exc
     except PermissionError as exc:
-        raise FlashError(f"Permission denied running the game Python: {python}. "
-                         "Check execute/access permissions; no device was changed.") from exc
+        raise _esptool_failure(f"Permission denied running the game Python: {python}. "
+                               "Check execute/access permissions; no device was changed", python) from exc
     except (OSError, ValueError, TypeError) as exc:
-        raise FlashError(f"Cannot start the game Python: {python}. {_text(exc)}") from exc
+        raise _esptool_failure(f"Cannot start the game Python: {python}. {_text(exc)}", python) from exc
 
     stdout = getattr(result, "stdout", "") or ""
     stderr = getattr(result, "stderr", "") or ""
-    detail = _text(stderr or stdout)
+    detail = _text(stderr or stdout, 400)
     if result.returncode != 0:
         if re.search(r"No module named [\"']?esptool[\"']?(?:\s|$)", str(stderr)):
             reason = "esptool is unavailable in the game Python"
@@ -60,7 +84,7 @@ def check_esptool(python, *, run=None):
             reason = "esptool cannot access its Python environment (permission denied)"
         else:
             reason = "esptool cannot run in the game Python"
-        raise FlashError(f"{reason}. Python: {python}. {detail}")
+        raise _esptool_failure(f"{reason}. Python: {python}. {detail}", python)
 
     if isinstance(stdout, bytes):
         stdout = stdout.decode("utf-8", errors="replace")
@@ -69,15 +93,57 @@ def check_esptool(python, *, run=None):
         r"(\d+)\.(\d+)(?:\.(\d+))?([a-z][\w.-]*|[-+][\w.-]+|\.[a-z][\w.-]*)?\s*$",
         stdout[:16384])
     if not versions:
-        raise FlashError(f"Cannot determine the esptool version; require >=5.0.0. "
-                         f"Python: {python}. {_text(stdout)}")
+        raise _esptool_failure(f"Cannot determine the esptool version; require >=5.0.0. "
+                               f"Python: {python}. {_text(stdout, 400)}", python)
     major, minor, patch, suffix = versions[-1]
     numeric = (int(major), int(minor), int(patch or 0))
     prerelease = suffix and not suffix.startswith(("+", ".post", "post"))
     if numeric < MIN_ESPTOOL or numeric == MIN_ESPTOOL and prerelease:
-        raise FlashError(f"esptool {major}.{minor}.{patch or '0'}{suffix} is unsupported; "
-                         f"require >=5.0.0. Python: {python}")
+        raise _esptool_failure(f"esptool {major}.{minor}.{patch or '0'}{suffix} is unsupported; "
+                               f"require >=5.0.0. Python: {python}", python)
     return f"{major}.{minor}.{patch or '0'}{suffix}"
+
+
+def repair_esptool(python, *, run=None, on_line=None):
+    """Ensure esptool>=5 in this interpreter, never opening a device.
+
+    Call only for an explicit repair or the existing launcher/setup dependency
+    step. A successful pip exit is not enough: the same preflight runs again.
+    Firmware installation remains a separate user-confirmed operation.
+    """
+    run = run or subprocess.run
+    python = str(python)
+    try:
+        return check_esptool(python, run=run)
+    except FlashError:
+        pass
+    if on_line:
+        on_line("Repairing esptool>=5.0.0 in the game Python: " + python)
+    command = _esptool_install_args(python)
+    try:
+        result = run(command, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                     text=True, timeout=180, check=False)
+    except subprocess.TimeoutExpired as exc:
+        raise _esptool_failure("esptool installation timed out (180 s); "
+                               "no firmware operation was started", python) from exc
+    except PermissionError as exc:
+        raise _esptool_failure("Permission denied repairing the game Python environment: " +
+                               _text(exc, 300), python) from exc
+    except (OSError, ValueError, TypeError) as exc:
+        raise _esptool_failure("Cannot run pip with the game Python: " + _text(exc, 300), python) from exc
+    if result.returncode:
+        detail = getattr(result, "stderr", "") or getattr(result, "stdout", "") or "no diagnostic output"
+        if isinstance(detail, bytes):
+            detail = detail.decode("utf-8", errors="replace")
+        raise _esptool_failure("esptool installation failed (exit " + str(result.returncode) +
+                               "): " + _text(str(detail)[-600:], 600), python)
+    try:
+        version = check_esptool(python, run=run)
+    except FlashError as exc:
+        raise FlashError("pip completed but esptool is still unusable. " + str(exc)) from exc
+    if on_line:
+        on_line("esptool " + version + " verified in the game Python; no firmware was flashed")
+    return version
 
 
 def select_firmware_asset(release, board):
@@ -318,3 +384,25 @@ def run_esptool(command, on_line, *, on_process=None, popen=None,
                 process.stdout.close()
             except Exception:
                 pass
+
+
+def _dependency_main(argv=None):
+    """Existing setup/launcher entry point; this CLI cannot flash hardware."""
+    import argparse
+    parser = argparse.ArgumentParser(description="Check or repair esptool in this game Python")
+    action = parser.add_mutually_exclusive_group(required=True)
+    action.add_argument("--check-esptool", action="store_true")
+    action.add_argument("--repair-esptool", action="store_true")
+    args = parser.parse_args(argv)
+    try:
+        version = (repair_esptool(sys.executable, on_line=print) if args.repair_esptool
+                   else check_esptool(sys.executable))
+        print("esptool " + version + " ready in " + sys.executable)
+        return 0
+    except FlashError as error:
+        print(str(error), file=sys.stderr)
+        return 1
+
+
+if __name__ == "__main__":
+    raise SystemExit(_dependency_main())

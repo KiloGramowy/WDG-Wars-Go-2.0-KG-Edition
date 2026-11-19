@@ -264,8 +264,14 @@ class KGFirmwareMetadataTests(unittest.TestCase):
             with self.assertRaises(kg.KGFirmwareError): kg.verify_image(package, path)
             with self.assertRaises(kg.KGFirmwareError): kg.verify_image(package, Path(temporary))
 
-    def test_private_schema_two_draft_retains_the_already_approved_image_and_version(self):
-        draft = json.loads((ROOT / 'docs/ota-0.9.21/KG_FIRMWARE_MANIFEST_V2_DRAFT.json').read_text())
+    def test_schema_two_fixture_retains_the_already_approved_image_and_version(self):
+        # Public source tests must not require a private release-planning file.
+        # This is synthetic metadata around the unchanged public legacy image,
+        # not an activated or newly published firmware manifest.
+        draft = json.loads(LEGACY)
+        draft.update(schema=2, firmware_version='1.7.0', solo_contract=1,
+                     draft={'publication_authorized': False})
+        draft['target']['write_scope'] = 'application_only'
         package = HTTPFixture(draft).package()
         self.assertEqual(package.version, '1.7.0')
         self.assertEqual(package.image_bytes, 2250896)

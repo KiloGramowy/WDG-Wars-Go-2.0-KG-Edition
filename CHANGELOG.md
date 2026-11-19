@@ -67,6 +67,17 @@ minor versions.
 
 ---
 
+
+## 0.9.21.1 — esptool repair, explicit KG/SOLO migration and honest labels
+
+- Repair the already-required esptool in the actual game interpreter, including existing .venv installations and an explicit in-panel P repair after OTA. Keep requirements.txt and minimum 5.0.0 unchanged; failed install/tool checks never flash.
+- Add a separately confirmed M/Y migration for a fresh, explicit missing-SOLO response from the current native XIAO ESP32-C5 rev1.0/8MiB device. Explicitly disclose the older JanOS 1.7.0+SOLO base; ordinary downgrade protection and same-version reinstalls remain.
+- Retain image/USB/ROM/security/table/active-slot/port checks. Before migration, require two independent matching private full-flash recovery reads and original application sectors. Write only the approved app with unchanged transfer settings; keep backups out of Git and public reports.
+- Confirm a returning KG installation with fresh version AND SOLO interface responses. Timeouts, disconnects, partial/stale replies and exit0 alone are not success or migration permission.
+- Distinguish reported JanOS, SOLO interface confirmation and the approved package; stop branding plain version numbers as KG.
+- Keep all KG/SOLO 1.7.0 and Piglet BIN/manifest bytes unchanged; game 0.9.21.1 never automatically flashes ESP32. No Dark3D/Android or architecture changes.
+- See [repair/migration/recovery](docs/FIRMWARE_KG_SOLO_0.9.21.1.md) and [full release](docs/ota-0.9.21.1/GITHUB_RELEASE_READY.md). Physical migration remains NOT VERIFIED.
+
 ## [0.9.14] — 2026-10-07
 
 ### Added

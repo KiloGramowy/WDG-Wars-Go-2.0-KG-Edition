@@ -179,7 +179,7 @@ echo "[5/8] Installing Python packages..."
 pip_run() {
     local desc="$1"; shift
     info "$desc"
-    if .venv/bin/pip "$@" >>"$PIP_LOG" 2>&1 ; then
+    if .venv/bin/python3 -m pip "$@" >>"$PIP_LOG" 2>&1 ; then
         ok "$desc"
         return 0
     else
@@ -197,6 +197,14 @@ if ! pip_run "Installing requirements.txt" install -r requirements.txt ; then
     fail "  - missing apt build deps (re-check step [3] errors above)"
     fail "  - Python $PY_VER too new for some wheels"
     fail "  - intermittent network / PyPI timeout (re-run setup.sh)"
+    ERRORS=$((ERRORS + 1))
+fi
+
+# Verify/repair the flasher dependency even when this venv already existed or
+# another requirement failed earlier. Never install it into a different Python.
+if ! .venv/bin/python3 -m watchdogs.esp32_flash --repair-esptool >>"$PIP_LOG" 2>&1; then
+    dump_log_on_fail "esptool in the game Python" "$PIP_LOG"
+    fail "Firmware installation is unavailable until this dependency is repaired."
     ERRORS=$((ERRORS + 1))
 fi
 

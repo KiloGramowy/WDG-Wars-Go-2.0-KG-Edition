@@ -2,9 +2,10 @@
 from pathlib import Path
 import unittest
 from watchdogs.release_notes import game_note_lines
+from watchdogs import __version__
 
 ROOT = Path(__file__).resolve().parents[1]
-PACK = ROOT / 'docs/ota-0.9.21'
+PACK = ROOT / 'docs' / ('ota-' + __version__)
 
 
 class ReleaseCopyConsistencyTests(unittest.TestCase):

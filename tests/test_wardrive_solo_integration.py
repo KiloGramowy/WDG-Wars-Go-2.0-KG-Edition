@@ -20,7 +20,7 @@ from watchdogs.network_manager import NetworkManager
 
 TREE = ast.parse(base.SOURCE.read_text(encoding="utf-8"))
 APP = next(node for node in TREE.body if isinstance(node, ast.ClassDef) and node.name == "WatchDogsGame")
-NAMES = set(base.METHODS) | {"_handle_serial_line", "_poll_serial", "_is_running", "_set_solo_selection",
+NAMES = set(base.METHODS) | {"_kg_serial_token", "_handle_serial_line", "_poll_serial", "_is_running", "_set_solo_selection",
     "_cancel_solo_pending", "_on_solo_observation", "_poll_solo", "_solo_notice",
     "_start_solo_backfill", "_finish_solo_recorder", "_apply_solo_observation",
     "_record_scan_map_observation", "_poll_gps"}

@@ -110,3 +110,12 @@ Preparation verifies the pinned source, permitted runtime paths and current file
 Installation requires stopped game-owned workers and saved player state. It keeps a verified code-only backup and recovery receipt; settings, loot, XP, achievements, RF/channel preferences, keys, contacts and pending logs are not restored from an older player snapshot during rollback. Relaunch the game after installation.
 
 Keep deployment backup paths and recovery receipts private. Update checks do not establish new RF reception, approved AUTO behavior or chat delivery.
+
+
+## 0.9.21.1: repair the game Python; migrate firmware separately
+
+The existing 0.9.21 Git/source updater can install 0.9.21.1 with unchanged requirements.txt. Check with R, prepare with Enter and confirm with Y; N/Esc cancels. Successful installation restarts0.9.21 automatically. Player data and device firmware are not rolled back or flashed by this update.
+
+For missing esptool, open SYSTEM → Firmware KG/SOLO and press P for explicit repair in the game's detected interpreter. Wait for the tool check; a repair is not a firmware install. For an XIAO C5 reporting 1.7.5 without SOLO, stop ESP32 tools and press R, then read M's older-base migration confirmation before Y. Unknown/timeout is not missing-SOLO proof; ordinary Enter cannot silently downgrade. Keep both verified private recovery copies and never publish them.
+
+[Detailed dependency repair, supported hardware, migration and recovery](FIRMWARE_KG_SOLO_0.9.21.1.md). Firmware binary bytes remain 1.7.0+SOLO/Piglet; no physical C5 migration is claimed by the game release.

@@ -1,0 +1,120 @@
+RELEASE 0.9.21.1 - ESPTOOL FOUND. SOLO UNSTUCK. KEEP THE LOOT.
+
+A small game update for missing tools, a stuck SOLO migration, and a firmware label
+that was a little too generous with its guest list.
+
+Original game and JanOS by LOCOSP. KG Edition changes by KiloGramowy.
+
+1. ESPTOOL - SAME PYTHON, SAME PARTY
+
+ Before: an existing game .venv could miss the already-required esptool package.
+Installing it in another Python did not help the flasher.
+
+ Now: the existing setup/launcher checks and repairs esptool in the game's own
+interpreter, including an existing .venv. After an in-game OTA update, TAB ->
+SYSTEM -> Firmware KG/SOLO -> P offers the same explicit repair without flashing
+anything. Installation errors show their cause and a correctly quoted command for
+the detected Python. A successful pip exit must still pass the real tool check.
+
+esptool 5.0.0 remains supported. The minimum and requirements.txt are unchanged, so
+the existing source updater can install this microfix. A failed repair/tool check
+cannot start a firmware write.
+
+*esptool can stop playing hide-and-seek in somebody else's Python.*
+
+2. SOLO MIGRATION - A BIGGER VERSION NUMBER IS NOT A MEMBERSHIP CARD
+
+ Before: an XIAO C5 reporting JanOS 1.7.5, but answering Unrecognized command to
+wardrive_solo_caps, was blocked from the approved JanOS 1.7.0 + SOLO package by the
+normal downgrade guard.
+
+ Now: stop ESP32 tools, open Firmware KG/SOLO, and press R for a fresh
+interface/package check. When this same device explicitly does not recognize SOLO,
+M opens a separate migration confirmation. It shows the reported JanOS version,
+SOLO status, target package and source, and the deliberate move to an older JanOS
+1.7.0 base with SOLO. Y confirms; N / Esc cancels. C can cancel a confirmed
+migration before its write starts; closing the panel during a job does not cancel
+that job.
+
+This is not a general downgrade switch. Enter keeps ordinary
+installation/reinstallation rules; a newer firmware is still protected. A timeout,
+disconnect, partial reply, old connection or unknown SOLO state does not authorize
+migration. The negative reply and a separate fresh version reply must belong to the
+current USB/serial session.
+
+Only the existing XIAO ESP32-C5 revision 1.0 / 8 MiB / approved active ota_0
+profile is supported. Image SHA/header, physical USB identity, ROM revision,
+security flags, real partition table, active slot and port ownership still have to
+pass. Before a migration write, the installer makes two independent, matching full
+8 MiB recovery reads and a separate copy of the original application sectors. These
+private backups can contain credentials: keep them local; never attach them to a
+bug report. Read-only preflight alone is not a backup.
+
+The write remains application-only. Bootloader, partition table, OTA selection,
+NVS, PHY and other partitions are not flashed; there is no full erase. Firmware
+transfer settings, stub selection and baud rate are unchanged. A successful process
+exit or a 1.7.0 banner alone no longer completes a KG install: the returning bound
+device must also answer a fresh SOLO capability query. If it does not, the game
+reports that confirmation is missing instead of promising success or automatically
+flashing again.
+
+*JanOS 1.7.5 can have a taller hat and still be missing the SOLO ticket.*
+
+3. HONEST FIRMWARE LABELS - NO MORE HONORARY KG PASSPORTS
+
+ Before: a plain JanOS version could be displayed as KG 1.7.5, even without SOLO
+commands.
+
+ Now: the panel and logs distinguish reported JanOS, confirmed SOLO interface
+support, and the available approved KG package. An interface response is not
+cryptographic proof of a particular binary.
+
+*The label now checks the invitation, not just the number on the door.*
+
+4. UPDATE THE GAME - CHOOSE FIRMWARE SEPARATELY
+
+Open TAB -> SYSTEM -> Update Game -> R -> Enter -> Y. N / Esc cancels before
+installation. A working 0.9.21 updater restarts the game after a successful update.
+Older updaters 0.9.17 / 0.9.18 / 0.9.19 still need their one manual relaunch on the
+first upgrade.
+
+Game 0.9.21.1 does not flash an ESP32 automatically. The existing approved JanOS
+1.7.0 + SOLO image/manifests and Piglet images/manifests keep their exact bytes. No
+JanOS 1.7.5 build is supplied. Dark3D and Android are outside this microfix. Player
+XP, levels, history, logs, settings, keys, GPS and existing radio/game rules stay.
+
+- Hypnox: update the game, then use Firmware KG/SOLO -> P if the tool is missing;
+wait for a verified tool result. Firmware installation is a separate choice.
+- PapaSucio: stop ESP32 tools, press R, read the current device/package
+information, then use M -> Y only for the supported, explicitly confirmed
+older-base migration. Keep the recovery copies. A refused hardware/layout check is
+not permission to force the write.
+
+5. RECEIPTS AND LIMITS
+
+Focused software runs passed: 43 dependency/flash-helper checks, 48 KG
+package/migration/backup checks, 58 SOLO/controller checks and 18 migration-panel
+integration checks, each with 0 FAIL / 0 ERROR / 0 SKIP. These runs overlap and
+must not be added together. The final regression and publication checks are
+recorded separately; no historical 0.9.21 total is being presented as a new
+microfix run. Execution: local Windows, explicitly authorized after Cloud startup
+could not be confirmed.
+
+The dependency repair was also exercised with a real isolated existing .venv:
+missing module -> installation by that exact interpreter -> esptool 5.0.0, followed
+by a second check that did not reinstall it. Firmware migration tests use synthetic
+USB/ROM/process responses and verify refused writes, backups and fresh post-write
+interface confirmation.
+
+No physical C5 migration, physical flash/recovery or repair of PapaSucio's device
+is claimed. No owner's uConsole, ESP32 or real player profile was accessed.
+Filesystem/platform-specific skips remain explicit. These are software checks, not
+a promise that every C5 is supported or risk-free.
+
+ [Release 0.9.21.1](https://github.com/KiloGramowy/WDG-Wars-Go-2.0-KG-Edition/relea
+ses/tag/v0.9.21.1)   [All
+releases](https://github.com/KiloGramowy/WDG-Wars-Go-2.0-KG-Edition/releases)
+[Repair, migration and recovery guide](https://github.com/KiloGramowy/WDG-Wars-Go-2
+.0-KG-Edition/blob/v0.9.21.1/docs/FIRMWARE_KG_SOLO_0.9.21.1.md)
+
+KEEP THE RIGHT PYTHON. READ THE OLDER-BASE WARNING. KEEP THE LOOT.

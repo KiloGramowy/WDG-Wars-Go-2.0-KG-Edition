@@ -7,11 +7,14 @@ from dataclasses import dataclass, field
 import binascii
 import hashlib
 import json
+import math
+import os
 from pathlib import Path
 import re
 import stat
 import struct
 import time
+import tempfile
 from urllib.parse import urlsplit
 from urllib.request import HTTPRedirectHandler, Request, build_opener
 
@@ -68,6 +71,105 @@ class USBIdentity:
     pid: int
     serial_number: str = field(repr=False)
     location: str = field(repr=False)
+
+
+@dataclass(frozen=True)
+class SoloMigrationEvidence:
+    """Fresh interface response bound by the caller to its serial session.
+
+    This is not a binary identity or a cryptographic firmware attestation.
+    Empty/timeout/partial responses deliberately do not authorize migration.
+    """
+    identity: USBIdentity
+    reported_version: str
+    connection_generation: int
+    observed_at: float
+    response: str = ""
+
+
+@dataclass(frozen=True)
+class MigrationAuthorization:
+    """One explicitly confirmed migration; age is checked before ROM entry."""
+    package_version: str
+    image_sha256: str
+    manifest_sha256: str
+    reported_version: str
+    identity: USBIdentity
+    connection_generation: int
+    confirmed_at: float
+
+
+@dataclass(frozen=True)
+class MigrationBackup:
+    directory: Path
+    full_sha256: str
+    rollback_sha256: str
+    rollback_bytes: int
+
+
+def authorize_install(package, reported_version, *, migration=None, identity=None,
+                      connection_generation=None, confirmed=False, now=None):
+    """Keep ordinary downgrade rejection; allow only an explicit stock-to-SOLO move.
+
+    The GUI creates evidence only from a fresh response to its active
+    ``wardrive_solo_caps`` probe on the currently bound USB/serial generation.
+    Time spent later in the exclusive ROM/backup transaction is not evidence age.
+    """
+    _validate_package(package)
+    if not reported_version:
+        raise KGFirmwareError("A fresh reported JanOS version is required before installation")
+    current = version_tuple(reported_version)
+    if version_tuple(package.version) >= current:
+        return None
+    if confirmed is not True or not isinstance(migration, SoloMigrationEvidence):
+        raise KGFirmwareError("The published KG package is older than the device's reported version; "
+                              "choose the explicitly confirmed no-SOLO migration instead")
+    if (package.version != '1.7.0' or package.image_sha256 != LEGACY_IMAGE_SHA256
+            or package.manifest_sha256 != LEGACY_MANIFEST_SHA256
+            or package.image_bytes != 2250896):
+        raise KGFirmwareError("Migration permits only the approved JanOS 1.7.0 + SOLO package")
+    if (not isinstance(identity, USBIdentity) or identity.vid != 0x303A or identity.pid != 0x1001
+            or migration.identity != identity
+            or type(connection_generation) is not int or connection_generation < 0
+            or type(migration.connection_generation) is not int
+            or migration.connection_generation != connection_generation
+            or migration.reported_version != reported_version
+            or migration.response != 'unrecognized'):
+        raise KGFirmwareError("Migration requires a fresh unrecognized SOLO command from this USB session")
+    now = time.monotonic() if now is None else now
+    if (type(now) not in (int, float) or not math.isfinite(now) or now < 0
+            or type(migration.observed_at) not in (int, float)
+            or not math.isfinite(migration.observed_at) or migration.observed_at < 0
+            or not 0 <= now - migration.observed_at <= 30):
+        raise KGFirmwareError("SOLO migration evidence expired; request a fresh device response")
+    return MigrationAuthorization(package.version, package.image_sha256,
+                                  package.manifest_sha256, reported_version, identity,
+                                  connection_generation, float(now))
+
+
+def validate_authorization(authorization, package, identity, connection_generation):
+    """Rebind a confirmed transaction before ROM entry, without faking a new probe.
+
+    Do not use this function to revive a cancelled/reconnected UI transaction.
+    The caller also invalidates it on any contradictory response/disconnect.
+    """
+    _validate_package(package)
+    if (package.version != '1.7.0' or package.image_sha256 != LEGACY_IMAGE_SHA256
+            or package.manifest_sha256 != LEGACY_MANIFEST_SHA256
+            or package.image_bytes != 2250896):
+        raise KGFirmwareError("Migration permits only the approved JanOS 1.7.0 + SOLO package")
+    if (not isinstance(authorization, MigrationAuthorization)
+            or authorization.package_version != package.version
+            or authorization.image_sha256 != package.image_sha256
+            or authorization.manifest_sha256 != package.manifest_sha256
+            or authorization.identity != identity
+            or type(connection_generation) is not int
+            or authorization.connection_generation != connection_generation
+            or type(authorization.confirmed_at) not in (int, float)
+            or not math.isfinite(authorization.confirmed_at) or authorization.confirmed_at < 0
+            or version_tuple(authorization.reported_version) <= version_tuple(package.version)):
+        raise KGFirmwareError("The confirmed migration no longer matches this package or USB session")
+    return authorization
 
 
 def version_tuple(value):
@@ -484,3 +586,158 @@ def preflight_device(package, image, python, port, attempt, *, run_tool,
     except OSError as exc:
         raise KGFirmwareError("Cannot read the device OTA-selection result") from exc
     verify_image(package, image)
+
+
+
+def _sync_directory(path):
+    if os.name == 'posix':
+        descriptor = os.open(path, os.O_RDONLY | getattr(os, 'O_DIRECTORY', 0))
+        try:
+            os.fsync(descriptor)
+        finally:
+            os.close(descriptor)
+
+
+def _private_backup_file(path, content):
+    descriptor = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+    with os.fdopen(descriptor, 'wb') as output:
+        output.write(content)
+        output.flush()
+        os.fsync(output.fileno())
+
+
+def _read_private_snapshot(path):
+    info = path.lstat()
+    if (not stat.S_ISREG(info.st_mode) or info.st_size != FLASH_BYTES
+            or info.st_nlink != 1 or (os.name == 'posix' and info.st_mode & 0o077)):
+        raise KGFirmwareError("Recovery snapshot is not a complete private 8MiB file; no write")
+    # Windows requires a writable handle for FlushFileBuffers; opening r+b
+    # does not alter the readback and also permits the required durable sync.
+    with path.open('r+b') as source:
+        content = source.read(FLASH_BYTES + 1)
+        source.flush()
+        os.fsync(source.fileno())
+    if len(content) != FLASH_BYTES:
+        raise KGFirmwareError("Recovery snapshot size changed; no firmware write")
+    return content
+
+
+def backup_migration_device(package, image, python, port, attempt, backup_root,
+                            identity, authorization, *, run_tool,
+                            check_current_device, on_process=None, on_line=None):
+    """Make two independent, durable *private* recovery reads before migration.
+
+    Call only after ``preflight_device`` and under the installer's existing
+    exclusive port ownership. ``check_current_device`` must return True only
+    while that same USB binding/transaction remains valid and uncancelled.
+    Readback commands never write/erase flash, change the stub, or change the
+    existing install command/baud. Partial failed backups are retained privately
+    but cannot return an authorization to proceed. Never package these files.
+    """
+    validate_authorization(authorization, package, identity,
+                           authorization.connection_generation
+                           if isinstance(authorization, MigrationAuthorization) else None)
+    verify_image(package, image)
+    if not callable(check_current_device):
+        raise KGFirmwareError("Migration recovery reads need a bound-device cancellation guard")
+
+    def still_bound():
+        if check_current_device() is not True:
+            raise KGFirmwareError("Migration cancelled or USB identity changed; no firmware write")
+
+    still_bound()
+    attempt, backup_root = Path(attempt), Path(backup_root)
+    table_path, ota_path = attempt / 'kg-partition-table.bin', attempt / 'kg-otadata.bin'
+    try:
+        if not stat.S_ISREG(table_path.lstat().st_mode) or not stat.S_ISREG(ota_path.lstat().st_mode):
+            raise KGFirmwareError("Migration needs the current read-only partition/OTA preflight")
+        table, ota = table_path.read_bytes(), ota_path.read_bytes()
+        validate_partition_table(table)
+        validate_active_ota(ota)
+        if backup_root.exists():
+            info = backup_root.lstat()
+            if (not stat.S_ISDIR(info.st_mode) or backup_root.is_symlink()
+                    or (os.name == 'posix' and (info.st_mode & 0o077 or info.st_uid != os.geteuid()))):
+                raise KGFirmwareError("Choose an owner-only recovery directory; no firmware write")
+        else:
+            backup_root.mkdir(parents=True, mode=0o700)
+        directory = Path(tempfile.mkdtemp(prefix='kg-migration-', dir=backup_root))
+        os.chmod(directory, 0o700)
+        _sync_directory(backup_root)
+        snapshots = []
+        full_sha256 = None
+        old_application = None
+        rounded_bytes = ((package.image_bytes + 4095) // 4096) * 4096
+        if not 0 < rounded_bytes <= APP_BYTES:
+            raise KGFirmwareError("Migration application rollback scope is invalid")
+        for number in (1, 2):
+            still_bound()
+            path = directory / ('full-flash-' + str(number) + '.bin')
+            # Precreate privately before esptool opens its output path.
+            descriptor = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+            os.close(descriptor)
+            if on_line is not None:
+                on_line(f"Reading private recovery snapshot {number}/2 (8MiB; read only)...")
+            last_guard = [time.monotonic()]
+            last_percent = [-1]
+
+            def progress(line):
+                # Consume normal output for the process supervisor, but do not
+                # expose ROM identifiers or full-flash/NVS content to the UI log.
+                now = time.monotonic()
+                if now - last_guard[0] >= .5:
+                    still_bound()
+                    last_guard[0] = now
+                match = re.search(r'(?<![0-9])([0-9]{1,3})(?:\.[0-9]+)?\s*%', str(line))
+                if match and 0 <= int(match.group(1)) <= 100 and int(match.group(1)) != last_percent[0]:
+                    last_percent[0] = int(match.group(1))
+                    if on_line is not None:
+                        on_line(f"Private recovery snapshot {number}/2: {last_percent[0]}%")
+
+            run_tool([python, '-m', 'esptool', '--chip', 'esp32c5', '-p', port,
+                      '--before', 'no-reset', '--after', 'no-reset', '--no-stub',
+                      'read-flash', '0x0', '0x800000', str(path)], progress,
+                     on_process=on_process, total_timeout=600, idle_timeout=60)
+            still_bound()
+            raw = _read_private_snapshot(path)
+            if raw[0x8000:0x9000] != table or raw[0xF000:0x11000] != ota:
+                raise KGFirmwareError("Recovery snapshot differs from current partition/OTA preflight; no write")
+            digest = hashlib.sha256(raw).hexdigest()
+            if full_sha256 is not None and digest != full_sha256:
+                raise KGFirmwareError("The two independent recovery snapshots do not match; no write")
+            full_sha256 = digest
+            application = raw[APP_OFFSET:APP_OFFSET + rounded_bytes]
+            if old_application is not None and application != old_application:
+                raise KGFirmwareError("Application rollback reads disagree; no firmware write")
+            old_application = application
+            snapshots.append({'path': path.name, 'bytes': len(raw), 'sha256': digest})
+        still_bound()
+        rollback = directory / 'original-application-sectors.bin'
+        _private_backup_file(rollback, old_application)
+        rollback_sha256 = hashlib.sha256(old_application).hexdigest()
+        if rollback.stat().st_size != rounded_bytes or hashlib.sha256(rollback.read_bytes()).hexdigest() != rollback_sha256:
+            raise KGFirmwareError("The durable application recovery copy failed verification; no write")
+        manifest = {
+            'schema': 1, 'status': 'complete', 'device_backup_private_never_upload': True,
+            'reported_version': authorization.reported_version,
+            'target_package': package.version, 'target_image_sha256': package.image_sha256,
+            'usb_binding': {'vid': identity.vid, 'pid': identity.pid,
+                            'serial_number': identity.serial_number, 'location': identity.location},
+            'independent_full_flash_reads': snapshots,
+            'partition_table_sha256': hashlib.sha256(table).hexdigest(),
+            'otadata_sha256': hashlib.sha256(ota).hexdigest(),
+            'application_rollback': {'path': rollback.name, 'offset': APP_OFFSET,
+                                     'bytes': len(old_application), 'sha256': rollback_sha256},
+            'rollback_scope': 'Same verified device; restore only these application sectors. Never full erase/restore or player-data rollback.',
+        }
+        _private_backup_file(directory / 'backup.json',
+                             (json.dumps(manifest, indent=2) + '\n').encode('utf-8'))
+        _sync_directory(directory)
+        still_bound()
+        verify_image(package, image)
+        return MigrationBackup(directory, full_sha256, rollback_sha256, rounded_bytes)
+    except KGFirmwareError:
+        raise
+    except OSError as exc:
+        raise KGFirmwareError("Cannot store complete private recovery backups; no firmware write (" +
+                              type(exc).__name__ + ")") from exc

@@ -1,4 +1,4 @@
-"""KG branding changes the displayed version, never its protocol value."""
+"""A reported JanOS version never grants a KG/SOLO label by itself."""
 from types import SimpleNamespace
 import unittest
 from unittest.mock import Mock
@@ -7,7 +7,7 @@ from test_flash_preflight import FlashEnvironment
 
 
 class FirmwareDisplayTests(unittest.TestCase):
-    def test_startup_brands_the_detected_version_and_preserves_raw_protocol_and_log(self):
+    def test_startup_reports_janos_without_claiming_solo_and_preserves_raw_log(self):
         for line in ("JanOS version: 1.7.0", "WatchDogsGo version: v1.7.0",
                      "APP_MAIN START (v1.7.0)", "pong v1.7.0"):
             with self.subTest(reply=line):
@@ -22,7 +22,8 @@ class FirmwareDisplayTests(unittest.TestCase):
                     handle_line=lambda reply:True)
                 game._handle_serial_line(line)
                 self.assertEqual(game._fw_version,"1.7.0")
-                self.assertIn("[FW] Firmware KG 1.7.0",env.output)
+                self.assertTrue(any("[FW] JanOS 1.7.0" in text for text in env.output))
+                self.assertFalse(any("Firmware KG 1.7.0" in text for text in env.output))
                 game.loot.log_serial.assert_called_once_with(line)
                 self.assertFalse(game._fw_update_available)
                 self.assertEqual(game._fw_remote_version,"")

@@ -8,28 +8,23 @@
 <p align="center"><em>🕶️ Pocket cyberdeck. Bigger toolbox. WatchDogsGo by LOCOSP, expanded by KiloGramowy.</em></p>
 
 <!-- latest-public-update:start -->
-## 🚀 Latest update — 0.9.21
+## 🛠️ Latest update — 0.9.21.1
 
-🗺️ LET THE MAP FOLLOW. 🐇 SPOT THE RABBIT. 💾 KEEP THE LOOT.
+**🐍 ESPTOOL FOUND. 📡 SOLO UNSTUCK. 💾 KEEP THE LOOT.**
 
-❌ Before: manual map downloads, missing gang turf and rabbits, and occasional screen delays during scanning.
+❌ **Before:** an existing game Python could miss esptool, JanOS 1.7.5 without SOLO could not migrate to the approved package, and a version number could receive an undeserved KG label.
 
-✅ Now:
+✅ **Now:**
 
-* 🗺️ Auto Map + Turf: street tiles and WDGWars sectors follow fresh GPS. Saved maps stay available offline.
-* 🐇 White Rabbit + Portal Badges: bunny markers on the map and your portal badge collection inside WDG.
-* ⚡ Smoother Wi-Fi + BLE: less waiting, smarter SENT / NOT SENT logs and Auto-clean after confirmed uploads.
-* 📦 Wardriving Collection + KG/SOLO: Piglet CSV and supported Dark3D .log imports with ACK/deduplication, plus manual firmware updates. Modified Dark3D firmware is released separately and is not yet public.
+* 🐍 **Right Python, right tool:** setup/launcher repairs existing environments; **Firmware KG/SOLO → P** offers explicit repair after OTA. esptool **5.0.0** still works.
+* 📡 **Deliberate SOLO migration:** **R** checks the current device. **M → Y** separately confirms the supported move from **JanOS 1.7.5 without SOLO to older JanOS 1.7.0 + SOLO**, after mandatory checks and verified private recovery backups. Ordinary downgrades stay blocked; timeout is not proof of missing SOLO.
+* 🏷️ **Honest labels:** reported JanOS, confirmed SOLO interface and the approved KG package are shown separately. No honorary KG passport for a bigger number. 😏
 
-Piglet brought the CSV. Now the map joins the hunt. Your CPU can skip some paperwork. 😏🐷
+**Game OTA never flashes ESP32.** Original KG/SOLO and Piglet firmware bytes, player data and existing features stay. No physical C5 migration is claimed.
 
-📸 Original map previews: [Auto Map + Turf](docs/media/0.9.21-automap-sectors.png) · [White Rabbit](docs/media/0.9.21-rabbit-world.png).
+[📦 Release 0.9.21.1](https://github.com/KiloGramowy/WDG-Wars-Go-2.0-KG-Edition/releases/tag/v0.9.21.1) · [📝 All releases](https://github.com/KiloGramowy/WDG-Wars-Go-2.0-KG-Edition/releases) · [📚 Repair / migration guide](docs/FIRMWARE_KG_SOLO_0.9.21.1.md) · [Full changelog](CHANGELOG.md)
 
-🕶️ Privacy hotfix retained. Historical Git tags and archives remain unchanged.
-
-[📦 Release 0.9.21](https://github.com/KiloGramowy/WDG-Wars-Go-2.0-KG-Edition/releases/tag/v0.9.21) · [📝 Full changelog](CHANGELOG.md) · [📚 Update guide](docs/UPDATING.md)
-
-🎮 Update in game: TAB → SYSTEM → Update Game → R → Enter → Y. N / Esc cancels. No ESP32 firmware is flashed by game updates.
+🎮 **TAB → SYSTEM → Update Game → R → Enter → Y**. **N / Esc** cancels; the 0.9.21 updater restarts after success. Firmware remains a separate manual operation.
 
 ---
 <!-- latest-public-update:end -->
@@ -55,7 +50,7 @@ The edit combines recorded uConsole footage with a current native UI tour. Exter
 | 🧰 **From LOCOSP** | WDGWars Chat and Reticulum/LoRa, Monster RF SubGHz, Emergency Radio, Proximity Radar, CRISIS, sound controls, visual polish and the original in-game updater. |
 | 🛠️ **From KiloGramowy** | Meshtastic integration beside MeshCore, local AUTO GPS, persistent mesh discoveries, WARDRIVING SOLO, Piglet KG Collection, scan/upload fixes, clean shutdown and the expanded release updater. |
 
-**2.0 is the edition name; the software version is 0.9.21.** Original authorship and the upstream fork relationship are retained. See the [full 0.9.20 release notes](docs/RELEASE_0.9.20.md) for WARDRIVING SOLO, Piglet KG Collection, performance and maintenance changes.
+**2.0 is the edition name; the software version is 0.9.21.1.** Original authorship and the upstream fork relationship are retained. See the [full 0.9.20 release notes](docs/RELEASE_0.9.20.md) for WARDRIVING SOLO, Piglet KG Collection, performance and maintenance changes.
 
 💾 **Coming from LOCOSP's version?** 0.9.18 preserves saved XP, level, badges and contacts when upgrading the older loot database. A separate clone needs your existing data folder: [keep your progress when upgrading](docs/UPGRADING_FROM_LOCOSP.md).
 

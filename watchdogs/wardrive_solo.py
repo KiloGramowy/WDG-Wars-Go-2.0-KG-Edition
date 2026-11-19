@@ -53,6 +53,9 @@ class WardriveSoloController:
         self.profile = "full"
         self.phase, self.state, self.last_error = "", "idle", ""
         self.capabilities = None
+        self.capability_status = "unknown"
+        self.capability_received_at = None
+        self.capability_context = None
         self.boot_id = None
         self._pending = None
         self._active_session = None
@@ -94,9 +97,31 @@ class WardriveSoloController:
         self._pending = None
         return self._queue("wardrive_solo_caps", "caps", "Check SOLO firmware")
 
-    def _queue(self, command, kind, label, *, session=None, target=None):
+    def probe_capabilities(self):
+        """Read capabilities through the existing STOP arbiter, never start RF."""
+        if self.busy:
+            return False
+        self.capabilities = None
+        self.capability_status = "checking"
+        self.capability_received_at = self.capability_context = None
+        self.desired_wifi = self.desired_ble = False
+        self.last_error = ""
+        return self._queue("wardrive_solo_caps", "caps", "Check SOLO interface", read_only=True)
+
+    def bind_capability_context(self, context, *, negative_safe=False):
+        pending = self._pending
+        if pending and pending["kind"] == "caps":
+            if pending["sent_mono"] is not None:
+                if pending.get("context") != context:
+                    self._fail("SOLO probe connection changed; check again")
+                return  # A transmitted request cannot be retagged or gain authority.
+            pending["context"] = context
+            pending["negative_safe"] = bool(negative_safe and pending.get("read_only"))
+
+    def _queue(self, command, kind, label, *, session=None, target=None, read_only=False):
         self._pending = dict(command=command, kind=kind, session=session, target=target,
-                             sent_mono=None, sent_utc=None, deadline=None, actual_caps=False)
+                             sent_mono=None, sent_utc=None, deadline=None, actual_caps=False,
+                             read_only=read_only, negative_safe=False, context=None)
         self.state = "queued_" + kind
         try:
             accepted = self._start(command, "solo_control", label)
@@ -126,6 +151,9 @@ class WardriveSoloController:
         return True
 
     def _fail(self, message, *, stop=False):
+        if self._pending and self._pending["kind"] == "caps":
+            self.capability_status = "unknown"
+            self.capability_received_at = self.capability_context = None
         self.last_error = message
         self.desired_wifi = self.desired_ble = False
         self._cancel_pending()
@@ -178,6 +206,8 @@ class WardriveSoloController:
         self._pending = self._active_session = self._active_target = None
         self._rf_unconfirmed, self._rf_session, self._active_start_mono = False, None, None
         self._anchor = self.capabilities = self.boot_id = None
+        self.capability_status = "unknown"
+        self.capability_received_at = self.capability_context = None
         self.desired_wifi = self.desired_ble = False
         self.confirmed_wifi = self.confirmed_ble = False
         self.phase, self.state = "", "disconnected"
@@ -216,6 +246,28 @@ class WardriveSoloController:
         if isinstance(line, str) and line.startswith("> " + PREFIX):
             line = line[2:]
         if not isinstance(line, str) or not line.startswith(PREFIX):
+            pending = self._pending
+            if (not pending or pending["kind"] != "caps" or not pending.get("read_only")
+                    or not pending.get("negative_safe") or pending["sent_mono"] is None
+                    or pending.get("context") is None):
+                return False  # No per-record regex/clock work in ordinary Wi-Fi/BLE scans.
+            received = self._monotonic() if monotonic is None else monotonic
+            if type(received) not in (int, float) or not math.isfinite(received):
+                return False
+            text = line.strip() if isinstance(line, str) else ""
+            if text.startswith("> "):
+                text = text[2:]
+            unknown = re.fullmatch(
+                r"(?:Unknown|Unrecognized) command(?::?\s+['\"]?wardrive_solo_caps['\"]?)?\.?",
+                text, re.IGNORECASE)
+            if (unknown and pending and pending["kind"] == "caps"
+                    and pending.get("read_only") and pending.get("negative_safe")
+                    and pending.get("context") is not None and pending["sent_mono"] is not None
+                    and pending["sent_mono"] <= received < pending["deadline"]):
+                context = pending["context"]
+                self._fail("Device does not recognize wardrive_solo_caps; SOLO is unavailable")
+                self.capability_status = "unsupported"
+                self.capability_received_at, self.capability_context = received, context
             return False
         invalid_counted = recovered = False
         try:
@@ -328,6 +380,9 @@ class WardriveSoloController:
     def _caps(self, event, received):
         if not self._pending or self._pending["kind"] not in ("caps", "start"):
             return
+        if (self._pending["sent_mono"] is None or received < self._pending["sent_mono"]
+                or received >= self._pending["deadline"]):
+            raise ValueError("No fresh transmitted capability request")
         starting = self._pending["kind"] == "start"
         if event.get("supported") is not True or type(event.get("contract")) is not int or event["contract"] != 1:
             self._fail("Compatible SOLO firmware required; scanning remains OFF", stop=starting)
@@ -345,6 +400,9 @@ class WardriveSoloController:
         self._make_anchor(event, received)
         self.boot_id = event["boot_id"]
         self.capabilities = event
+        self.capability_status = "supported"
+        self.capability_received_at = received
+        self.capability_context = self._pending.get("context")
         if self.desired_wifi and self.profile == "kg" and not KG_CHANNELS.issubset(channels):
             self._fail("KG SETTINGS channels unavailable; scanning remains OFF", stop=starting)
             return
