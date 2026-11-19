@@ -499,6 +499,10 @@ class AlternationTests(unittest.TestCase):
 
     def test_verified_reconnect_keeps_selected_but_does_not_resume_plan(self):
         self.both()
+        # A verified reconnect follows release of the previous connection;
+        # an open manager must never be replaced by a competing port owner.
+        self.g.serial = None
+        self.g._esp32 = self.g.state.connected = False
         previous_generation = getattr(self.g, '_fw_generation', 0)
         del self.g._try_reconnect_esp32
         connection = SimpleNamespace(is_open=True, setup=Mock(), close=Mock(),
