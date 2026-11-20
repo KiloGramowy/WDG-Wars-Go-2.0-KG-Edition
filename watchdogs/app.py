@@ -6042,6 +6042,15 @@ class WatchDogsGame:
         stage = getattr(self, "_kg_fw_failed_stage", "") or getattr(self, "_kg_fw_stage", "prepare")
         return scope + " (" + stage + "); first error in OUTPUT / last_run.log"
 
+    def _kg_recovery_helper_path(self):
+        """Find recovery code beside this running module, never in player data."""
+        import os
+        from .esp32_flash import FlashError
+        helper = Path(__file__).resolve().with_name("esp32_flash.py")
+        if not helper.is_file() or not os.access(helper, os.R_OK):
+            raise FlashError("Recovery helper is missing or unreadable beside the running app.py")
+        return helper
+
     def _run_flash(self, board: str):
         # Real instances initialize both locks before any UI/worker can run.
         # Lazy creation also supports old isolated method harnesses.
@@ -6053,6 +6062,7 @@ class WatchDogsGame:
             return
         self._kg_fw_primary_error = self._kg_fw_failed_stage = ""
         self._kg_fw_recovery_deadline = None
+        self._kg_fw_reset_helper = None
         self._kg_fw_stage = "prepare"
         self._flash_running = True
         self._flash_process = self._flash_workspace = None
@@ -6123,10 +6133,12 @@ class WatchDogsGame:
                 self._kg_set_flash_stage("return-to-app")
                 try:
                     from .kg_firmware import wait_bound_port
-                    from .esp32_flash import run_esptool
+                    from .esp32_flash import FlashError, run_esptool
                     identity = getattr(self, "_kg_fw_usb_identity", None)
                     port = wait_bound_port(identity, monotonic=time.monotonic, sleep=time.sleep)
-                    reset_helper = Path(self._app_dir) / "watchdogs" / "esp32_flash.py"
+                    reset_helper = self._kg_fw_reset_helper
+                    if reset_helper is None:
+                        raise FlashError("Recovery program was not validated before device hand-off")
                     run_esptool([sys.executable, "-u", str(reset_helper),
                                  "--reset-c5-usb-to-app", port],
                                 lambda line: self._kg_flash_log(f"[FW] {line}"),
@@ -6202,6 +6214,9 @@ class WatchDogsGame:
         # probe must succeed before any cache/download/serial/USB operation.
         version = check_esptool(sys.executable)
         self._kg_flash_log(f"[FLASH] esptool {version}; Python: {sys.executable}", raw=True)
+        if not UPSTREAM_FIRMWARE_ENABLED:
+            self._kg_set_flash_stage("recovery-program")
+            self._kg_fw_reset_helper = self._kg_recovery_helper_path()
         fw_dir = Path(self._app_dir) / "firmware_cache"
         try:
             fw_dir.mkdir(exist_ok=True)

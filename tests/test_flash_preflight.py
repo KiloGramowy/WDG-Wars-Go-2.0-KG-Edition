@@ -156,7 +156,7 @@ class FlashEnvironment:
             if name not in modules or (level and name not in ('config','esp32_flash','kg_firmware')):
                 raise AssertionError('Unexpected flash method import: '+name)
             return modules[name]
-        env=dict(__name__='flash_harness',__package__='flash_harness',
+        env=dict(__name__='flash_harness',__package__='flash_harness',__file__=str(SOURCE),
                  __builtins__=dict(vars(builtins),__import__=fake_import),sys=SimpleNamespace(executable=GAME_PYTHON),
                  time=self.fake_time,threading=fake_threading,pyxel=self.px,re=re,logging=logging,queue=queue,Path=path,
                  detect_esp32_port=self.detect,SerialManager=lambda port:FakeSerial(self,port),

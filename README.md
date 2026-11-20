@@ -8,25 +8,25 @@
 <p align="center"><em>🕶️ Pocket cyberdeck. Bigger toolbox. WatchDogsGo by LOCOSP, expanded by KiloGramowy.</em></p>
 
 <!-- latest-public-update:start -->
-## 📞 Latest update — 0.9.21.2
+## 📍 Latest update — 0.9.21.3
 
-**USB, PICK UP THE PHONE. 🐇💾**
+**RIGHT HELPER. RIGHT ADDRESS. 🐇💾**
 
-❌ **Before:** a failed first ROM connection could enter recovery that still assumed a working ROM, while repeated generic messages hid the real tool output.
+❌ **Before:** a separate data/loot folder could send recovery to the wrong script path. Python exited before the helper ran; this was not a HardReset failure.
 
 ✅ **Now:**
 
-* 📞 **Recovery without that assumption:** a bounded native USB reset can request the previous app without ROM synchronization. A fresh firmware reply still has to confirm its return.
-* 🔌 **Careful USB hand-off:** idle control lines before native USB open, stable detection of the same bound device, and retained ownership until old connections and tool processes really finish.
-* 🧾 **Keep the first clue:** redacted `[KG-FW]` stage, original-error and actual tool-output records persist through the existing game log. The recovery error cannot replace the first failure.
+* 📍 **Code finds code:** recovery locates its helper beside the running game, independently of the data directory and CWD — including paths with spaces.
+* 🛑 **Check before USB:** a missing helper stops the attempt before the game connection is closed or the device is reset.
+* 🧪 **Real launch check:** the production path is exercised with the actual helper's `--help`; this does not open or test a C5.
 
-USB gets a better phone script, not an honorary “booted successfully” sticker. 😏📞
+The loot chest keeps the loot. The helper finally uses its office address. 😏💾
 
-**The cause of the first physical C5 ROM timeout is still unconfirmed.** Software checks do not claim a repair of PapaSucio's device. The supported hardware/layout checks, recovery backups, separate **M → Y** migration and fresh SOLO confirmation remain. Original KG/SOLO and Piglet firmware bytes stay unchanged; **game OTA never flashes ESP32**.
+**The original `rom-chip-id` timeout remains unresolved.** This fixes recovery launching, not a physically confirmed migration on PapaSucio's board. Hardware guards, backups and manual **M → Y** migration remain; KG/SOLO and Piglet firmware bytes stay unchanged. **Game OTA never flashes ESP32.**
 
-[📦 Release 0.9.21.2](https://github.com/KiloGramowy/WDG-Wars-Go-2.0-KG-Edition/releases/tag/v0.9.21.2) · [📝 All releases](https://github.com/KiloGramowy/WDG-Wars-Go-2.0-KG-Edition/releases) · [📚 USB recovery / diagnostic guide](docs/FIRMWARE_KG_SOLO_0.9.21.2.md) · [Full changelog](CHANGELOG.md)
+[📦 Release 0.9.21.3](https://github.com/KiloGramowy/WDG-Wars-Go-2.0-KG-Edition/releases/tag/v0.9.21.3) · [📝 All releases](https://github.com/KiloGramowy/WDG-Wars-Go-2.0-KG-Edition/releases) · [📚 Recovery guide](docs/FIRMWARE_KG_SOLO_0.9.21.3.md) · [Full changelog](CHANGELOG.md)
 
-🎮 **TAB → SYSTEM → Update Game → R → Enter → Y**. **N / Esc** cancels. The 0.9.21.1 updater restarts after success; firmware remains a separate manual choice.
+🎮 **TAB → SYSTEM → Update Game → R → Enter → Y**. **N / Esc** cancels. Clients 0.9.19.1 onward restart after success; older 0.9.17–0.9.19 clients need one manual relaunch on their first upgrade.
 
 ---
 <!-- latest-public-update:end -->
@@ -52,7 +52,7 @@ The edit combines recorded uConsole footage with a current native UI tour. Exter
 | 🧰 **From LOCOSP** | WDGWars Chat and Reticulum/LoRa, Monster RF SubGHz, Emergency Radio, Proximity Radar, CRISIS, sound controls, visual polish and the original in-game updater. |
 | 🛠️ **From KiloGramowy** | Meshtastic integration beside MeshCore, local AUTO GPS, persistent mesh discoveries, WARDRIVING SOLO, Piglet KG Collection, scan/upload fixes, clean shutdown and the expanded release updater. |
 
-**2.0 is the edition name; the software version is 0.9.21.2.** Original authorship and the upstream fork relationship are retained. See the [full 0.9.20 release notes](docs/RELEASE_0.9.20.md) for WARDRIVING SOLO, Piglet KG Collection, performance and maintenance changes.
+**2.0 is the edition name; the software version is 0.9.21.3.** Original authorship and the upstream fork relationship are retained. See the [full 0.9.20 release notes](docs/RELEASE_0.9.20.md) for WARDRIVING SOLO, Piglet KG Collection, performance and maintenance changes.
 
 💾 **Coming from LOCOSP's version?** 0.9.18 preserves saved XP, level, badges and contacts when upgrading the older loot database. A separate clone needs your existing data folder: [keep your progress when upgrading](docs/UPGRADING_FROM_LOCOSP.md).
 

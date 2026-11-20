@@ -1,3 +1,11 @@
+# 0.9.21.3 — code-relative recovery helper, checked before device hand-off
+
+- Fix the recovery program path: locate esp32_flash.py beside the running app.py, independently of the configured data/loot directory and CWD. Do not move data or copy scripts into loot.
+- Verify the helper is readable before cache/download/device hand-off, clear the per-attempt cached path, and use the checked code path for recovery.
+- Exercise the production path selector with real helper --help subprocesses, including separate data directories, a different CWD and paths containing spaces. Verify actual release/OTA placement without opening a device.
+- The reported Python cannot-open-file / exit 2 means the helper never started, not that HardReset failed. The earlier rom-chip-id 10-second timeout remains a separate, unresolved physical issue; no physical migration success is claimed.
+- Preserve existing reset/supervision/port ownership, migration and write guards, backups, player data, requirements and exact KG/SOLO/Piglet firmware bytes. Game OTA never flashes ESP32.
+
 # 0.9.21.2 — native USB hand-off, ROM-independent recovery and durable diagnostics
 
 - Request a bounded native USB application reset through the same game Python without requiring ROM synchronization after a failed preflight. A fresh matching JanOS response is still required; a port or reset exit is not boot confirmation.

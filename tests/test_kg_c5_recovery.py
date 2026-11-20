@@ -12,7 +12,7 @@ from unittest.mock import Mock
 
 from watchdogs import kg_firmware as kg
 from watchdogs.esp32_flash import FlashError
-from test_flash_preflight import FlashEnvironment, GAME_PYTHON
+from test_flash_preflight import FlashEnvironment, GAME_PYTHON, SOURCE
 
 
 class KGC5RecoveryTests(unittest.TestCase):
@@ -66,7 +66,8 @@ class KGC5RecoveryTests(unittest.TestCase):
         command, options = env.recovery_commands[0]
         self.assertEqual(command[:2], [GAME_PYTHON, '-u'])
         self.assertTrue(Path(command[2]).is_absolute())
-        self.assertEqual(Path(command[2]), env.root / 'watchdogs/esp32_flash.py')
+        self.assertEqual(Path(command[2]), SOURCE.resolve().with_name('esp32_flash.py'))
+        self.assertFalse(Path(command[2]).is_relative_to(env.root))
         self.assertEqual(command[3:], ['--reset-c5-usb-to-app', '/dev/ttyACM7'])
         self.assertEqual(options['total_timeout'], 15)
         self.assertEqual(options['idle_timeout'], 5)
