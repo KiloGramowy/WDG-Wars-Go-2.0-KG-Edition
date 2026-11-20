@@ -218,8 +218,8 @@ class NativeUSBResetTests(unittest.TestCase):
                 raise AssertionError("Reset helper must not synchronize or read ROM")
         return Connection()
 
-    def test_native_reset_sets_closed_lines_before_open_and_uses_official_usb_reset(self):
-        for platform in ("posix", "nt"):
+    def test_native_reset_uses_platform_open_sequence_and_official_usb_reset(self):
+        for platform, system in (("linux", "posix"), ("win32", "nt"), ("darwin", "posix")):
             with self.subTest(platform=platform):
                 events = []
                 connection = self.connection(events)
@@ -231,15 +231,19 @@ class NativeUSBResetTests(unittest.TestCase):
                     self.assertTrue(uses_usb)
                     events.append(("reset-created",))
                     return lambda: events.append(("reset-called",))
-                with patch.object(flash.os, "name", platform):
+                with patch.object(flash.os, "name", system), \
+                        patch.object(flash.sys, "platform", platform):
                     reset_c5_usb_to_app("/dev/ttyACM-synthetic", serial_factory=factory,
                                         hard_reset=reset)
                 self.assertEqual(events, [
                     ("factory", dict(port=None, baudrate=115200, timeout=1, write_timeout=2,
-                                     **({"exclusive": True} if platform == "posix" else {}))),
-                    ("set", "dtr", False), ("set", "rts", False),
+                                     **({"exclusive": True} if system == "posix" else {}))),
                     ("set", "port", "/dev/ttyACM-synthetic"),
-                    ("open", "/dev/ttyACM-synthetic", False, False),
+                    ("set", "dtr", platform == "linux"),
+                    ("set", "rts", platform == "linux"),
+                    ("open", "/dev/ttyACM-synthetic", platform == "linux", platform == "linux"),
+                    *([("set", "rts", False), ("set", "dtr", False)]
+                      if platform == "linux" else []),
                     ("reset-created",), ("reset-called",), ("close",)])
 
     def test_failed_open_closes_owned_connection_without_reset(self):

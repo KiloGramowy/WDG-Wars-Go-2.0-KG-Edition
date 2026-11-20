@@ -5,6 +5,7 @@ import unittest
 from unittest.mock import Mock, patch
 
 from watchdogs import serial_manager
+from watchdogs import esp32_flash
 from watchdogs.serial_manager import SerialManager, detect_esp32_port
 
 
@@ -96,7 +97,7 @@ class SerialDetectionTests(unittest.TestCase):
         connection.reset_input_buffer.assert_called_once_with()
         connection.reset_output_buffer.assert_called_once_with()
 
-    def test_native_usb_setup_sets_idle_lines_before_open(self):
+    def native_usb_setup_events(self, platform):
         events = []
         class Connection:
             def __setattr__(self, name, value):
@@ -113,19 +114,31 @@ class SerialDetectionTests(unittest.TestCase):
         manager = SerialManager("/dev/ttyACM-synthetic")
         with patch.object(serial_manager.os.path, "exists", return_value=True), \
                 patch.object(serial_manager.os, "access", return_value=True), \
-                patch.object(serial_manager.serial, "Serial", side_effect=constructor):
+                patch.object(serial_manager.serial, "Serial", side_effect=constructor), \
+                patch.object(esp32_flash.sys, "platform", platform):
             manager.setup(native_usb=True)
-        self.assertEqual(events, [
+        self.assertIs(manager.serial_conn, connection)
+        self.assertEqual(events[:2], [
             ("constructor", dict(port=None, baudrate=manager.baud_rate,
                                  bytesize=serial_manager.serial.EIGHTBITS,
                                  parity=serial_manager.serial.PARITY_NONE,
                                  stopbits=serial_manager.serial.STOPBITS_ONE,
                                  timeout=serial_manager.READ_TIMEOUT, write_timeout=2)),
+            ("set", "port", "/dev/ttyACM-synthetic")])
+        return events[2:]
+
+    def test_linux_native_usb_setup_opens_then_clears_rts_before_dtr(self):
+        self.assertEqual(self.native_usb_setup_events("linux"), [
+            ("set", "dtr", True), ("set", "rts", True),
+            ("open", "/dev/ttyACM-synthetic", True, True),
+            ("set", "rts", False), ("set", "dtr", False),
+            ("reset-input",), ("reset-output",)])
+
+    def test_windows_native_usb_setup_preserves_idle_lines_before_open(self):
+        self.assertEqual(self.native_usb_setup_events("win32"), [
             ("set", "dtr", False), ("set", "rts", False),
-            ("set", "port", "/dev/ttyACM-synthetic"),
             ("open", "/dev/ttyACM-synthetic", False, False),
             ("reset-input",), ("reset-output",)])
-        self.assertIs(manager.serial_conn, connection)
 
     def test_default_setup_keeps_legacy_open_without_line_overrides(self):
         manager = SerialManager("/dev/pts/synthetic")
@@ -156,6 +169,31 @@ class SerialDetectionTests(unittest.TestCase):
         connection.reset_output_buffer.assert_not_called()
         manager.close()
         connection.close.assert_called_once_with()
+        self.assertIsNone(manager.serial_conn)
+
+    def test_native_post_open_control_failure_retains_owned_handle_until_caller_closes(self):
+        class Connection:
+            is_open = False
+            def __setattr__(self, name, value):
+                if name == "dtr" and value is False and self.is_open:
+                    raise OSError("Synthetic native control failure after open")
+                object.__setattr__(self, name, value)
+            def open(self): self.is_open = True
+            def reset_input_buffer(self): raise AssertionError("Setup must not continue")
+            def reset_output_buffer(self): pass
+            def close(self): self.is_open = False
+        connection = Connection()
+        manager = SerialManager("/dev/ttyACM-synthetic")
+        with patch.object(serial_manager.os.path, "exists", return_value=True), \
+                patch.object(serial_manager.os, "access", return_value=True), \
+                patch.object(serial_manager.serial, "Serial", return_value=connection), \
+                patch.object(esp32_flash.sys, "platform", "linux"):
+            with self.assertRaisesRegex(OSError, "control failure after open"):
+                manager.setup(native_usb=True)
+        self.assertIs(manager.serial_conn, connection)
+        self.assertTrue(manager.is_open)
+        manager.close()
+        self.assertFalse(connection.is_open)
         self.assertIsNone(manager.serial_conn)
 
 

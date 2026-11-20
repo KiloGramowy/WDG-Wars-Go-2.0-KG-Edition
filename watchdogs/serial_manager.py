@@ -188,12 +188,12 @@ class SerialManager:
             write_timeout=2,
         )
         if native_usb:
-            # A reconnect is not a request to reset or select download mode.
-            # Configure native USB control lines before open, not afterwards.
-            self.serial_conn.dtr = False
-            self.serial_conn.rts = False
+            from .esp32_flash import open_native_usb_serial
+            # This bound native USB reconnect must not reset the application.
+            # Retain the handle if any open/control operation raises so the
+            # caller can close it and confirm release before another owner.
             self.serial_conn.port = self.device
-            self.serial_conn.open()
+            open_native_usb_serial(self.serial_conn)
         self.serial_conn.reset_input_buffer()
         self.serial_conn.reset_output_buffer()
         log.info("Serial port %s opened at %d baud", self.device, self.baud_rate)

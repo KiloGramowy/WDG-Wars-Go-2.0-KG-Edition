@@ -414,6 +414,25 @@ def run_esptool(command, on_line, *, on_process=None, popen=None,
                 pass
 
 
+def open_native_usb_serial(connection):
+    """Open a closed, configured native USB connection without a reset edge.
+
+    Linux CDC-ACM may assert both lines inside open(), before pyserial applies
+    its stored DTR then RTS values. Clearing DTR first would pass through the
+    C5 reset state. Match that initial state, then clear RTS before DTR:
+    (RTS, DTR) 11 -> 01 -> 00. The temporary download flag is cleared at 00.
+    Other platforms retain the existing deasserted-before-open sequence.
+    The caller owns the connection, including closing it after any failure.
+    """
+    linux = sys.platform.startswith("linux")
+    connection.dtr = linux
+    connection.rts = linux
+    connection.open()
+    if linux:
+        connection.rts = False
+        connection.dtr = False
+
+
 def reset_c5_usb_to_app(port, *, serial_factory=None, hard_reset=None):
     """Request the official native USB application reset without ROM sync.
 
@@ -437,12 +456,8 @@ def reset_c5_usb_to_app(port, *, serial_factory=None, hard_reset=None):
         if os.name == "posix":
             options["exclusive"] = True
         connection = serial_factory(**options)
-        # Configure the modem-line state while closed: opening with both
-        # asserted can request a different USB Serial/JTAG reset transition.
-        connection.dtr = False
-        connection.rts = False
         connection.port = port
-        connection.open()
+        open_native_usb_serial(connection)
         hard_reset(connection, uses_usb=True)()
     except Exception as exc:
         failure = exc
